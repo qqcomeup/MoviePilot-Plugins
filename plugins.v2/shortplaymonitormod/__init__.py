@@ -898,11 +898,13 @@ class ShortPlayMonitorMod(_PluginBase):
         if not page_source:
             logger.error(f"请求站点 {site.name} 失败")
             return None
-        _spider = SiteSpider(indexer=index, page=1)# 【兼容性修复】 根据MoviePilot版本使用不同的类
-if IS_NEW_VERSION:
-    _spider = Indexer(indexer=index, page=1)
-else:
-    _spider = SiteSpider(indexer=index, page=1)
+
+        # 【兼容性修复】 根据MoviePilot版本使用不同的类
+        if IS_NEW_VERSION:
+            _spider = Indexer(indexer=index, page=1)
+        else:
+            _spider = SiteSpider(indexer=index, page=1)
+            
         torrents = _spider.parse(page_source)
         if not torrents:
             logger.error(f"未检索到站点 {site.name} 资源")
@@ -915,11 +917,11 @@ else:
             return None
 
         html = etree.HTML(torrent_detail_source)
-        logger.debug(f"种子详情页 {torrents[0].get('page_url')} 解析成功")
-        if not html:
-            logger.error(f"请求种子详情页失败 {torrents[0].get('page_url')}")
+        if html is None:
+            logger.error(f"解析种子详情页HTML失败 {torrents[0].get('page_url')}")
             return None
-        
+        logger.debug(f"种子详情页 {torrents[0].get('page_url')} 解析成功")
+ 
         if image_xpath:
             image = html.xpath(image_xpath)[0]
             if not image:
