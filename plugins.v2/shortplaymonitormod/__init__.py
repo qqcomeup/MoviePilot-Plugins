@@ -6,7 +6,8 @@ import threading
 from pathlib import Path
 from threading import Lock
 from typing import Any, List, Dict, Tuple, Optional
-from xml.dom import min
+# 正确的行
+from xml.dom import minidom
 import chardet
 import pytz
 from PIL import Image
