@@ -13,7 +13,7 @@ import pytz
 from PIL import Image
 
 # --- 全新的导入代码 ---
-from app.core.sitemanager import SiteManager # 导入新版站点管理器
+from app.modules.sitemanager import SiteManager
 from app.sites import Site # 导入新版站点基类
 # --- 结束 ---
 
