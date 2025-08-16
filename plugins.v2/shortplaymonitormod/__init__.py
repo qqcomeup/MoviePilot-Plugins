@@ -11,7 +11,8 @@ from xml.dom import minidom
 import chardet
 import pytz
 from PIL import Image
-from app.helper.sites import SitesHelper, SiteSpider
+# 【修复第一处】将 SiteSpider 修改为 Indexer
+from app.helper.sites import SitesHelper, Indexer
 from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import etree
 from requests import RequestException
@@ -890,7 +891,8 @@ class ShortPlayMonitorMod(_PluginBase):
         if not page_source:
             logger.error(f"请求站点 {site.name} 失败")
             return None
-        _spider = SiteSpider(indexer=index, page=1)
+        # 【修复第二处】将 SiteSpider 修改为 Indexer
+        _spider = Indexer(indexer=index, page=1)
         torrents = _spider.parse(page_source)
         if not torrents:
             logger.error(f"未检索到站点 {site.name} 资源")
