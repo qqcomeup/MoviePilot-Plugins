@@ -68,7 +68,7 @@ class ShortPlayMonitorMod(_PluginBase):
     # 插件版本
     plugin_version = "1.7.2.2"
     # 插件作者
-    plugin_author = "thsrite,Seed680"
+    plugin_author = "thsrite,Seed680,test"
     # 作者主页
     author_url = "https://github.com/thsrite"
     # 插件配置项ID前缀
