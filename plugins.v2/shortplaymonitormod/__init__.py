@@ -60,7 +60,7 @@ class FileMonitorHandler(FileSystemEventHandler):
 
 class ShortPlayMonitorMod(_PluginBase):
     # 插件名称
-    plugin_name = "短剧刮削魔改版"
+    plugin_name = "短剧刮削魔改版修复"
     # 插件描述
     plugin_desc = "(基于thsrite大佬原版修改支持网盘)监控视频短剧创建，刮削，支持目的目录为网盘。"
     # 插件图标
