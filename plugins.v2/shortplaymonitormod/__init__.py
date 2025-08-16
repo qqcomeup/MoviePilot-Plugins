@@ -11,8 +11,14 @@ from xml.dom import minidom
 import chardet
 import pytz
 from PIL import Image
-# 【修复第一处】将 SiteSpider 修改为 Indexer
-from app.helper.sites import SitesHelper, Indexer
+# 【最终兼容性修复】 尝试导入新版模块，如果失败则导入旧版模块
+from app.helper.sites import SitesHelper
+try:
+    from app.helper.sites import Indexer
+    IS_NEW_VERSION = True
+except ImportError:
+    from app.helper.sites import SiteSpider
+    IS_NEW_VERSION = False
 from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import etree
 from requests import RequestException
@@ -63,11 +69,11 @@ class ShortPlayMonitorMod(_PluginBase):
     # 插件名称
     plugin_name = "短剧刮削魔改版 (兼容版)"
     # 插件描述
-    plugin_desc = "(基于thsrite原版修改)监控视频短剧，支持网盘。已修复新版MoviePilot兼容性问题。"
+    plugin_desc = "(基于thsrite原版修改)监控视频短剧，支持网盘。已修复新旧版 MoviePilot 兼容性问题。"
     # 插件图标
     plugin_icon = "Amule_B.png"
     # 插件版本
-    plugin_version = "1.7.2.2"
+    plugin_version = "1.7.2.3"
     # 插件作者
     plugin_author = "thsrite,Seed680"
     # 作者主页
@@ -892,8 +898,11 @@ class ShortPlayMonitorMod(_PluginBase):
         if not page_source:
             logger.error(f"请求站点 {site.name} 失败")
             return None
-        # 【修复第二处】将 SiteSpider 修改为 Indexer
-        _spider = Indexer(indexer=index, page=1)
+        # 【最终兼容性修复】 根据MoviePilot版本使用不同的类
+        if IS_NEW_VERSION:
+            _spider = Indexer(indexer=index, page=1)
+        else:
+            _spider = SiteSpider(indexer=index, page=1)
         torrents = _spider.parse(page_source)
         if not torrents:
             logger.error(f"未检索到站点 {site.name} 资源")
@@ -951,7 +960,10 @@ class ShortPlayMonitorMod(_PluginBase):
                         ret.encoding = ret.apparent_encoding
                     page_source = ret.text
             else:
-                page_source = ret.text
+                page_source =
+                    page_source = ret.text
+            else:
+                page_source = ""
         else:
             page_source = ""
 
@@ -1321,4 +1333,4 @@ class ShortPlayMonitorMod(_PluginBase):
             # 去掉多余空行
             if line:
                 cleaned.append(line)
-        return cleaned
+        return cleaned```
