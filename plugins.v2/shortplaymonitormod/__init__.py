@@ -6,28 +6,15 @@ import threading
 from pathlib import Path
 from threading import Lock
 from typing import Any, List, Dict, Tuple, Optional
-from xml.dom import minidom
-
+from xml.dom import min
 import chardet
 import pytz
 from PIL import Image
-# 【兼容性修复】 自动适配新旧版本的 MoviePilot 导入路径
-try:
-    # 优先尝试从新版核心模块 `app.core.indexer` 导入 Indexer
-    from app.core.indexer import Indexer
-    IS_NEW_VERSION = True
-except (ImportError, ModuleNotFoundError):
-    # 如果导入失败，则回退到旧版辅助模块 `app.helper.sites`
-    try:
-        from app.helper.sites import Indexer
-        IS_NEW_VERSION = True
-    except (ImportError, ModuleNotFoundError):
-        # 如果还是失败，则尝试导入更旧版的名称 SiteSpider
-        from app.helper.sites import SiteSpider as Indexer
-        IS_NEW_VERSION = False
 
-# 导入其他依赖，这个模块位置通常不会改变
-from app.helper.sites import SitesHelper
+# --- 全新的导入代码 ---
+from app.core.sitemanager import SiteManager # 导入新版站点管理器
+from app.sites import Site # 导入新版站点基类
+# --- 结束 ---
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import etree
@@ -111,6 +98,7 @@ class ShortPlayMonitorMod(_PluginBase):
     _notify = False
     _medias = {}
     filemanager = None
+    sitemanager = None # 新增站点管理器实例变量
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -125,6 +113,7 @@ class ShortPlayMonitorMod(_PluginBase):
         self.mediachain = MediaChain()
         self.filemanager = FileManagerModule()
         self.filemanager.init_module()
+        self.sitemanager = SiteManager() # 初始化站点管理器
 
         if config:
             self._enabled = config.get("enabled")
@@ -317,6 +306,8 @@ class ShortPlayMonitorMod(_PluginBase):
         :param source_dir: 监控目录
         """
         logger.info(f"文件 {event_path} 开始处理")
+        # 声明一个空的mediainfo
+        mediainfo = None
         try:
             # 转移路径
             dest_dir = self._dirconf.get(source_dir)
@@ -332,74 +323,7 @@ class ShortPlayMonitorMod(_PluginBase):
             if not file_meta.name:
                 logger.error(f"{Path(event_path).name} 无法识别有效信息")
                 return
-            # 识别媒体信息
-            # mediainfo: MediaInfo = self.chain.recognize_media(meta=file_meta)
 
-            # transfer_flag = False
-            # title = None
-            # # 走tmdb刮削
-            # if mediainfo:
-            #     try:
-            #         # 查询转移目的目录
-            #         # target_dir = DirectoryHelper().get_dir(mediainfo, src_path=Path(source_dir))
-            #         # if not target_dir or not target_dir.library_path:
-            #         #     target_dir = TransferDirectoryConf()
-            #         #     target_dir.library_path = dest_dir
-            #         #     target_dir.transfer_type = self._transfer_type
-            #         #     target_dir.renaming = True
-            #         #     target_dir.notify = False
-            #         #     target_dir.overwrite_mode = 'never'
-            #         #     target_dir.library_storage = "local"
-            #         # else:
-            #         #     target_dir.transfer_type = self._transfer_type
-            #         #
-            #         # if not target_dir.library_path:
-            #         #     logger.error(f"未配置监控目录 {source_dir} 的目的目录")
-            #         #     return
-
-            #         # 更新媒体图片
-            #         self.chain.obtain_images(mediainfo=mediainfo)
-            #         episodes_info = self.tmdbchain.tmdb_episodes(tmdbid=mediainfo.tmdb_id,
-            #                                                      season=file_meta.begin_season or 1)
-            #         mediainfo.category = ""
-            #         # 转移
-            #         file_path = Path(event_path)
-            #         item = FileItem(
-            #             storage="local",
-            #             path=event_path.replace("\\", "/"),
-            #             type="dir" if not file_path.is_file() else "file",
-            #             name=file_path.name,
-            #             size=file_path.stat().st_size,
-            #             extension=file_path.suffix.lstrip('.'),
-            #         )
-
-            #         transferinfo: TransferInfo = self.chain.transfer(fileitem=item, meta=file_meta,
-            #                                                          mediainfo=mediainfo,
-            #                                                          #  target_directory=target_dir,
-            #                                                          target_storage=store_conf,
-            #                                                          target_path=Path(dest_dir),
-            #                                                          transfer_type="copy",
-            #                                                          scrape=True,
-            #                                                          episodes_info=episodes_info)
-            #         if not transferinfo:
-            #             logger.error("文件转移模块运行失败")
-            #             transfer_flag = False
-            #         else:
-            #             self.mediachain.scrape_metadata(fileitem=transferinfo.target_diritem,
-            #                                             meta=file_meta,
-            #                                             mediainfo=mediainfo)
-            #             transfer_flag = True
-            #     except Exception as e:
-            #         print(str(e))
-            #         transfer_flag = False
-            #         logger.error(f"{event_path} tmdb刮削失败", exc_info=True)
-                # 广播事件
-                # self.eventmanager.send_event(EventType.TransferComplete, {
-                #     'meta': file_meta,
-                #     'mediainfo': mediainfo,
-                #     'transferinfo': transferinfo
-                # })
-        # if not transfer_flag:
             logger.debug(f"source_dir:{source_dir}")
             logger.debug(f"dest_dir:{dest_dir}")
             target_path = event_path.replace(source_dir, dest_dir)
@@ -448,11 +372,6 @@ class ShortPlayMonitorMod(_PluginBase):
                     # 如果目的目录中没有title，
                     target_path = Path(dest_dir).joinpath(title).joinpath(last)
                     logger.debug(f"target_path:{target_path}")
-                    # if title in target_path.name:
-                    #     target_path = Path(dest_dir).joinpath(title + last)
-                    # else:
-                    #     target_path = Path(dest_dir).joinpath(title).joinpath(title + last)
-                    # logger.debug(f"target_path:{target_path}")
                 else:
                     logger.error(f"{target_path} 智能重命名失败")
                     return
@@ -642,7 +561,8 @@ class ShortPlayMonitorMod(_PluginBase):
                     logger.error(f"文件 {event_path} 硬链接失败，错误码：{retcode}")
             if self._notify:
                 # 发送消息汇总
-                media_list = self._medias.get(mediainfo.title_year if mediainfo else title) or {}
+                title_year = mediainfo.title_year if mediainfo else title
+                media_list = self._medias.get(title_year) or {}
                 if media_list:
                     media_files = media_list.get("files") or []
                     if media_files:
@@ -659,7 +579,7 @@ class ShortPlayMonitorMod(_PluginBase):
                         "files": [str(event_path)],
                         "time": datetime.datetime.now()
                     }
-                self._medias[mediainfo.title_year if mediainfo else title] = media_list
+                self._medias[title_year] = media_list
         except Exception as e:
             logger.error(f"event_handler_created error: {e}", exc_info=True)
         if Path('/tmp/shortplaymonitormod/').exists():
@@ -711,6 +631,7 @@ class ShortPlayMonitorMod(_PluginBase):
             # 转移
             if transfer_type == 'link':
                 # 硬链接
+                retcode, retmsg
                 retcode, retmsg = SystemUtils.link(file_item, target_file)
             elif transfer_type == 'filesoftlink':
                 # 软链接
@@ -805,27 +726,27 @@ class ShortPlayMonitorMod(_PluginBase):
             image = None
             # 查询索引
             domain = "agsvpt.com"
-            site = SiteOper().get_by_domain(domain)
-            index = SitesHelper().get_indexer(domain)
-            if site:
+            site_conf = SiteOper().get_by_domain(domain)
+            site_instance = self.sitemanager.get_site(site_conf.id if site_conf else domain)
+            if site_instance:
                 req_url = (f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat"
                            f"=419&search={title}")
                 image_xpath = "//*[@id='kdescr']/img[1]/@src"
                 # 查询站点资源
-                logger.info(f"开始检索 {site.name} {title}")
-                image = self.__get_site_torrents(url=req_url, site=site, index=index,image_xpath=image_xpath)
+                logger.info(f"开始检索 {site_instance.name} {title}")
+                image = self.__get_site_torrents(url=req_url, site=site_instance, image_xpath=image_xpath)
             if not image:
                 domain = "ilolicon.com"
-                site = SiteOper().get_by_domain(domain)
-                index = SitesHelper().get_indexer(domain)
-                if site:
+                site_conf = SiteOper().get_by_domain(domain)
+                site_instance = self.sitemanager.get_site(site_conf.id if site_conf else domain)
+                if site_instance:
                     req_url = (f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword"
                                f"=1&cat=402&search={title}")
 
                     image_xpath = "//*[@id='kdescr']/img[1]/@src"
                     # 查询站点资源
-                    logger.info(f"开始检索 {site.name} {title}")
-                    image = self.__get_site_torrents(url=req_url, site=site, index=index,image_xpath=image_xpath)
+                    logger.info(f"开始检索 {site_instance.name} {title}")
+                    image = self.__get_site_torrents(url=req_url, site=site_instance,image_xpath=image_xpath)
 
             if not image:
                 logger.error(f"检索站点 {title} 封面失败")
@@ -842,32 +763,33 @@ class ShortPlayMonitorMod(_PluginBase):
 
     def gen_desc_from_site(self, title: str):
         """
-        从agsv或者萝莉站查询封面
+        从agsv或者萝莉站查询简介
         """
         try:
+            desc = None
             # 查询索引
             domain = "agsvpt.com"
-            site = SiteOper().get_by_domain(domain)
-            index = SitesHelper().get_indexer(domain)
-            if site:
+            site_conf = SiteOper().get_by_domain(domain)
+            site_instance = self.sitemanager.get_site(site_conf.id if site_conf else domain)
+            if site_instance:
                 req_url = (f"https://www.agsvpt.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword=1&cat"
                            f"=419&search={title}")
                 desc_xpath = "//*[@id='kdescr']/text()"
                 # 查询站点资源
-                logger.info(f"开始检索 {site.name} {title}")
-                desc = self.__get_site_torrents(url=req_url, site=site, index=index,desc_xpath=desc_xpath)
+                logger.info(f"开始检索 {site_instance.name} {title}")
+                desc = self.__get_site_torrents(url=req_url, site=site_instance, desc_xpath=desc_xpath)
             if not desc:
                 domain = "ilolicon.com"
-                site = SiteOper().get_by_domain(domain)
-                index = SitesHelper().get_indexer(domain)
-                if site:
+                site_conf = SiteOper().get_by_domain(domain)
+                site_instance = self.sitemanager.get_site(site_conf.id if site_conf else domain)
+                if site_instance:
                     req_url = (f"https://share.ilolicon.com/torrents.php?search_mode=0&search_area=0&page=0&notnewword"
                                f"=1&cat=402&search={title}")
 
                     desc_xpath = "//*[@id='kdescr']/text()"
                     # 查询站点资源
-                    logger.info(f"开始检索 {site.name} {title}")
-                    desc = self.__get_site_torrents(url=req_url, site=site, index=index,desc_xpath=desc_xpath)
+                    logger.info(f"开始检索 {site_instance.name} {title}")
+                    desc = self.__get_site_torrents(url=req_url, site=site_instance, desc_xpath=desc_xpath)
 
             if not desc:
                 logger.error(f"检索站点 {title} 简介失败")
@@ -899,7 +821,7 @@ class ShortPlayMonitorMod(_PluginBase):
             logger.error(f"{file_path.stem}图片下载失败：{str(err)}", exc_info=True)
             return False
 
-    def __get_site_torrents(self, url: str, site, index, image_xpath=None, desc_xpath=None):
+    def __get_site_torrents(self, url: str, site: Site, image_xpath=None, desc_xpath=None):
         """
         查询站点资源
         """
@@ -908,13 +830,7 @@ class ShortPlayMonitorMod(_PluginBase):
             logger.error(f"请求站点 {site.name} 失败")
             return None
 
-        # 【兼容性修复】 根据MoviePilot版本使用不同的类
-        if IS_NEW_VERSION:
-            _spider = Indexer(indexer=index, page=1)
-        else:
-            _spider = SiteSpider(indexer=index, page=1)
-            
-        torrents = _spider.parse(page_source)
+        torrents = site.parse(page_source)
         if not torrents:
             logger.error(f"未检索到站点 {site.name} 资源")
             return None
@@ -932,39 +848,40 @@ class ShortPlayMonitorMod(_PluginBase):
         logger.debug(f"种子详情页 {torrents[0].get('page_url')} 解析成功")
  
         if image_xpath:
-            image = html.xpath(image_xpath)[0]
-            if not image:
+            images = html.xpath(image_xpath)
+            if not images:
                 logger.error(f"未获取到种子封面图 {torrents[0].get('page_url')}")
                 return None
-            return str(image)
+            return str(images[0])
         if desc_xpath:
             desc = html.xpath(desc_xpath)
             logger.debug(f"desc: {desc}")
-            logger.debug(f"clean_text_list: {self.clean_text_list(desc)[-1]}")
             if not desc:
                 logger.error(f"未获取到种子简介 {torrents[0].get('page_url')}")
                 return None
-            return self.clean_text_list(desc)[-1]
+            cleaned_desc = self.clean_text_list(desc)
+            logger.debug(f"clean_text_list: {cleaned_desc[-1] if cleaned_desc else ''}")
+            return cleaned_desc[-1] if cleaned_desc else None
 
-    def __get_page_source(self, url: str, site):
+    def __get_page_source(self, url: str, site: Site):
         """
         获取页面资源
         """
+        cookies = site.get_cookies()
         ret = RequestUtils(
-            cookies=site.cookie,
+            cookies=cookies,
             timeout=30,
         ).get_res(url, allow_redirects=True)
+
+        page_source = ""
         if ret is not None:
-            # 使用chardet检测字符编码
             raw_data = ret.content
             if raw_data:
                 try:
                     result = chardet.detect(raw_data)
                     encoding = result['encoding']
-                    # 解码为字符串
                     page_source = raw_data.decode(encoding)
-                except Exception as e:
-                    # 探测utf-8解码
+                except Exception:
                     if re.search(r"charset=\"?utf-8\"?", ret.text, re.IGNORECASE):
                         ret.encoding = "utf-8"
                     else:
@@ -972,8 +889,6 @@ class ShortPlayMonitorMod(_PluginBase):
                     page_source = ret.text
             else:
                 page_source = ret.text
-        else:
-            page_source = ""
 
         return page_source
 
