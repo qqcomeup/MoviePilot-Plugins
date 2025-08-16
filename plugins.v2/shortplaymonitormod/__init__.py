@@ -11,14 +11,25 @@ from xml.dom import minidom
 import chardet
 import pytz
 from PIL import Image
-# 【兼容性修复】 尝试导入新版模块，如果失败则导入旧版模块
+# 【兼容性修复】 尝试从新到旧导入索引器模块以兼容不同版本的MoviePilot
 from app.helper.sites import SitesHelper
 try:
-    from app.helper.sites import Indexer
+    # 1. 优先尝试适配最新版 MoviePilot 的导入路径
+    from app.core.indexer import Indexer
+    # 由于后续代码判断需要，我们还需要一个SiteSpider的别名
+    SiteSpider = Indexer
     IS_NEW_VERSION = True
 except ImportError:
-    from app.helper.sites import SiteSpider
-    IS_NEW_VERSION = False
+    try:
+        # 2. 如果失败，尝试次新版的导入路径
+        from app.helper.sites import Indexer
+        SiteSpider = Indexer
+        IS_NEW_VERSION = True
+    except ImportError:
+        # 3. 如果再次失败，尝试最旧版的导入路径
+        from app.helper.sites import SiteSpider
+        Indexer = SiteSpider
+        IS_NEW_VERSION = False
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from lxml import etree
