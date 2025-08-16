@@ -110,14 +110,15 @@
         }
     },
     "ShortPlayMonitorMod": {
-        "name": "短剧刮削魔改版修复",
-        "description": "(基于thsrite大佬原版修改支持网盘)监控视频短剧创建，刮削，支持目的目录为网盘。",
+        "name": "短剧刮削魔改版 (兼容版)",
+        "description": "(基于thsrite原版修改)监控视频短剧，支持网盘。已修复新版MoviePilot兼容性问题。",
         "labels": "短剧",
         "version": "1.7.2.2",
         "icon": "https://raw.githubusercontent.com/Seed680/MoviePilot-Plugins/main/icons/customplugin.png",
-        "author": "thsrite,Seed",
+        "author": "thsrite,Seed680",
         "level": 1,
         "history": {
+            "v1.7.2.2": "修复因 MoviePilot V4 内核更新导致的 ImportError 兼容性问题",
             "v1.7.2.1": "bugfix",
             "v1.7.2": "nfo增加简介",
             "v1.7": "支持MP 2.5.0",
@@ -174,7 +175,7 @@
             "v1.3": "自用插件，符合mp命名规范"
         }
     },
-    "CleanCache":{
+    "CleanCache": {
         "name": "清除后端缓存",
         "description": "立即清除后端缓存",
         "labels": "清理",
@@ -184,10 +185,9 @@
         "level": 1,
         "history": {
             "v1.0": "立即清除后端缓存"
-
         }
     },
-    "SSDForumSigninMod":{
+    "SSDForumSigninMod": {
         "name": "SSDForum签到魔改版",
         "description": "(基于imaliang修改)SSDForum自动签到，支持随机延迟。",
         "labels": "签到",
@@ -197,10 +197,9 @@
         "level": 1,
         "history": {
             "v1.0": "重写了延迟执行逻辑，支持随机延迟"
-
         }
     },
-    "TrackerSpeedLimit":{
+    "TrackerSpeedLimit": {
         "name": "带宽速度限制",
         "description": "带宽速度限制",
         "labels": "",
@@ -212,7 +211,7 @@
             "v0.1": "初始版本"
         }
     },
-    "ServiceManagerMod":{
+    "ServiceManagerMod": {
         "name": "服务管理魔改版",
         "description": "(基于InfinityPacer魔改版)实现自定义服务管理。",
         "labels": "服务",
