@@ -118,50 +118,70 @@ class HdhiveSign(_PluginBase):
         form_data = [
             {
                 'component': 'VSwitch',
-                'label': '启用插件',
+                'props': {
+                    'label': '启用插件'
+                },
                 'field': 'enabled',
                 'value': False
             },
             {
                 'component': 'VSwitch',
-                'label': '发送通知',
+                'props': {
+                    'label': '发送通知'
+                },
                 'field': 'notify',
                 'value': False
             },
             {
                 'component': 'VTextField',
-                'label': '站点地址',
+                'props': {
+                    'label': '站点地址',
+                    'placeholder': '请输入站点地址，如 https://hdhives.online',
+                    'clearable': True
+                },
                 'field': 'base_url',
-                'value': 'https://hdhive.online',
-                'placeholder': '请输入站点地址，如 https://hdhive.online'
+                'value': 'https://hdhives.online'
             },
             {
                 'component': 'VTextField',
-                'label': 'Cookie',
+                'props': {
+                    'label': 'Cookie',
+                    'placeholder': '请输入 Cookie',
+                    'clearable': True
+                },
                 'field': 'cookie',
-                'value': '',
-                'placeholder': '请输入Cookie'
+                'value': ''
             },
             {
                 'component': 'VTextField',
-                'label': '用户名',
+                'props': {
+                    'label': '用户名',
+                    'placeholder': '请输入用户名',
+                    'clearable': True
+                },
                 'field': 'username',
-                'value': '',
-                'placeholder': '请输入用户名'
+                'value': ''
             },
             {
                 'component': 'VTextField',
-                'label': '密码',
+                'props': {
+                    'label': '密码',
+                    'placeholder': '请输入密码',
+                    'type': 'password',
+                    'clearable': True
+                },
                 'field': 'password',
-                'value': '',
-                'placeholder': '请输入密码'
+                'value': ''
             },
             {
                 'component': 'VTextField',
-                'label': '签到时间',
+                'props': {
+                    'label': '签到时间',
+                    'placeholder': '请输入 Cron 表达式，如 30 8 * * *',
+                    'clearable': True
+                },
                 'field': 'cron',
-                'value': '30 8 * * *',
-                'placeholder': '请输入Cron表达式'
+                'value': '30 8 * * *'
             }
         ]
         return form_data, None
