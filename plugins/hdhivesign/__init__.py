@@ -685,6 +685,63 @@ class HdhiveSign(_PluginBase):
         except Exception as e:
             return {"code": 1, "msg": f"登录出错: {str(e)}"}
 
+    def _clear_extended_retry_tasks(self):
+        """清理延长重试任务"""
+        try:
+            if self._scheduler:
+                jobs = self._scheduler.get_jobs()
+                for job in jobs:
+                    if "延长重试" in str(job.name):
+                        self._scheduler.remove_job(job.id)
+                        logger.debug(f"已清理延长重试任务: {job.name}")
+        except Exception as e:
+            logger.error(f"清理延长重试任务异常: {str(e)}")
+
+    def _has_running_extended_retry(self):
+        """检查是否有正在运行的延长重试任务"""
+        try:
+            if self._scheduler:
+                jobs = self._scheduler.get_jobs()
+                for job in jobs:
+                    if "延长重试" in str(job.name):
+                        return True
+            return False
+        except Exception:
+            return False
+
+    def _is_manual_trigger(self):
+        """检查是否为手动触发"""
+        return getattr(self, '_manual_trigger', False)
+
+    def _is_already_signed_today(self):
+        """检查今日是否已签到成功"""
+        try:
+            history = self.get_data('sign_history') or []
+            today = datetime.now().strftime('%Y-%m-%d')
+            
+            # 查找今日成功签到记录
+            today_success = [
+                record for record in history 
+                if record.get("date", "").startswith(today) 
+                and record.get("status") in ["签到成功", "已签到"]
+            ]
+            
+            return len(today_success) > 0
+        except Exception:
+            return False
+
+    def _get_last_sign_time(self):
+        """获取最后一次签到时间"""
+        try:
+            history = self.get_data('sign_history') or []
+            if history:
+                # 按日期排序，获取最新记录
+                sorted_history = sorted(history, key=lambda x: x.get("date", ""), reverse=True)
+                return sorted_history[0].get("date", "")
+            return None
+        except Exception:
+            return None
+
     def stop_service(self):
         try:
             if self._scheduler:
