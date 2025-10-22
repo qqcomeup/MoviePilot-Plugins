@@ -684,3 +684,22 @@ class HdhiveSign(_PluginBase):
                 
         except Exception as e:
             return {"code": 1, "msg": f"登录出错: {str(e)}"}
+
+    def stop_service(self):
+        try:
+            if self._scheduler:
+                for job in (self._scheduler.get_jobs() or []):
+                    try:
+                        self._scheduler.remove_job(job.id)
+                    except Exception:
+                        pass
+                try:
+                    self._scheduler.shutdown(wait=False)
+                except Exception:
+                    pass
+                self._scheduler = None
+            self._manual_trigger = False
+            self._current_trigger_type = None
+            logger.info("影巢签到服务已停止")
+        except Exception as e:
+            logger.error(f"停止影巢签到服务异常: {str(e)}", exc_info=True)
