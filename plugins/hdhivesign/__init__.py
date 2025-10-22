@@ -115,7 +115,7 @@ class HdhiveSign(_PluginBase):
         return None
         
     def get_form(self):
-        return [
+        form_data = [
             {
                 'component': 'VSwitch',
                 'label': '启用插件',
@@ -164,6 +164,7 @@ class HdhiveSign(_PluginBase):
                 'placeholder': '请输入Cron表达式'
             }
         ]
+        return form_data, None
 
     # 私有属性
     _enabled = False
