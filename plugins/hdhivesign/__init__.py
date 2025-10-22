@@ -112,7 +112,15 @@ class HdhiveSign(_PluginBase):
         return self._enabled
         
     def get_api(self):
-        return None
+        return [
+            {
+                "path": "/testLogin",
+                "endpoint": self.api_test_login,
+                "methods": ["GET"],
+                "summary": "测试登录并获取 Cookie",
+                "description": "使用账号密码登录并返回 Cookie"
+            }
+        ]
         
     def get_form(self):
         form_data = [
@@ -652,11 +660,6 @@ class HdhiveSign(_PluginBase):
         return page.get("config")
         
     # 测试登录并获取 Cookie 的 API
-    def get_api(self):
-        return {
-            "testLogin": self.api_test_login
-        }
-        
     def api_test_login(self, **kwargs):
         """
         测试登录并获取 Cookie 的 API
