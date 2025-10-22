@@ -312,28 +312,6 @@ class HdhiveSign(_PluginBase):
                     if record.get("date", "").startswith(today) 
                     and record.get("status") in ["签到成功", "已签到"]
                 ]
-        except Exception as e:
-            logger.error(f"影巢签到出错: {str(e)}", exc_info=True)
-            sign_dict = {
-                "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
-                "status": "失败: 签到过程出错",
-                "message": str(e)
-            }
-            
-            # 发送通知
-            if self._notify and not notification_sent:
-                self.post_message(
-                    title="影巢签到 - 签到失败",
-                    text=f"签到过程出错: {str(e)}",
-                    image=self.plugin_icon,
-                    link=self._site_url,
-                    type=NotificationType.SiteMessage
-                )
-                notification_sent = True
-        
-        # 保存签到历史记录
-        self._save_sign_history(sign_dict)
-        return sign_dict
                 
                 # 添加最后成功签到记录的详细信息
                 if today_success:
@@ -357,6 +335,39 @@ class HdhiveSign(_PluginBase):
                     if sign_dict.get("points"):
                         text += f"当前积分: {sign_dict.get('points')}\n"
                     if sign_dict.get("days"):
+                        text += f"已连续签到: {sign_dict.get('days')}天"
+                    
+                    self.post_message(
+                        title=title,
+                        text=text,
+                        image=self.plugin_icon,
+                        link=self._site_url,
+                        type=NotificationType.SiteMessage
+                    )
+                return sign_dict
+                
+        except Exception as e:
+            logger.error(f"影巢签到出错: {str(e)}", exc_info=True)
+            sign_dict = {
+                "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
+                "status": "失败: 签到过程出错",
+                "message": str(e)
+            }
+            
+            # 发送通知
+            if self._notify and not notification_sent:
+                self.post_message(
+                    title="影巢签到 - 签到失败",
+                    text=f"签到过程出错: {str(e)}",
+                    image=self.plugin_icon,
+                    link=self._site_url,
+                    type=NotificationType.SiteMessage
+                )
+                notification_sent = True
+        
+        # 保存签到历史记录
+        self._save_sign_history(sign_dict)
+        return sign_dict
                         text += f"连续签到: {sign_dict.get('days')}天\n"
                     
                     # 发送通知
