@@ -368,21 +368,6 @@ class HdhiveSign(_PluginBase):
         # 保存签到历史记录
         self._save_sign_history(sign_dict)
         return sign_dict
-                        text += f"连续签到: {sign_dict.get('days')}天\n"
-                    
-                    # 发送通知
-                    self.post_message(
-                        title=title,
-                        text=text,
-                        image=self.plugin_icon,
-                        link=self._site_url,
-                        type=NotificationType.SiteMessage
-                    )
-                    notification_sent = True
-                
-                # 保存记录并返回
-                self._save_sign_history(sign_dict)
-                return sign_dict
             
             # 检查 Cookie 是否存在，如果不存在且配置了账号密码，则尝试获取
             if not self._cookie and self._username and self._password:
