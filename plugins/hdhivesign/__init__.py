@@ -35,8 +35,53 @@ from app.utils.http import RequestUtils
 
 from typing import Any, List, Dict, Tuple, Optional
 
-# 导入账号密码登录相关方法
-from .http_login import login_and_get_cookie
+# 导入账号密码登录相关方法（带回退）
+try:
+    from .http_login import login_and_get_cookie
+except Exception:
+    def login_and_get_cookie(
+        username: str,
+        password: str,
+        login_url: Optional[str],
+        user_field: str = "username",
+        pass_field: str = "password",
+        method: str = "POST",
+        timeout: int = 30,
+        proxies: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """
+        简化版账号登录：提交用户名/密码到登录地址，返回 Cookie 字符串或 token。
+        该函数作为回退使用，避免 http_login.py 未下载导致的导入失败。
+        """
+        try:
+            import requests
+            s = requests.Session()
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/json, text/plain, */*",
+            }
+            data = {user_field: username, pass_field: password}
+            if not login_url:
+                return None
+            if method.upper() == "POST":
+                resp = s.post(login_url, data=data, headers=headers, timeout=timeout, proxies=proxies, verify=False)
+            else:
+                resp = s.get(login_url, params=data, headers=headers, timeout=timeout, proxies=proxies, verify=False)
+            # 优先从会话/响应中提取 Cookie
+            cookies = s.cookies.get_dict() or resp.cookies.get_dict()
+            if cookies:
+                return "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            # 回退：尝试 JSON 中的 token 字段
+            try:
+                js = resp.json()
+                token = js.get("token") or js.get("access_token") or js.get("data", {}).get("token")
+                if token:
+                    return f"token={token}"
+            except Exception:
+                pass
+            return None
+        except Exception:
+            return None
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
