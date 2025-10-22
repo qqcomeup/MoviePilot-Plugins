@@ -61,6 +61,76 @@ class HdhiveSign(_PluginBase):
     plugin_order = 1
     # 可使用的用户级别
     auth_level = 2
+    
+    # 实现抽象方法
+    def get_state(self):
+        return self._enabled
+        
+    def get_api(self):
+        return None
+        
+    def get_form(self):
+        return [
+            {
+                'component': 'VSwitch',
+                'label': '启用插件',
+                'field': 'enabled',
+                'value': False
+            },
+            {
+                'component': 'VSwitch',
+                'label': '发送通知',
+                'field': 'notify',
+                'value': False
+            },
+            {
+                'component': 'VTextField',
+                'label': '站点地址',
+                'field': 'base_url',
+                'value': 'https://hdhive.online',
+                'placeholder': '请输入站点地址，如 https://hdhive.online'
+            },
+            {
+                'component': 'VTextField',
+                'label': 'Cookie',
+                'field': 'cookie',
+                'value': '',
+                'placeholder': '请输入Cookie'
+            },
+            {
+                'component': 'VTextField',
+                'label': '用户名',
+                'field': 'username',
+                'value': '',
+                'placeholder': '请输入用户名'
+            },
+            {
+                'component': 'VTextField',
+                'label': '密码',
+                'field': 'password',
+                'value': '',
+                'placeholder': '请输入密码'
+            },
+            {
+                'component': 'VTextField',
+                'label': '签到时间',
+                'field': 'cron',
+                'value': '30 8 * * *',
+                'placeholder': '请输入Cron表达式'
+            }
+        ]
+        
+    def stop_service(self):
+        """停止插件服务"""
+        try:
+            if self._scheduler:
+                self._scheduler.remove_all_jobs()
+                if self._scheduler.running:
+                    self._scheduler.shutdown()
+                self._scheduler = None
+                logger.info(f"影巢签到服务已停止")
+        except Exception as e:
+            logger.error(f"停止影巢签到服务失败: {str(e)}")
 
     # 私有属性
     _enabled = False
