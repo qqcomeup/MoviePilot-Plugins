@@ -368,36 +368,36 @@ class HdhiveSign(_PluginBase):
         # 保存签到历史记录
         self._save_sign_history(sign_dict)
         return sign_dict
+        
+        # 检查 Cookie 是否存在，如果不存在且配置了账号密码，则尝试获取
+        if not self._cookie and self._username and self._password:
+            logger.info("Cookie 未配置，尝试使用账号密码登录获取")
+            self._cookie = self.get_login_cookie()
             
-            # 检查 Cookie 是否存在，如果不存在且配置了账号密码，则尝试获取
-            if not self._cookie and self._username and self._password:
-                logger.info("Cookie 未配置，尝试使用账号密码登录获取")
-                self._cookie = self.get_login_cookie()
+            if not self._cookie:
+                logger.error("无法获取有效的 Cookie，签到失败")
+                sign_dict = {
+                    "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
+                    "status": "失败: 无法获取有效的 Cookie",
+                    "message": "请检查账号密码配置或手动设置 Cookie"
+                }
                 
-                if not self._cookie:
-                    logger.error("无法获取有效的 Cookie，签到失败")
-                    sign_dict = {
-                        "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
-                        "status": "失败: 无法获取有效的 Cookie",
-                        "message": "请检查账号密码配置或手动设置 Cookie"
-                    }
-                    
-                    # 发送通知
-                    if self._notify and not notification_sent:
-                        self.post_message(
-                            title="影巢签到 - 获取 Cookie 失败",
-                            text=f"无法获取有效的 Cookie，请检查账号密码配置\n",
-                            image=self.plugin_icon,
-                            link=self._site_url,
-                            type=NotificationType.SiteMessage
-                        )
-                        notification_sent = True
-                    
-                    # 保存记录并返回
-                    self._save_sign_history(sign_dict)
-                    return sign_dict
-                    
-            # 如果 Cookie 仍然不存在，则无法签到
+                # 发送通知
+                if self._notify and not notification_sent:
+                    self.post_message(
+                        title="影巢签到 - 获取 Cookie 失败",
+                        text=f"无法获取有效的 Cookie，请检查账号密码配置\n",
+                        image=self.plugin_icon,
+                        link=self._site_url,
+                        type=NotificationType.SiteMessage
+                    )
+                    notification_sent = True
+                
+                # 保存记录并返回
+                self._save_sign_history(sign_dict)
+                return sign_dict
+        
+        # 如果 Cookie 仍然不存在，则无法签到
             if not self._cookie:
                 logger.error("未配置 Cookie 且无法通过账号密码获取，无法执行签到")
                 sign_dict = {
