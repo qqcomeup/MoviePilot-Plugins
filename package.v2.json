@@ -1,5 +1,5 @@
 {
-"mediaservermsgai": {
+  "mediaservermsgai": {
     "name": "媒体库服务器通知",
     "description": "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息。",
     "labels": "消息通知,媒体库",
