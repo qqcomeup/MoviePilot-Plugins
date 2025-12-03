@@ -16,5 +16,7 @@ EMBY设置 <img width="1238" height="909" alt="image" src="https://github.com/us
 
 
 机器人通知增强如图
+
+
 <img width="655" height="640" alt="image" src="https://github.com/user-attachments/assets/f4694d19-5687-4daa-9e5a-c442d7528fa8" />
 <img width="659" height="594" alt="image" src="https://github.com/user-attachments/assets/b484270c-1141-408c-b9de-8cb648fe6da7" />
