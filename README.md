@@ -11,7 +11,7 @@ MoviePilot官方插件市场：https://github.com/jxxghp/MoviePilot-Plugins
 
 
 
-需要安装神医插件通知增强
+需要开启神医插件通知增强
 EMBY设置 <img width="1238" height="909" alt="image" src="https://github.com/user-attachments/assets/750085a7-f563-48c9-a737-8af0fa3eac7a" />
 
 
