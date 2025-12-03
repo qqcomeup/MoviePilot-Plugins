@@ -339,7 +339,7 @@ class mediaservermsgai(_PluginBase):
                     album_artists = item_data.get('Artists', [])
                     album_artist = album_artists[0] if album_artists else '未知艺术家'
                     primary_image_item_id = item_data.get('PrimaryImageItemId'， '')
-                    primary_image_tag = item_data.get('PrimaryImageTag', '')
+                    primary_image_tag = item_data.get('PrimaryImageTag'，'')
                     
                     # 获取专辑中的所有歌曲
                     try:
