@@ -1,4 +1,4 @@
-import re
+﻿import re
 import time
 import traceback
 import threading
@@ -15,9 +15,9 @@ from app.schemas.types import EventType, MediaType, MediaImageType, Notification
 from app.utils.web import WebUtils
 
 
-class mediaservermsgai(_PluginBase):
+class MediaServerMsgMod(_PluginBase):
     # 插件名称
-    plugin_name = "媒体库服务器通知AI版"
+    plugin_name = "媒体库服务器通知魔改版"
     # 插件描述
     plugin_desc = "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息。"
     # 插件图标
@@ -29,7 +29,7 @@ class mediaservermsgai(_PluginBase):
     # 作者主页
     author_url = "https://github.com/jxxghp"
     # 插件配置项ID前缀
-    plugin_config_prefix = "mediaservermsgai_"
+    plugin_config_prefix = "mediaservermsgmod_"
     # 加载顺序
     plugin_order = 14
     # 可使用的用户级别
@@ -338,20 +338,20 @@ class mediaservermsgai(_PluginBase):
                     album_year = item_data.get('ProductionYear', '')
                     album_artists = item_data.get('Artists', [])
                     album_artist = album_artists[0] if album_artists else '未知艺术家'
-                    primary_image_item_id = item_data.get('PrimaryImageItemId'， '')
-                    primary_image_tag = item_data.get('PrimaryImageTag'，'')
+                    primary_image_item_id = item_data.get('PrimaryImageItemId', '')
+                    primary_image_tag = item_data.get('PrimaryImageTag', '')
                     
                     # 获取专辑中的所有歌曲
                     try:
                         service_infos = self.service_infos()
                         if service_infos and event_info.server_name:
                             service = service_infos.get(event_info.server_name)
-                            if service 和 service.instance 和 service.config:
+                            if service and service.instance and service.config:
                                 # 直接从service.config获取API信息
                                 base_url = service.config.config.get('host', '')
-                                api_key = service.config。config.get('apikey', '')
+                                api_key = service.config.config.get('apikey', '')
                                 
-                                if base_url 和 api_key:
+                                if base_url and api_key:
                                     # 调用Emby API获取专辑项目，添加Fields参数获取完整信息
                                     import requests
                                     fields = "Path,MediaStreams,Container,Size,Bitrate"
@@ -387,13 +387,13 @@ class mediaservermsgai(_PluginBase):
                         logger.error(traceback.format_exc())
                     return
             
-            if event_info.item_type 在 ["TV"， "SHOW"]:
+            if event_info.item_type in ["TV", "SHOW"]:
                 # 获取媒体名称：优先使用SeriesName，没有则用Name - 增强错误处理
                 try:
                     series_name = (
                         event_info.json_object.get('Item', {}).get('SeriesName') 
-                        或 event_info.json_object.get('Item', {}).get('Name') 
-                        或 event_info.item_name
+                        or event_info.json_object.get('Item', {}).get('Name') 
+                        or event_info.item_name
                     )
                     if production_year := event_info.json_object.get('Item', {}).get('ProductionYear'):
                         series_name += f" ({str(production_year)})"
@@ -630,14 +630,14 @@ class mediaservermsgai(_PluginBase):
                                     
                                     for ext in primary_extensions:
                                         primary_path = os.path.join(audio_dir, f'Primary{ext}')
-                                        if os.path。exists(primary_path):
+                                        if os.path.exists(primary_path):
                                             # 使用音频项目本身的ID和tag获取封面
                                             play_url = service.instance.get_play_url(audio_item_id)
                                             if play_url:
                                                 parsed = urllib.parse.urlparse(play_url)
                                                 base_url = f"{parsed.scheme}://{parsed.netloc}"
                                                 params = urllib.parse.parse_qs(parsed.query)
-                                                api_key = params.get('api_key', [''])[0] 或 params.get('ApiKey', [''])[0]
+                                                api_key = params.get('api_key', [''])[0] or params.get('ApiKey', [''])[0]
                                                 # 使用Primary图片，指定尺寸为450x450，包含tag和keepAnimation
                                                 image_url = f"{base_url}/emby/Items/{audio_item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_tag}&keepAnimation=true&quality=90"
                                                 logger.info(f"使用本地Primary封面 (450×450) [ItemID: {audio_item_id}]: {primary_path} -> {image_url}")
@@ -650,7 +650,7 @@ class mediaservermsgai(_PluginBase):
                                     if play_url:
                                         parsed = urllib.parse.urlparse(play_url)
                                         base_url = f"{parsed.scheme}://{parsed.netloc}"
-                                        params = urllib.parse。parse_qs(parsed.query)
+                                        params = urllib.parse.parse_qs(parsed.query)
                                         api_key = params.get('api_key', [''])[0] or params.get('ApiKey', [''])[0]
                                         # 使用音频项目的封面，指定尺寸为450x450
                                         image_url = f"{base_url}/emby/Items/{audio_item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_tag}&keepAnimation=true&quality=90"
@@ -674,7 +674,7 @@ class mediaservermsgai(_PluginBase):
                         specific_image = self.chain.obtain_specific_image(
                             mediaid=event_info.tmdb_id,
                             mtype=MediaType.TV,
-                            image_type=MediaImageType.Backdrop，
+                            image_type=MediaImageType.Backdrop,
                             season=event_info.season_id,
                             episode=event_info.episode_id
                         )
@@ -683,7 +683,7 @@ class mediaservermsgai(_PluginBase):
                             # 保存到缓存（限制缓存大小）
                             if len(self._image_cache) > 100:
                                 # 清理最旧的缓存项
-                                self._image_cache.pop(下一处(iter(self._image_cache)))
+                                self._image_cache.pop(next(iter(self._image_cache)))
                             self._image_cache[cache_key] = image_url
                     except Exception as e:
                         logger.warning(f"获取剧集图片失败: {e}")
@@ -691,14 +691,14 @@ class mediaservermsgai(_PluginBase):
             if not image_url:
                 image_url = self._webhook_images.get(event_info.channel)
 
-            play_link = 无
+            play_link = None
             if self._add_play_link:
                 if event_info.server_name:
                     service = self.service_infos().get(event_info.server_name)
                     if service:
                         play_link = service.instance.get_play_url(event_info.item_id)
                 elif event_info.channel:
-                    services = MediaServerHelper()。get_services(type_filter=event_info.channel)
+                    services = MediaServerHelper().get_services(type_filter=event_info.channel)
                     for service in services.values():
                         play_link = service.instance.get_play_url(event_info.item_id)
                         if play_link:
@@ -803,13 +803,13 @@ class mediaservermsgai(_PluginBase):
             if bitrate_kbps:
                 format_parts.append(f"{bitrate_kbps} kbps")
             format_parts.append(size_text)
-            message_texts.append(f"📦 **格式**：{' · '。join(format_parts)}")
+            message_texts.append(f"📦 **格式**：{' · '.join(format_parts)}")
             
-            message_content = "\n" + "\n"。join(message_texts)
+            message_content = "\n" + "\n".join(message_texts)
             
             # 获取封面图片（使用专辑封面）
-            image_url = 无
-            if primary_image_item_id 和 primary_image_tag:
+            image_url = None
+            if primary_image_item_id and primary_image_tag:
                 image_url = f"{base_url}/emby/Items/{primary_image_item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_image_tag}&keepAnimation=true&quality=90"
                 logger.info(f"使用专辑封面 (450×450) [ItemID: {primary_image_item_id}]: {image_url.replace(api_key, '***') if api_key in image_url else image_url}")
             
