@@ -1,13 +1,14 @@
 {
   "mediaservermsgai": {
     "name": "媒体库服务器通知AI版",
-    "description": "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息。",
+    "description": "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息,个人菜鸡版",
     "labels": "消息通知,媒体库",
-    "version": "1.7",
+    "version": "1.7.1",
     "icon": "mediaplay.png",
     "author": "jxxghp",
     "level": 1,
     "history": {
+      "v1.7.1": "新增媒体状态，展示演员前五名",
       "v1.7": "兼容神医合并跟pro音乐封面信息通知",
       "v1.6": "查询剧集图片兼容没有季集信息的情况",
       "v1.5": "支持独立控制媒体服务器通知",
