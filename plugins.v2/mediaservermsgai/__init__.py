@@ -19,11 +19,11 @@ class mediaservermsgai(_PluginBase):
     # 插件名称
     plugin_name = "媒体库服务器通知AI版"
     # 插件描述
-    plugin_desc = "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息。"
+    plugin_desc = "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息,个人菜鸡版"
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "1.7.0"
+    plugin_version = "1.7.1"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -447,7 +447,7 @@ class mediaservermsgai(_PluginBase):
                         if episodes:
                             message_texts.append(f"📺 **季集**：{'、'.join(episodes)}")
                 
-                # 尝试从TMDB获取评分和类型信息
+                # 尝试从TMDB获取类型、状态、评分和演员信息
                 if event_info.tmdb_id:
                     try:
                         # 从TMDB获取剧集详情
@@ -456,11 +456,6 @@ class mediaservermsgai(_PluginBase):
                             mtype=MediaType.TV
                         )
                         if tmdb_info:
-                            # 评分信息
-                            if tmdb_info.vote_average:
-                                rating = round(float(tmdb_info.vote_average), 1)
-                                message_texts.append(f"⭐ **评分**：{rating}/10")
-                            
                             # 类型信息 - genres可能是字典列表或字符串列表
                             if tmdb_info.genres:
                                 genres_list = []
@@ -472,6 +467,37 @@ class mediaservermsgai(_PluginBase):
                                 if genres_list:
                                     genre_text = '、'.join(genres_list)
                                     message_texts.append(f"🎭 **类型**：{genre_text}")
+                            
+                            # 状态信息
+                            if hasattr(tmdb_info, 'status') and tmdb_info.status:
+                                status_map = {
+                                    'Ended': '已完结',
+                                    'Returning Series': '连载中',
+                                    'Canceled': '已取消',
+                                    'In Production': '制作中',
+                                    'Planned': '计划中'
+                                }
+                                status_text = status_map.get(tmdb_info.status, tmdb_info.status)
+                                message_texts.append(f"📡 **状态**：{status_text}")
+                            
+                            # 评分信息
+                            if tmdb_info.vote_average:
+                                rating = round(float(tmdb_info.vote_average), 1)
+                                message_texts.append(f"⭐ **评分**：{rating}/10")
+                            
+                            # 演员信息 - 显示前5名
+                            if hasattr(tmdb_info, 'actors') and tmdb_info.actors:
+                                actors_list = []
+                                for actor in tmdb_info.actors[:5]:
+                                    if isinstance(actor, dict):
+                                        actor_name = actor.get('name', '')
+                                    else:
+                                        actor_name = str(actor)
+                                    if actor_name:
+                                        actors_list.append(actor_name)
+                                if actors_list:
+                                    actors_text = '、'.join(actors_list)
+                                    message_texts.append(f"🎬 **演员**：{actors_text}")
                     except Exception as e:
                         logger.debug(f"从TMDB获取剧集信息失败: {e}")
             else:
@@ -538,7 +564,7 @@ class mediaservermsgai(_PluginBase):
                     # 其他类型的时间信息
                     message_texts.append(f"⏰ **时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
                 
-                # 尝试从TMDB获取电影评分和类型信息
+                # 尝试从TMDB获取电影类型、状态、评分和演员信息
                 if event_info.tmdb_id:
                     try:
                         # 从TMDB获取电影详情
@@ -547,11 +573,6 @@ class mediaservermsgai(_PluginBase):
                             mtype=MediaType.MOVIE
                         )
                         if tmdb_info:
-                            # 评分信息
-                            if tmdb_info.vote_average:
-                                rating = round(float(tmdb_info.vote_average), 1)
-                                message_texts.append(f"⭐ **评分**：{rating}/10")
-                            
                             # 类型信息 - genres可能是字典列表或字符串列表
                             if tmdb_info.genres:
                                 genres_list = []
@@ -563,6 +584,38 @@ class mediaservermsgai(_PluginBase):
                                 if genres_list:
                                     genre_text = '、'.join(genres_list)
                                     message_texts.append(f"🎭 **类型**：{genre_text}")
+                            
+                            # 状态信息
+                            if hasattr(tmdb_info, 'status') and tmdb_info.status:
+                                status_map = {
+                                    'Released': '已上映',
+                                    'Post Production': '后期制作',
+                                    'In Production': '制作中',
+                                    'Planned': '计划中',
+                                    'Rumored': '传闻中',
+                                    'Canceled': '已取消'
+                                }
+                                status_text = status_map.get(tmdb_info.status, tmdb_info.status)
+                                message_texts.append(f"📡 **状态**：{status_text}")
+                            
+                            # 评分信息
+                            if tmdb_info.vote_average:
+                                rating = round(float(tmdb_info.vote_average), 1)
+                                message_texts.append(f"⭐ **评分**：{rating}/10")
+                            
+                            # 演员信息 - 显示前5名
+                            if hasattr(tmdb_info, 'actors') and tmdb_info.actors:
+                                actors_list = []
+                                for actor in tmdb_info.actors[:5]:
+                                    if isinstance(actor, dict):
+                                        actor_name = actor.get('name', '')
+                                    else:
+                                        actor_name = str(actor)
+                                    if actor_name:
+                                        actors_list.append(actor_name)
+                                if actors_list:
+                                    actors_text = '、'.join(actors_list)
+                                    message_texts.append(f"🎬 **演员**：{actors_text}")
                     except Exception as e:
                         logger.debug(f"从TMDB获取电影信息失败: {e}")
 
