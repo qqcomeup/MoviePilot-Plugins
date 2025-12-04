@@ -1,5 +1,5 @@
 {
-  "MusicSaverBot": { 
+  "MusicSaverBotai": { 
         "name": "音乐保存机器人AI改",
         "description": "接收Telegram发送的音乐文件并保存到本地",
         "labels": "Music",
