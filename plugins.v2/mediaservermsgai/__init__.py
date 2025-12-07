@@ -1,4 +1,4 @@
-﻿import re
+import re
 import time
 import traceback
 import threading
@@ -23,7 +23,7 @@ class mediaservermsgai(_PluginBase):
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "1.7.1"
+    plugin_version = "1.7.2"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -335,7 +335,7 @@ class mediaservermsgai(_PluginBase):
                     # 获取专辑信息
                     album_name = item_data.get('Name', '')
                     album_id = item_data.get('Id', '')
-                    album_year = item_data.get('ProductionYear', '')
+                    album_year = item_data.get('ProductionYear', '') # 专辑年份保留，因为专辑可能需要年份
                     album_artists = item_data.get('Artists', [])
                     album_artist = album_artists[0] if album_artists else '未知艺术家'
                     primary_image_item_id = item_data.get('PrimaryImageItemId', '')
@@ -369,7 +369,7 @@ class mediaservermsgai(_PluginBase):
                                                 self._send_audio_notification(
                                                     song_item=song_item,
                                                     album_name=album_name,
-                                                    album_year=album_year,
+                                                    album_year=album_year, # 专辑年份传递下去
                                                     album_artist=album_artist,
                                                     primary_image_item_id=primary_image_item_id,
                                                     primary_image_tag=primary_image_tag,
@@ -387,6 +387,21 @@ class mediaservermsgai(_PluginBase):
                         logger.error(traceback.format_exc())
                     return
             
+            media_year = None
+            tmdb_tv_info = None
+            if event_info.tmdb_id:
+                try:
+                    # 先尝试从TMDB获取剧集详情，以获取准确的年份
+                    tmdb_tv_info = self.chain.recognize_media(
+                        tmdbid=int(event_info.tmdb_id),
+                        mtype=MediaType.TV
+                    )
+                    if tmdb_tv_info and hasattr(tmdb_tv_info, 'year') and tmdb_tv_info.year:
+                        media_year = tmdb_tv_info.year
+                        logger.debug(f"从TMDB识别结果获取剧集年份: {media_year}")
+                except Exception as e:
+                    logger.debug(f"从TMDB获取剧集年份失败: {e}")
+            
             if event_info.item_type in ["TV", "SHOW"]:
                 # 获取媒体名称：优先使用SeriesName，没有则用Name - 增强错误处理
                 try:
@@ -395,8 +410,10 @@ class mediaservermsgai(_PluginBase):
                         or event_info.json_object.get('Item', {}).get('Name') 
                         or event_info.item_name
                     )
-                    if production_year := event_info.json_object.get('Item', {}).get('ProductionYear'):
-                        series_name += f" ({str(production_year)})"
+                    # 使用TMDB获取的年份，如果TMDB未获取到，则回退到json_object中的ProductionYear
+                    year_to_use = media_year if media_year else event_info.json_object.get('Item', {}).get('ProductionYear')
+                    if year_to_use:
+                        series_name += f" ({str(year_to_use)})"
                 except Exception as e:
                     logger.warning(f"获取剧集名称失败: {e}")
                     series_name = event_info.item_name or "未知剧集"
@@ -450,30 +467,24 @@ class mediaservermsgai(_PluginBase):
                             season_episode_info = f"📺 **季集**：{'、'.join(episodes)}"
                 
                 # 尝试从TMDB获取状态、评分、类型和演员信息
-                if event_info.tmdb_id:
+                if tmdb_tv_info: # 使用之前已经获取的tmdb_tv_info
                     try:
-                        # 从TMDB获取剧集详情
-                        tmdb_info = self.chain.recognize_media(
-                            tmdbid=int(event_info.tmdb_id),
-                            mtype=MediaType.TV
-                        )
-                        if tmdb_info:
-                            # 状态信息
-                            if hasattr(tmdb_info, 'status') and tmdb_info.status:
-                                status_map = {
-                                    'Ended': '已完结',
-                                    'Returning Series': '连载中',
-                                    'Canceled': '已取消',
-                                    'In Production': '制作中',
-                                    'Planned': '计划中'
-                                }
-                                status_text = status_map.get(tmdb_info.status, tmdb_info.status)
-                                message_texts.append(f"📡 **状态**：{status_text}")
-                            
-                            # 评分信息
-                            if tmdb_info.vote_average:
-                                rating = round(float(tmdb_info.vote_average), 1)
-                                message_texts.append(f"⭐ **评分**：{rating}/10")
+                        # 状态信息
+                        if hasattr(tmdb_tv_info, 'status') and tmdb_tv_info.status:
+                            status_map = {
+                                'Ended': '已完结',
+                                'Returning Series': '连载中',
+                                'Canceled': '已取消',
+                                'In Production': '制作中',
+                                'Planned': '计划中'
+                            }
+                            status_text = status_map.get(tmdb_tv_info.status, tmdb_tv_info.status)
+                            message_texts.append(f"📡 **状态**：{status_text}")
+                        
+                        # 评分信息
+                        if tmdb_tv_info.vote_average:
+                            rating = round(float(tmdb_tv_info.vote_average), 1)
+                            message_texts.append(f"⭐ **评分**：{rating}/10")
                     except Exception as e:
                         logger.debug(f"从TMDB获取剧集信息失败: {e}")
                 
@@ -482,60 +493,76 @@ class mediaservermsgai(_PluginBase):
                     message_texts.append(season_episode_info)
                 
                 # 继续添加类型和演员信息
-                if event_info.tmdb_id:
+                if tmdb_tv_info: # 使用之前已经获取的tmdb_tv_info
                     try:
-                        tmdb_info = self.chain.recognize_media(
-                            tmdbid=int(event_info.tmdb_id),
-                            mtype=MediaType.TV
-                        )
-                        if tmdb_info:
-                            # 类型信息 - genres可能是字典列表或字符串列表
-                            if tmdb_info.genres:
-                                genres_list = []
-                                for genre in tmdb_info.genres[:3]:
-                                    if isinstance(genre, dict):
-                                        genres_list.append(genre.get('name', ''))
-                                    else:
-                                        genres_list.append(str(genre))
-                                if genres_list:
-                                    genre_text = '、'.join(genres_list)
-                                    message_texts.append(f"🎭 **类型**：{genre_text}")
-                            
-                            # 演员信息 - 显示前5名
-                            if hasattr(tmdb_info, 'actors') and tmdb_info.actors:
-                                actors_list = []
-                                for actor in tmdb_info.actors[:5]:
-                                    if isinstance(actor, dict):
-                                        actor_name = actor.get('name', '')
-                                    else:
-                                        actor_name = str(actor)
-                                    if actor_name:
-                                        actors_list.append(actor_name)
-                                if actors_list:
-                                    actors_text = '、'.join(actors_list)
-                                    message_texts.append(f"🎬 **演员**：{actors_text}")
+                        # 类型信息 - genres可能是字典列表或字符串列表
+                        if tmdb_tv_info.genres:
+                            genres_list = []
+                            for genre in tmdb_tv_info.genres[:3]:
+                                if isinstance(genre, dict):
+                                    genres_list.append(genre.get('name', ''))
+                                else:
+                                    genres_list.append(str(genre))
+                            if genres_list:
+                                genre_text = '、'.join(genres_list)
+                                message_texts.append(f"🎭 **类型**：{genre_text}")
+                        
+                        # 演员信息 - 显示前5名
+                        if hasattr(tmdb_tv_info, 'actors') and tmdb_tv_info.actors:
+                            actors_list = []
+                            for actor in tmdb_tv_info.actors[:5]:
+                                if isinstance(actor, dict):
+                                    actor_name = actor.get('name', '')
+                                else:
+                                    actor_name = str(actor)
+                                if actor_name:
+                                    actors_list.append(actor_name)
+                            if actors_list:
+                                actors_text = '、'.join(actors_list)
+                                message_texts.append(f"🎬 **演员**：{actors_text}")
                     except Exception as e:
                         logger.debug(f"从TMDB获取剧集类型和演员信息失败: {e}")
             else:
                 # 电影类型
+                tmdb_movie_info = None
                 if event_info.tmdb_id and event_info.item_type == "MOV":
+                    try:
+                        # 获取电影详情
+                        tmdb_movie_info = self.chain.recognize_media(
+                            tmdbid=int(event_info.tmdb_id),
+                            mtype=MediaType.MOVIE
+                        )
+                        if tmdb_movie_info and hasattr(tmdb_movie_info, 'year') and tmdb_movie_info.year:
+                            media_year = tmdb_movie_info.year
+                            logger.debug(f"从TMDB识别结果获取电影年份: {media_year}")
+                    except Exception as e:
+                        logger.debug(f"从TMDB获取电影年份失败: {e}")
+                    
+                    movie_name = event_info.item_name
+                    if media_year:
+                        movie_name += f" ({media_year})"
+
                     tmdb_url = f"https://www.themoviedb.org/movie/{event_info.tmdb_id}"
-                    message_title = f"🎬 {self._webhook_actions.get(event_info.event)}电影：[{event_info.item_name}]({tmdb_url})"
+                    message_title = f"🎬 {self._webhook_actions.get(event_info.event)}电影：[{movie_name}]({tmdb_url})"
                     # 添加时间信息
                     message_texts.append(f"⏰ **时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
                 elif event_info.item_type == "MOV":
-                    message_title = f"🎬 {self._webhook_actions.get(event_info.event)}电影：{event_info.item_name}"
+                    # 如果没有TMDB ID，但ProductionYear存在，则使用它
+                    movie_name = event_info.item_name
+                    if production_year := event_info.json_object.get('Item', {}).get('ProductionYear'):
+                        movie_name += f" ({str(production_year)})"
+                    message_title = f"🎬 {self._webhook_actions.get(event_info.event)}电影：{movie_name}"
                     # 添加时间信息
                     message_texts.append(f"⏰ **时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
+                # --- START OF AUDIO MODIFICATION (MAIN SEND METHOD) ---
                 elif event_info.item_type == "AUD":
                     # 获取音频详细信息
                     item_data = event_info.json_object.get('Item', {})
                     song_name = item_data.get('Name') or event_info.item_name
-                    production_year = item_data.get('ProductionYear')
                     
                     # 获取艺术家信息
                     artists = item_data.get('Artists', [])
-                    artist_text = artists[0] if artists else '未知艺术家'
+                    artist_text = artists[0] if artists else '未知歌手' 
                     
                     # 获取专辑信息
                     album_name = item_data.get('Album', '')
@@ -552,8 +579,6 @@ class mediaservermsgai(_PluginBase):
                     
                     # 获取文件信息
                     container = item_data.get('Container', '').upper()
-                    bitrate = item_data.get('Bitrate', 0)
-                    bitrate_kbps = round(bitrate / 1000) if bitrate else 0
                     file_size = item_data.get('Size', 0)
                     if file_size:
                         size_mb = round(file_size / 1024 / 1024, 1)
@@ -565,77 +590,68 @@ class mediaservermsgai(_PluginBase):
                     message_title = f"🎵 {self._webhook_actions.get(event_info.event)}音频：{song_name}"
                     
                     # 添加音频详细信息（按新顺序）
-                    message_texts.append(f"⏰ **入库时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
-                    message_texts.append(f"👤 **艺术家**：{artist_text}")
+                    message_texts.append(f"⏰ **入库**：{time.strftime('%H:%M:%S', time.localtime(time.time()))}") # 更改为“入库”
+                    message_texts.append(f"👤 **歌手**：{artist_text}") 
                     if album_name:
                         message_texts.append(f"💿 **专辑**：{album_name}")
-                    if production_year:
-                        message_texts.append(f"📅 **年份**：{production_year}")
                     message_texts.append(f"⏱️ **时长**：{duration_text}")
                     
                     # 文件格式信息
                     format_parts = [container]
-                    if bitrate_kbps:
-                        format_parts.append(f"{bitrate_kbps} kbps")
                     format_parts.append(size_text)
                     message_texts.append(f"📦 **格式**：{' · '.join(format_parts)}")
+                # --- END OF AUDIO MODIFICATION (MAIN SEND METHOD) ---
                 else:
                     message_title = f"🔔 {self._webhook_actions.get(event_info.event)}"
                     # 其他类型的时间信息
                     message_texts.append(f"⏰ **时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
                 
                 # 尝试从TMDB获取电影状态、评分、类型和演员信息
-                if event_info.tmdb_id:
+                if tmdb_movie_info: # 使用之前已经获取的tmdb_movie_info
                     try:
-                        # 从TMDB获取电影详情
-                        tmdb_info = self.chain.recognize_media(
-                            tmdbid=int(event_info.tmdb_id),
-                            mtype=MediaType.MOVIE
-                        )
-                        if tmdb_info:
-                            # 状态信息
-                            if hasattr(tmdb_info, 'status') and tmdb_info.status:
-                                status_map = {
-                                    'Released': '已上映',
-                                    'Post Production': '后期制作',
-                                    'In Production': '制作中',
-                                    'Planned': '计划中',
-                                    'Rumored': '传闻中',
-                                    'Canceled': '已取消'
-                                }
-                                status_text = status_map.get(tmdb_info.status, tmdb_info.status)
-                                message_texts.append(f"📡 **状态**：{status_text}")
-                            
-                            # 评分信息
-                            if tmdb_info.vote_average:
-                                rating = round(float(tmdb_info.vote_average), 1)
-                                message_texts.append(f"⭐ **评分**：{rating}/10")
-                            
-                            # 类型信息 - genres可能是字典列表或字符串列表
-                            if tmdb_info.genres:
-                                genres_list = []
-                                for genre in tmdb_info.genres[:3]:
-                                    if isinstance(genre, dict):
-                                        genres_list.append(genre.get('name', ''))
-                                    else:
-                                        genres_list.append(str(genre))
-                                if genres_list:
-                                    genre_text = '、'.join(genres_list)
-                                    message_texts.append(f"🎭 **类型**：{genre_text}")
-                            
-                            # 演员信息 - 显示前5名
-                            if hasattr(tmdb_info, 'actors') and tmdb_info.actors:
-                                actors_list = []
-                                for actor in tmdb_info.actors[:5]:
-                                    if isinstance(actor, dict):
-                                        actor_name = actor.get('name', '')
-                                    else:
-                                        actor_name = str(actor)
-                                    if actor_name:
-                                        actors_list.append(actor_name)
-                                if actors_list:
-                                    actors_text = '、'.join(actors_list)
-                                    message_texts.append(f"🎬 **演员**：{actors_text}")
+                        # 状态信息
+                        if hasattr(tmdb_movie_info, 'status') and tmdb_movie_info.status:
+                            status_map = {
+                                'Released': '已上映',
+                                'Post Production': '后期制作',
+                                'In Production': '制作中',
+                                'Planned': '计划中',
+                                'Rumored': '传闻中',
+                                'Canceled': '已取消'
+                            }
+                            status_text = status_map.get(tmdb_movie_info.status, tmdb_movie_info.status)
+                            message_texts.append(f"📡 **状态**：{status_text}")
+                        
+                        # 评分信息
+                        if tmdb_movie_info.vote_average:
+                            rating = round(float(tmdb_movie_info.vote_average), 1)
+                            message_texts.append(f"⭐ **评分**：{rating}/10")
+                        
+                        # 类型信息 - genres可能是字典列表或字符串列表
+                        if tmdb_movie_info.genres:
+                            genres_list = []
+                            for genre in tmdb_movie_info.genres[:3]:
+                                if isinstance(genre, dict):
+                                    genres_list.append(genre.get('name', ''))
+                                else:
+                                    genres_list.append(str(genre))
+                            if genres_list:
+                                genre_text = '、'.join(genres_list)
+                                message_texts.append(f"🎭 **类型**：{genre_text}")
+                        
+                        # 演员信息 - 显示前5名
+                        if hasattr(tmdb_movie_info, 'actors') and tmdb_movie_info.actors:
+                            actors_list = []
+                            for actor in tmdb_movie_info.actors[:5]:
+                                if isinstance(actor, dict):
+                                    actor_name = actor.get('name', '')
+                                else:
+                                    actor_name = str(actor)
+                                if actor_name:
+                                    actors_list.append(actor_name)
+                            if actors_list:
+                                actors_text = '、'.join(actors_list)
+                                message_texts.append(f"🎬 **演员**：{actors_text}")
                     except Exception as e:
                         logger.debug(f"从TMDB获取电影信息失败: {e}")
 
@@ -849,8 +865,6 @@ class mediaservermsgai(_PluginBase):
                     if ext:
                         container = ext
             
-            bitrate = song_item.get('Bitrate', 0)
-            bitrate_kbps = round(bitrate / 1000) if bitrate else 0
             file_size = song_item.get('Size', 0)
             if file_size:
                 size_mb = round(file_size / 1024 / 1024, 1)
@@ -858,23 +872,19 @@ class mediaservermsgai(_PluginBase):
             else:
                 size_text = "未知"
             
-            logger.info(f"歌曲格式信息: Container={container}, Bitrate={bitrate_kbps}kbps, Size={size_text}")
+            logger.info(f"歌曲格式信息: Container={container}, Size={size_text}") 
             
             # 构建消息
             message_title = f"🎵 新入库音频：{song_name}"
             message_texts = []
-            message_texts.append(f"⏰ **入库时间**：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}")
-            message_texts.append(f"👤 **艺术家**：{artist_text}")
+            message_texts.append(f"⏰ **入库**：{time.strftime('%H:%M:%S', time.localtime(time.time()))}") # 更改为“入库”
+            message_texts.append(f"👤 **歌手**：{artist_text}") 
             if album_name:
                 message_texts.append(f"💿 **专辑**：{album_name}")
-            if album_year:
-                message_texts.append(f"📅 **年份**：{album_year}")
             message_texts.append(f"⏱️ **时长**：{duration_text}")
             
             # 文件格式信息
             format_parts = [container]
-            if bitrate_kbps:
-                format_parts.append(f"{bitrate_kbps} kbps")
             format_parts.append(size_text)
             message_texts.append(f"📦 **格式**：{' · '.join(format_parts)}")
             
