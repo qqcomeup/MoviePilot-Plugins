@@ -3,7 +3,7 @@
     "name": "媒体库服务器通知AI版",
     "description": "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息,个人菜鸡版",
     "labels": "消息通知,媒体库",
-    "version": "1.7.4",
+    "version": "1.7.4.1",
     "icon": "mediaplay.png",
     "author": "jxxghp",
     "level": 1,
