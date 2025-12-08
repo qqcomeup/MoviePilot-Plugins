@@ -18,11 +18,11 @@ class mediaservermsgai(_PluginBase):
     # 插件名称
     plugin_name = "媒体库服务器通知AI版"
     # 插件描述
-    plugin_desc = "基于Emby识别结果+TMDB元数据+完美布局+原始服务器名"
+    plugin_desc = "基于Emby识别结果+TMDB元数据+完美布局+SeriesId反查"
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "1.7.4"
+    plugin_version = "1.7.4.1"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -145,14 +145,43 @@ class mediaservermsgai(_PluginBase):
                 self._last_event_cache = (event, current_time)
 
             tmdb_id = event_info.tmdb_id
+            
+            # 1. 优先从 JSON 的 ProviderIds 中提取
             if not tmdb_id and event_info.json_object:
                 provider_ids = event_info.json_object.get('Item', {}).get('ProviderIds', {})
                 tmdb_id = provider_ids.get('Tmdb')
             
+            # 2. 其次从路径中提取 (Regex)
             if not tmdb_id and event_info.item_path:
                 if match := re.search(r'[\[{](?:tmdbid|tmdb)[=-](\d+)[\]}]', event_info.item_path, re.IGNORECASE):
                     tmdb_id = match.group(1)
-            
+
+            # 3. [新增] 再次降级：通过 SeriesId 反查 Emby API
+            if not tmdb_id and event_info.json_object:
+                item_data = event_info.json_object.get('Item', {})
+                series_id = item_data.get('SeriesId')
+                # 只有当类型是 Episode 且存在 SeriesId 时才尝试反查
+                if series_id and item_data.get('Type') == 'Episode':
+                    try:
+                        service = self.service_info(event_info.server_name)
+                        if service:
+                            host = service.config.config.get('host')
+                            apikey = service.config.config.get('apikey')
+                            if host and apikey:
+                                import requests
+                                # 调用 Emby 接口获取剧集父级信息
+                                api_url = f"{host}/emby/Items?Ids={series_id}&Fields=ProviderIds&api_key={apikey}"
+                                res = requests.get(api_url, timeout=5)
+                                if res.status_code == 200:
+                                    data = res.json()
+                                    if data and data.get('Items'):
+                                        parent_ids = data['Items'][0].get('ProviderIds', {})
+                                        tmdb_id = parent_ids.get('Tmdb')
+                                        if tmdb_id:
+                                            logger.info(f"通过 Emby API 反查 SeriesId 成功获取 TMDB ID: {tmdb_id}")
+                    except Exception as e:
+                        logger.error(f"反查 SeriesId 失败: {e}")
+
             event_info.tmdb_id = tmdb_id
             
             message_texts = []
@@ -174,11 +203,11 @@ class mediaservermsgai(_PluginBase):
                 container = item_data.get('Container', '').upper()
                 size = self._format_size(item_data.get('Size', 0))
 
-                # 1. 动作
+                # 动作
                 action_base = self._webhook_actions.get(event_info.event, "通知")
                 action_text = f"歌曲{action_base}"
                 
-                # 2. 服务器名
+                # 服务器名处理
                 server_name = ""
                 if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
                     server_name = event_info.json_object.get('Server', {}).get('Name')
@@ -187,7 +216,6 @@ class mediaservermsgai(_PluginBase):
                 if not server_name.lower().endswith("emby"):
                     server_name += "Emby"
 
-                # 3. 组合标题
                 message_title = f"{song_name} {action_text} {server_name}"
                 
                 message_texts.append(f"⏰ **入库**：{time.strftime('%H:%M:%S', time.localtime())}")
@@ -196,7 +224,6 @@ class mediaservermsgai(_PluginBase):
                 message_texts.append(f"⏱️ **时长**：{duration}")
                 message_texts.append(f"📦 **格式**：{container} · {size}")
 
-                # 这里调用了 _get_audio_image_url，所以必须确保该方法在类中定义
                 img = self._get_audio_image_url(event_info.server_name, item_data)
                 if img: image_url = img
                 
@@ -293,8 +320,6 @@ class mediaservermsgai(_PluginBase):
         except Exception as e:
             logger.error(f"webhook处理异常: {str(e)}")
             logger.error(traceback.format_exc())
-
-    # --- 辅助方法 (确保都在类内部) ---
 
     def _get_audio_image_url(self, server_name: str, item_data: dict) -> Optional[str]:
         if not server_name: return None
