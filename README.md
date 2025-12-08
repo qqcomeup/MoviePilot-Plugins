@@ -12,4 +12,4 @@ EMBY设置 <img width="1238" height="909" alt="image" src="https://github.com/us
 
 <img width="646" height="1725" alt="image" src="https://github.com/user-attachments/assets/9fdf5e8e-1eac-460a-97c9-50d60a7e9f16" />
 
-<img width="650" height="839" alt="image" src="https://github.com/user-attachments/assets/0afbe634-d9de-403c-ad63-4fb2e3f0b84d" />
+<img width="643" height="838" alt="image" src="https://github.com/user-attachments/assets/fc59f14e-7db6-4c77-b245-4095eabb065c" />
