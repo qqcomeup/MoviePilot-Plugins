@@ -18,11 +18,11 @@ class mediaservermsgai(_PluginBase):
     # 插件名称
     plugin_name = "媒体库服务器通知AI版"
     # 插件描述
-    plugin_desc = "基于Emby识别结果+TMDB元数据+地区汉化+图片回退优化"
+    plugin_desc = "基于Emby识别结果+TMDB元数据+完美布局+原始服务器名"
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "1.9.3"
+    plugin_version = "1.7.4"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -46,7 +46,7 @@ class mediaservermsgai(_PluginBase):
     _overview_max_length = 150
 
     _webhook_actions = {
-        "library.new": "新入库",
+        "library.new": "已入库",
         "system.webhooktest": "测试",
         "playback.start": "开始播放",
         "playback.stop": "停止播放",
@@ -119,7 +119,7 @@ class mediaservermsgai(_PluginBase):
                 ]
             }
         ], {"enabled": False, "types": []}
-
+    
     def get_page(self) -> List[dict]:
         pass
 
@@ -159,12 +159,11 @@ class mediaservermsgai(_PluginBase):
             message_title = ""
             image_url = event_info.image_url
             
-            # --- 1. 音乐专辑处理 (MusicAlbum) ---
             if event_info.json_object and event_info.json_object.get('Item', {}).get('Type') == 'MusicAlbum':
                 self._handle_music_album(event_info, event_info.json_object.get('Item', {}))
                 return
 
-            # --- 2. 音频单曲处理 (AUD) ---
+            # --- 音频单曲处理 ---
             if event_info.item_type == "AUD":
                 action_text = self._webhook_actions.get(event_info.event)
                 item_data = event_info.json_object.get('Item', {})
@@ -175,21 +174,33 @@ class mediaservermsgai(_PluginBase):
                 container = item_data.get('Container', '').upper()
                 size = self._format_size(item_data.get('Size', 0))
 
-                # 标题
-                message_title = f"🆕 {action_text}媒体：{song_name}"
+                # 1. 动作
+                action_base = self._webhook_actions.get(event_info.event, "通知")
+                action_text = f"歌曲{action_base}"
                 
-                # 列表内容 (严格按照目标模版)
+                # 2. 服务器名
+                server_name = ""
+                if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
+                    server_name = event_info.json_object.get('Server', {}).get('Name')
+                if not server_name:
+                    server_name = event_info.server_name or "Emby"
+                if not server_name.lower().endswith("emby"):
+                    server_name += "Emby"
+
+                # 3. 组合标题
+                message_title = f"{song_name} {action_text} {server_name}"
+                
                 message_texts.append(f"⏰ **入库**：{time.strftime('%H:%M:%S', time.localtime())}")
                 message_texts.append(f"👤 **歌手**：{artist}")
                 if album: message_texts.append(f"💿 **专辑**：{album}")
                 message_texts.append(f"⏱️ **时长**：{duration}")
                 message_texts.append(f"📦 **格式**：{container} · {size}")
 
-                # 封面
+                # 这里调用了 _get_audio_image_url，所以必须确保该方法在类中定义
                 img = self._get_audio_image_url(event_info.server_name, item_data)
                 if img: image_url = img
                 
-            # --- 3. 视频处理 (TV/MOV) ---
+            # --- 视频处理 (TV/MOV) ---
             else:
                 tmdb_info = None
                 if tmdb_id:
@@ -200,8 +211,7 @@ class mediaservermsgai(_PluginBase):
                     except Exception as e:
                         logger.warning(f"TMDB 查询失败: {e}")
 
-                # 标题 (修复年份重复)
-                action_text = self._webhook_actions.get(event_info.event)
+                # === 标题构建 ===
                 title_name = event_info.item_name
                 if event_info.item_type in ["TV", "SHOW"] and event_info.json_object:
                     title_name = event_info.json_object.get('Item', {}).get('SeriesName') or title_name
@@ -210,14 +220,30 @@ class mediaservermsgai(_PluginBase):
                 if year and str(year) not in title_name:
                     title_name += f" ({year})"
                 
+                tmdb_link = ""
                 if tmdb_id:
                     mtype_str = "movie" if event_info.item_type == "MOV" else "tv"
                     tmdb_link = f"https://www.themoviedb.org/{mtype_str}/{tmdb_id}"
-                    message_title = f"🆕 {action_text}{'剧集' if mtype_str=='tv' else '电影'}：[{title_name}]({tmdb_link})"
-                else:
-                    message_title = f"🆕 {action_text}媒体：{title_name}"
+                
+                action_base = self._webhook_actions.get(event_info.event, "通知")
+                type_cn = "剧集" if event_info.item_type in ["TV", "SHOW"] else "电影"
+                action_text = f"{type_cn}{action_base}"
+                
+                server_name = ""
+                if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
+                    server_name = event_info.json_object.get('Server', {}).get('Name')
+                if not server_name:
+                    server_name = event_info.server_name or "Emby"
+                
+                if not server_name.lower().endswith("emby"):
+                    server_name += "Emby"
 
-                # 视频内容体
+                if tmdb_link:
+                    message_title = f"[{title_name}]({tmdb_link}) {action_text} {server_name}"
+                else:
+                    message_title = f"{title_name} {action_text} {server_name}"
+
+                # === 视频内容排序 ===
                 message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
                 
                 is_folder = event_info.json_object.get('Item', {}).get('IsFolder', False) if event_info.json_object else False
@@ -239,14 +265,12 @@ class mediaservermsgai(_PluginBase):
                     message_texts.append("\n━━━━━━━━━━━━━━━━━━\n") 
                     message_texts.append(f"📖 **剧情简介**\n{overview}")
 
-                # 图片逻辑优化 (支持降级到海报)
                 if not image_url:
                     if event_info.item_type in ["TV", "SHOW"] and tmdb_id:
                         image_url = self._get_tmdb_image(event_info, MediaType.TV)
                     elif event_info.item_type == "MOV" and tmdb_id:
                         image_url = self._get_tmdb_image(event_info, MediaType.MOVIE)
 
-            # 公共：附加信息与发送
             self._append_extra_info(message_texts, event_info)
             play_link = self._get_play_link(event_info)
 
@@ -270,18 +294,36 @@ class mediaservermsgai(_PluginBase):
             logger.error(f"webhook处理异常: {str(e)}")
             logger.error(traceback.format_exc())
 
+    # --- 辅助方法 (确保都在类内部) ---
+
+    def _get_audio_image_url(self, server_name: str, item_data: dict) -> Optional[str]:
+        if not server_name: return None
+        try:
+            service = self.service_info(server_name)
+            if not service or not service.instance: return None
+            play_url = service.instance.get_play_url("dummy")
+            if not play_url: return None
+            parsed = urllib.parse.urlparse(play_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            item_id = item_data.get('Id')
+            primary_tag = item_data.get('ImageTags', {}).get('Primary')
+            if not primary_tag:
+                item_id = item_data.get('PrimaryImageItemId')
+                primary_tag = item_data.get('PrimaryImageTag')
+            if item_id and primary_tag:
+                return f"{base_url}/emby/Items/{item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_tag}&quality=90"
+        except: pass
+        return None
+
     def _get_tmdb_image(self, event_info: WebhookEventInfo, mtype: MediaType) -> Optional[str]:
-        """获取 TMDB 图片：优先 Backdrop，失败降级为 Poster"""
         key = f"{event_info.tmdb_id}_{event_info.season_id}_{event_info.episode_id}"
         if key in self._image_cache: return self._image_cache[key]
         try:
-            # 1. 优先尝试获取 Backdrop (背景图)
             img = self.chain.obtain_specific_image(
                 mediaid=event_info.tmdb_id, mtype=mtype, 
                 image_type=MediaImageType.Backdrop, 
                 season=event_info.season_id, episode=event_info.episode_id
             )
-            # 2. 如果 Backdrop 失败，尝试 Poster (海报)
             if not img:
                 img = self.chain.obtain_specific_image(
                     mediaid=event_info.tmdb_id, mtype=mtype, 
@@ -429,37 +471,6 @@ class mediaservermsgai(_PluginBase):
             first_line = description.split('\n\n')[0].strip()
             if re.search(r'S\d+\s+E\d+', first_line):
                  texts.append(f"📺 **季集**：{first_line}")
-
-    def _append_audio_info(self, texts: List[str], event_info: WebhookEventInfo):
-        item_data = event_info.json_object.get('Item', {})
-        artist = (item_data.get('Artists') or ['未知歌手'])[0]
-        album = item_data.get('Album', '')
-        duration = self._format_ticks(item_data.get('RunTimeTicks', 0))
-        container = item_data.get('Container', '').upper()
-        size = self._format_size(item_data.get('Size', 0))
-        texts.append(f"👤 **歌手**：{artist}")
-        if album: texts.append(f"💿 **专辑**：{album}")
-        texts.append(f"⏱️ **时长**：{duration}")
-        texts.append(f"📦 **格式**：{container} · {size}")
-
-    def _get_audio_image_url(self, server_name: str, item_data: dict) -> Optional[str]:
-        if not server_name: return None
-        try:
-            service = self.service_info(server_name)
-            if not service or not service.instance: return None
-            play_url = service.instance.get_play_url("dummy")
-            if not play_url: return None
-            parsed = urllib.parse.urlparse(play_url)
-            base_url = f"{parsed.scheme}://{parsed.netloc}"
-            item_id = item_data.get('Id')
-            primary_tag = item_data.get('ImageTags', {}).get('Primary')
-            if not primary_tag:
-                item_id = item_data.get('PrimaryImageItemId')
-                primary_tag = item_data.get('PrimaryImageTag')
-            if item_id and primary_tag:
-                return f"{base_url}/emby/Items/{item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_tag}&quality=90"
-        except: pass
-        return None
 
     def _append_extra_info(self, texts: List[str], event_info: WebhookEventInfo):
         extras = []
