@@ -1,31 +1,14 @@
 {
-  "MusicSaverBotai": { 
-        "name": "音乐保存机器人AI改",
-        "description": "接收Telegram发送的音乐文件并保存到本地",
-        "labels": "Music",
-        "version": "1.0.47",
-        "icon": "https://raw.githubusercontent.com/Seed680/MoviePilot-Plugins/main/icons/customplugin.png",
-        "author": "Seed680",
-        "level": 1,
-        "history": {
-            "v1.0.46": "✨ 新增简化保存模式✨ 支持两种目录结构切换🐛 修复未定义变量错误🐛 改进歌词文件精确匹配逻辑🐛 修复 Windows 系统权限设置问题",
-            "v1.0.45": "保存失败后提示失败文件名",
-            "v1.0.44": "增加处理提示",
-            "v1.0.43": "Bot连接超时后自动退出",
-            "v1.0.42": "保存成功后，删除源消息",
-            "v1.0.41": "增加歌词保存功能，歌词以歌曲名-歌手名格式保存，如：xxx-xxx.lrc",
-            "v1.0.40": "按歌手/专辑名/歌曲名-歌手保存音乐文件，并尝试下载cover图片;增加异常提示"
-        }
-    },
   "mediaservermsgai": {
     "name": "媒体库服务器通知AI版",
     "description": "发送Emby/Jellyfin/Plex服务器的播放、入库等通知消息,个人菜鸡版",
     "labels": "消息通知,媒体库",
-    "version": "1.7.2",
+    "version": "1.7.3",
     "icon": "mediaplay.png",
     "author": "jxxghp",
     "level": 1,
     "history": {
+      "v1.7.3": "✨ 优化元数据排版，评分/地区/状态分行显示；✨ 新增TMDB地区汉化支持；📂 增加路径二级分类精准提取；🎵 优化音频通知专属模版；🖼️ 增强图片回退逻辑（无背景图自动降级海报）。",
       "v1.7.2": "修正TMDB入库年份显示，修改音乐入库对齐。DIY很简单建议自己AI下",
       "v1.7.1": "新增媒体状态，展示演员前五名",
       "v1.7": "兼容神医合并跟pro音乐封面信息通知",
