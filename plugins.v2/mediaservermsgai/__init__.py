@@ -22,7 +22,7 @@ class mediaservermsgai(_PluginBase):
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "v1.7.5"
+    plugin_version = "1.7.5"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -253,8 +253,20 @@ class mediaservermsgai(_PluginBase):
                 if not server_name.lower().endswith("emby"):
                     server_name += "Emby"
 
-                # 纯文本标题 (无链接)
-                message_title = f"{title_name} {action_text} {server_name}"
+                # === 修改开始：TG 隐藏超链支持 ===
+                tmdb_url = ""
+                if tmdb_id:
+                    media_type_url = "movie" if event_info.item_type == "MOV" else "tv"
+                    tmdb_url = f"https://www.themoviedb.org/{media_type_url}/{tmdb_id}"
+
+                if tmdb_url:
+                    # 使用 Markdown 格式：[标题](链接)
+                    # TG: 显示为可点击的标题，不显示 URL。
+                    # 微信: 可能会显示源码或纯文本，但不展示冗余的长链接。
+                    message_title = f"[{title_name}]({tmdb_url}) {action_text} {server_name}"
+                else:
+                    message_title = f"{title_name} {action_text} {server_name}"
+                # === 修改结束 ===
 
                 # === 视频内容排序 (无Markdown) ===
                 message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
