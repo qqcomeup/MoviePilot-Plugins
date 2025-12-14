@@ -18,11 +18,11 @@ class mediaservermsgai(_PluginBase):
     # 插件名称
     plugin_name = "媒体库服务器通知AI版"
     # 插件描述
-    plugin_desc = "基于Emby识别结果+TMDB元数据+微信清爽版(演员限3人)"
+    plugin_desc = "基于Emby识别结果+TMDB元数据+微信清爽版(全消息类型+剧集聚合)"
     # 插件图标
     plugin_icon = "mediaplay.png"
     # 插件版本
-    plugin_version = "1.7.5"
+    plugin_version = "1.7.6"
     # 插件作者
     plugin_author = "jxxghp"
     # 作者主页
@@ -45,25 +45,39 @@ class mediaservermsgai(_PluginBase):
     _image_cache = {}
     _overview_max_length = 150
 
+    # === 聚合配置 ===
+    _aggregate_enabled = False
+    _aggregate_time = 15
+    _pending_messages = {}
+    _aggregate_timers = {}
+
+    # === 完整的动作映射 ===
     _webhook_actions = {
         "library.new": "已入库",
         "system.webhooktest": "测试",
+        "system.notificationtest": "测试",
         "playback.start": "开始播放",
         "playback.stop": "停止播放",
+        "playback.pause": "暂停播放",
+        "playback.unpause": "继续播放",
         "user.authenticated": "登录成功",
         "user.authenticationfailed": "登录失败",
         "media.play": "开始播放",
         "media.stop": "停止播放",
-        "item.rate": "标记了"
+        "media.pause": "暂停播放",
+        "media.resume": "继续播放",
+        "item.rate": "标记了",
+        "item.markplayed": "标记已播放",
+        "item.markunplayed": "标记未播放"
     }
     
+    # === 优化后的官方高清图标 (方案1) ===
     _webhook_images = {
-        "emby": "https://emby.media/notificationicon.png",
-        "plex": "https://www.plex.tv/wp-content/uploads/2022/04/new-logo-process-lines-gray.png",
-        "jellyfin": "https://repo.jellyfin.org/images/logo-icon-transparent.png"
+        "emby": "https://raw.githubusercontent.com/MediaBrowser/Emby.Resources/master/images/Logos/logo.png",
+        "plex": "https://raw.githubusercontent.com/plexinc/plex-media-player/master/resources/images/plex-icon.png",
+        "jellyfin": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/PNG/icon-transparent.png"
     }
 
-    # 国家代码汉化映射
     _country_cn_map = {
         'CN': '中国大陆', 'US': '美国', 'JP': '日本', 'KR': '韩国',
         'HK': '中国香港', 'TW': '中国台湾', 'GB': '英国', 'FR': '法国',
@@ -82,6 +96,8 @@ class mediaservermsgai(_PluginBase):
             self._mediaservers = config.get("mediaservers") or []
             self._add_play_link = config.get("add_play_link", False)
             self._overview_max_length = config.get("overview_max_length", 150)
+            self._aggregate_enabled = config.get("aggregate_enabled", False)
+            self._aggregate_time = int(config.get("aggregate_time", 15))
 
     def service_infos(self, type_filter: Optional[str] = None) -> Optional[Dict[str, ServiceInfo]]:
         if not self._mediaservers: return None
@@ -107,217 +123,510 @@ class mediaservermsgai(_PluginBase):
             {"title": "新入库", "value": "library.new"},
             {"title": "开始播放", "value": "playback.start|media.play|PlaybackStart"},
             {"title": "停止播放", "value": "playback.stop|media.stop|PlaybackStop"},
-            {"title": "用户标记", "value": "item.rate"},
+            {"title": "用户标记", "value": "item.rate|item.markplayed|item.markunplayed"},
+            {"title": "登录提醒", "value": "user.authenticated|user.authenticationfailed"},
+            {"title": "系统测试", "value": "system.webhooktest|system.notificationtest"},
         ]
         return [
             {
                 'component': 'VForm',
                 'content': [
-                    {'component': 'VRow', 'content': [{'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'enabled', 'label': '启用插件'}}]},{'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'add_play_link', 'label': '添加播放链接'}}]}]},
-                    {'component': 'VRow', 'content': [{'component': 'VCol', 'props': {'cols': 12}, 'content': [{'component': 'VSelect', 'props': {'multiple': True, 'chips': True, 'clearable': True, 'model': 'mediaservers', 'label': '媒体服务器', 'items': [{"title": config.name, "value": config.name} for config in MediaServerHelper().get_configs().values()]}}]}]},
-                    {'component': 'VRow', 'content': [{'component': 'VCol', 'props': {'cols': 12}, 'content': [{'component': 'VSelect', 'props': {'chips': True, 'multiple': True, 'model': 'types', 'label': '消息类型', 'items': types_options}}]}]}
+                    {
+                        'component': 'VRow', 
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'enabled', 'label': '启用插件'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'add_play_link', 'label': '添加播放链接'}}]}
+                        ]
+                    },
+                    {
+                        'component': 'VRow', 
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12}, 'content': [{'component': 'VSelect', 'props': {'multiple': True, 'chips': True, 'clearable': True, 'model': 'mediaservers', 'label': '媒体服务器', 'items': [{"title": config.name, "value": config.name} for config in MediaServerHelper().get_configs().values()]}}]}
+                        ]
+                    },
+                    {
+                        'component': 'VRow', 
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12}, 'content': [{'component': 'VSelect', 'props': {'chips': True, 'multiple': True, 'model': 'types', 'label': '消息类型', 'items': types_options}}]}
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'aggregate_enabled', 'label': '启用TV剧集入库聚合'}}]}
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'props': {'show': '{{aggregate_enabled}}'},
+                        'content': [
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VTextField', 'props': {'model': 'aggregate_time', 'label': '聚合等待时间（秒）', 'placeholder': '15', 'type': 'number'}}]}
+                        ]
+                    }
                 ]
             }
-        ], {"enabled": False, "types": []}
+        ], {"enabled": False, "types": [], "aggregate_enabled": False, "aggregate_time": 15}
     
     def get_page(self) -> List[dict]:
         pass
 
     @eventmanager.register(EventType.WebhookMessage)
     def send(self, event: Event):
+        """事件分发主入口"""
         try:
             if not self._enabled: return
             event_info: WebhookEventInfo = event.event_data
-            if not event_info or not self._webhook_actions.get(event_info.event): return
-            if not any(event_info.event in _type.split("|") for _type in self._types): return
-
-            if event_info.server_name and not self.service_info(name=event_info.server_name): return
-
-            expiring_key = f"{event_info.item_id}-{event_info.client}-{event_info.user_name}"
-            if str(event_info.event) == "playback.stop" and expiring_key in self._webhook_msg_keys:
-                self._add_key_cache(expiring_key)
+            if not event_info: return
+            
+            # 兼容性处理：如果没有映射的动作，尝试使用原始事件名
+            if not self._webhook_actions.get(event_info.event):
+                logger.debug(f"未知的Webhook事件类型: {event_info.event}")
                 return
-            with self._lock:
-                current_time = time.time()
-                last_event, last_time = self._last_event_cache
-                if last_event and (current_time - last_time < 3):
-                    if last_event.event_id == event.event_id or last_event.event_data == event_info: return
-                self._last_event_cache = (event, current_time)
 
-            tmdb_id = event_info.tmdb_id
-            if not tmdb_id and event_info.json_object:
-                provider_ids = event_info.json_object.get('Item', {}).get('ProviderIds', {})
-                tmdb_id = provider_ids.get('Tmdb')
-            
-            if not tmdb_id and event_info.item_path:
-                if match := re.search(r'[\[{](?:tmdbid|tmdb)[=-](\d+)[\]}]', event_info.item_path, re.IGNORECASE):
-                    tmdb_id = match.group(1)
+            # 类型过滤
+            if not any(event_info.event in _type.split("|") for _type in self._types): 
+                return
 
-            # SeriesId 反查
-            if not tmdb_id and event_info.json_object:
-                item_data = event_info.json_object.get('Item', {})
-                series_id = item_data.get('SeriesId')
-                if series_id and item_data.get('Type') == 'Episode':
-                    try:
-                        service = self.service_info(event_info.server_name)
-                        if service:
-                            host = service.config.config.get('host')
-                            apikey = service.config.config.get('apikey')
-                            if host and apikey:
-                                import requests
-                                api_url = f"{host}/emby/Items?Ids={series_id}&Fields=ProviderIds&api_key={apikey}"
-                                res = requests.get(api_url, timeout=5)
-                                if res.status_code == 200:
-                                    data = res.json()
-                                    if data and data.get('Items'):
-                                        parent_ids = data['Items'][0].get('ProviderIds', {})
-                                        tmdb_id = parent_ids.get('Tmdb')
-                    except Exception: pass
+            if event_info.server_name and not self.service_info(name=event_info.server_name): 
+                return
 
-            event_info.tmdb_id = tmdb_id
-            
-            message_texts = []
-            message_title = ""
-            image_url = event_info.image_url
-            
-            if event_info.json_object and event_info.json_object.get('Item', {}).get('Type') == 'MusicAlbum':
+            event_type = str(event_info.event).lower()
+
+            # === 1. 系统测试消息 ===
+            if "test" in event_type:
+                self._handle_test_event(event_info)
+                return
+
+            # === 2. 用户登录消息 ===
+            if "user.authentic" in event_type:
+                self._handle_login_event(event_info)
+                return
+
+            # === 3. 评分/标记消息 ===
+            if "item." in event_type and "rate" in event_type:
+                self._handle_rate_event(event_info)
+                return
+
+            # === 4. 音乐专辑处理 (仅入库时) ===
+            if event_info.json_object and event_info.json_object.get('Item', {}).get('Type') == 'MusicAlbum' and event_type == 'library.new':
                 self._handle_music_album(event_info, event_info.json_object.get('Item', {}))
                 return
 
-            # --- 音频单曲处理 ---
-            if event_info.item_type == "AUD":
-                item_data = event_info.json_object.get('Item', {})
-                song_name = item_data.get('Name') or event_info.item_name
+            # === 5. 剧集聚合处理 (仅TV入库时) ===
+            if (self._aggregate_enabled and 
+                event_type == "library.new" and 
+                event_info.item_type in ["TV", "SHOW"]):
                 
-                # 动作
-                action_base = self._webhook_actions.get(event_info.event, "通知")
-                action_text = f"歌曲{action_base}"
-                
-                # 服务器名
-                server_name = ""
-                if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
-                    server_name = event_info.json_object.get('Server', {}).get('Name')
-                if not server_name:
-                    server_name = event_info.server_name or "Emby"
-                if not server_name.lower().endswith("emby"):
-                    server_name += "Emby"
+                series_id = self._get_series_id(event_info)
+                if series_id:
+                    self._aggregate_tv_episodes(series_id, event_info, event)
+                    return
 
-                # 纯文本标题
-                message_title = f"{song_name} {action_text} {server_name}"
-                
-                artist = (item_data.get('Artists') or ['未知歌手'])[0]
-                album = item_data.get('Album', '')
-                duration = self._format_ticks(item_data.get('RunTimeTicks', 0))
-                container = item_data.get('Container', '').upper()
-                size = self._format_size(item_data.get('Size', 0))
-
-                # 无Markdown排版
-                message_texts.append(f"⏰ 入库：{time.strftime('%H:%M:%S', time.localtime())}")
-                message_texts.append(f"👤 歌手：{artist}")
-                if album: message_texts.append(f"💿 专辑：{album}")
-                message_texts.append(f"⏱️ 时长：{duration}")
-                message_texts.append(f"📦 格式：{container} · {size}")
-
-                img = self._get_audio_image_url(event_info.server_name, item_data)
-                if img: image_url = img
-                
-            # --- 视频处理 (TV/MOV) ---
-            else:
-                tmdb_info = None
-                if tmdb_id:
-                    mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
-                    try:
-                        tmdb_info = self.chain.recognize_media(tmdbid=int(tmdb_id), mtype=mtype)
-                    except Exception: pass
-
-                # 标题与年份
-                title_name = event_info.item_name
-                if event_info.item_type in ["TV", "SHOW"] and event_info.json_object:
-                    title_name = event_info.json_object.get('Item', {}).get('SeriesName') or title_name
-                
-                year = tmdb_info.year if (tmdb_info and tmdb_info.year) else event_info.json_object.get('Item', {}).get('ProductionYear')
-                if year and str(year) not in title_name:
-                    title_name += f" ({year})"
-                
-                # 状态与类型
-                action_base = self._webhook_actions.get(event_info.event, "通知")
-                type_cn = "剧集" if event_info.item_type in ["TV", "SHOW"] else "电影"
-                action_text = f"{type_cn}{action_base}"
-                
-                # 服务器名
-                server_name = ""
-                if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
-                    server_name = event_info.json_object.get('Server', {}).get('Name')
-                if not server_name:
-                    server_name = event_info.server_name or "Emby"
-                if not server_name.lower().endswith("emby"):
-                    server_name += "Emby"
-
-                # === 修改开始：TG 隐藏超链支持 ===
-                tmdb_url = ""
-                if tmdb_id:
-                    media_type_url = "movie" if event_info.item_type == "MOV" else "tv"
-                    tmdb_url = f"https://www.themoviedb.org/{media_type_url}/{tmdb_id}"
-
-                if tmdb_url:
-                    # 使用 Markdown 格式：[标题](链接)
-                    # TG: 显示为可点击的标题，不显示 URL。
-                    # 微信: 可能会显示源码或纯文本，但不展示冗余的长链接。
-                    message_title = f"[{title_name}]({tmdb_url}) {action_text} {server_name}"
-                else:
-                    message_title = f"{title_name} {action_text} {server_name}"
-                # === 修改结束 ===
-
-                # === 视频内容排序 (无Markdown) ===
-                message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
-                
-                is_folder = event_info.json_object.get('Item', {}).get('IsFolder', False) if event_info.json_object else False
-                path_category = self._get_category_from_path(event_info.item_path, event_info.item_type, is_folder)
-                if path_category:
-                    message_texts.append(f"📂 分类：{path_category}")
-
-                self._append_season_episode_info(message_texts, event_info, title_name)
-                self._append_meta_info(message_texts, tmdb_info)
-                self._append_genres_actors(message_texts, tmdb_info)
-
-                overview = ""
-                if tmdb_info and tmdb_info.overview: overview = tmdb_info.overview
-                elif event_info.overview: overview = event_info.overview
-                
-                if overview:
-                    if len(overview) > self._overview_max_length:
-                        overview = overview[:self._overview_max_length].rstrip() + "..."
-                    message_texts.append("\n━━━━━━━━━━━━━━━━━━\n") 
-                    message_texts.append(f"📖 剧情简介\n{overview}")
-
-                if not image_url:
-                    if event_info.item_type in ["TV", "SHOW"] and tmdb_id:
-                        image_url = self._get_tmdb_image(event_info, MediaType.TV)
-                    elif event_info.item_type == "MOV" and tmdb_id:
-                        image_url = self._get_tmdb_image(event_info, MediaType.MOVIE)
-
-            self._append_extra_info(message_texts, event_info)
-            play_link = self._get_play_link(event_info)
-
-            if not image_url:
-                image_url = self._webhook_images.get(event_info.channel)
-
-            if str(event_info.event) == "playback.stop":
-                self._add_key_cache(expiring_key)
-            if str(event_info.event) == "playback.start":
-                self._remove_key_cache(expiring_key)
-
-            self.post_message(
-                mtype=NotificationType.MediaServer,
-                title=message_title,
-                text="\n" + "\n".join(message_texts),
-                image=image_url,
-                link=play_link
-            )
+            # === 6. 常规媒体消息 (电影入库、播放开始/停止、单集入库、单曲入库等) ===
+            self._process_media_event(event, event_info)
 
         except Exception as e:
-            logger.error(f"webhook处理异常: {str(e)}")
+            logger.error(f"Webhook分发异常: {str(e)}")
             logger.error(traceback.format_exc())
+
+    def _handle_test_event(self, event_info: WebhookEventInfo):
+        """处理测试消息"""
+        title = f"🔔 媒体服务器通知测试"
+        server_name = self._get_server_name_cn(event_info)
+        texts = [
+            f"来自：{server_name}",
+            f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"状态：连接正常"
+        ]
+        if event_info.user_name:
+            texts.append(f"用户：{event_info.user_name}")
+            
+        self.post_message(
+            mtype=NotificationType.MediaServer,
+            title=title,
+            text="\n".join(texts),
+            image=self._webhook_images.get(event_info.channel)
+        )
+
+    def _handle_login_event(self, event_info: WebhookEventInfo):
+        """处理登录消息"""
+        action = "登录成功" if "authenticated" in event_info.event and "failed" not in event_info.event else "登录失败"
+        title = f"🔐 {action}提醒"
+        
+        texts = []
+        texts.append(f"👤 用户：{event_info.user_name}")
+        texts.append(f"⏰ 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if event_info.device_name:
+            texts.append(f"📱 设备：{event_info.client} {event_info.device_name}")
+        if event_info.ip:
+            texts.append(f"🌐 IP：{event_info.ip} {WebUtils.get_location(event_info.ip)}")
+            
+        server_name = self._get_server_name_cn(event_info)
+        texts.append(f"🖥️ 服务器：{server_name}")
+
+        self.post_message(
+            mtype=NotificationType.MediaServer,
+            title=title,
+            text="\n".join(texts),
+            image=self._webhook_images.get(event_info.channel)
+        )
+
+    def _handle_rate_event(self, event_info: WebhookEventInfo):
+        """处理评分消息"""
+        item_name = event_info.item_name
+        # 尝试获取评分值（部分服务器可能不传）
+        rating = "❤️"
+        if event_info.json_object and event_info.json_object.get("Item"):
+            pass
+            
+        title = f"⭐ 用户评分：{item_name}"
+        texts = []
+        texts.append(f"👤 用户：{event_info.user_name}")
+        texts.append(f"🏷️ 标记：{self._webhook_actions.get(event_info.event, '已标记')}")
+        texts.append(f"⏰ 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 尝试获取图片
+        tmdb_id = self._extract_tmdb_id(event_info)
+        image_url = event_info.image_url
+        if not image_url and tmdb_id:
+             mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
+             image_url = self._get_tmdb_image(event_info, mtype)
+
+        self.post_message(
+            mtype=NotificationType.MediaServer,
+            title=title,
+            text="\n".join(texts),
+            image=image_url
+        )
+
+    def _process_media_event(self, event: Event, event_info: WebhookEventInfo):
+        """处理常规媒体消息（入库/播放）"""
+        # 1. 防重复与防抖
+        expiring_key = f"{event_info.item_id}-{event_info.client}-{event_info.user_name}-{event_info.event}"
+        if str(event_info.event) == "playback.stop" and expiring_key in self._webhook_msg_keys:
+            self._add_key_cache(expiring_key)
+            return
+        
+        with self._lock:
+            current_time = time.time()
+            last_event, last_time = self._last_event_cache
+            if last_event and (current_time - last_time < 2):
+                if last_event.event_id == event.event_id or last_event.event_data == event_info: return
+            self._last_event_cache = (event, current_time)
+
+        # 2. 元数据识别
+        tmdb_id = self._extract_tmdb_id(event_info)
+        event_info.tmdb_id = tmdb_id
+        
+        message_texts = []
+        message_title = ""
+        image_url = event_info.image_url
+        
+        # 3. 音频单曲特殊处理
+        if event_info.item_type == "AUD":
+            self._build_audio_message(event_info, message_texts)
+            # 标题构造
+            action_base = self._webhook_actions.get(event_info.event, "通知")
+            server_name = self._get_server_name_cn(event_info)
+            song_name = event_info.item_name
+            if event_info.json_object:
+                song_name = event_info.json_object.get('Item', {}).get('Name') or song_name
+            message_title = f"{song_name} {action_base} {server_name}"
+            # 图片
+            img = self._get_audio_image_url(event_info.server_name, event_info.json_object.get('Item', {}))
+            if img: image_url = img
+
+        # 4. 视频处理 (TV/MOV)
+        else:
+            tmdb_info = None
+            if tmdb_id:
+                mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
+                try:
+                    tmdb_info = self.chain.recognize_media(tmdbid=int(tmdb_id), mtype=mtype)
+                except Exception: pass
+
+            # 标题构造
+            title_name = event_info.item_name
+            if event_info.item_type in ["TV", "SHOW"] and event_info.json_object:
+                title_name = event_info.json_object.get('Item', {}).get('SeriesName') or title_name
+            
+            year = tmdb_info.year if (tmdb_info and tmdb_info.year) else event_info.json_object.get('Item', {}).get('ProductionYear')
+            if year and str(year) not in title_name:
+                title_name += f" ({year})"
+            
+            action_base = self._webhook_actions.get(event_info.event, "通知")
+            type_cn = "剧集" if event_info.item_type in ["TV", "SHOW"] else "电影"
+            action_text = f"{type_cn}{action_base}"
+            server_name = self._get_server_name_cn(event_info)
+
+            # 超链处理
+            tmdb_url = ""
+            if tmdb_id:
+                media_type_url = "movie" if event_info.item_type == "MOV" else "tv"
+                tmdb_url = f"https://www.themoviedb.org/{media_type_url}/{tmdb_id}"
+
+            if tmdb_url:
+                message_title = f"[{title_name}]({tmdb_url}) {action_text} {server_name}"
+            else:
+                message_title = f"{title_name} {action_text} {server_name}"
+
+            # 内容构造
+            message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+            
+            is_folder = event_info.json_object.get('Item', {}).get('IsFolder', False) if event_info.json_object else False
+            path_category = self._get_category_from_path(event_info.item_path, event_info.item_type, is_folder)
+            if path_category:
+                message_texts.append(f"📂 分类：{path_category}")
+
+            self._append_season_episode_info(message_texts, event_info, title_name)
+            self._append_meta_info(message_texts, tmdb_info)
+            self._append_genres_actors(message_texts, tmdb_info)
+
+            # 简介 (播放事件可能不需要太长的简介，可选优化)
+            overview = ""
+            if tmdb_info and tmdb_info.overview: overview = tmdb_info.overview
+            elif event_info.overview: overview = event_info.overview
+            
+            if overview:
+                if len(overview) > self._overview_max_length:
+                    overview = overview[:self._overview_max_length].rstrip() + "..."
+                message_texts.append("\n━━━━━━━━━━━━━━━━━━\n") 
+                message_texts.append(f"📖 剧情简介\n{overview}")
+
+            # 图片
+            if not image_url:
+                if event_info.item_type in ["TV", "SHOW"] and tmdb_id:
+                    image_url = self._get_tmdb_image(event_info, MediaType.TV)
+                elif event_info.item_type == "MOV" and tmdb_id:
+                    image_url = self._get_tmdb_image(event_info, MediaType.MOVIE)
+
+        # 5. 附加信息（用户、进度等）
+        self._append_extra_info(message_texts, event_info)
+        
+        # 6. 播放链接
+        play_link = self._get_play_link(event_info)
+
+        # 7. 兜底图片
+        if not image_url:
+            image_url = self._webhook_images.get(event_info.channel)
+
+        # 8. 缓存管理（用于过滤重复停止事件）
+        if str(event_info.event) == "playback.stop":
+            self._add_key_cache(expiring_key)
+        if str(event_info.event) == "playback.start":
+            self._remove_key_cache(expiring_key)
+
+        # 9. 发送
+        self.post_message(
+            mtype=NotificationType.MediaServer,
+            title=message_title,
+            text="\n" + "\n".join(message_texts),
+            image=image_url,
+            link=play_link
+        )
+
+    # === 辅助构建函数 ===
+    def _build_audio_message(self, event_info, texts):
+        item_data = event_info.json_object.get('Item', {})
+        artist = (item_data.get('Artists') or ['未知歌手'])[0]
+        album = item_data.get('Album', '')
+        duration = self._format_ticks(item_data.get('RunTimeTicks', 0))
+        container = item_data.get('Container', '').upper()
+        size = self._format_size(item_data.get('Size', 0))
+
+        texts.append(f"⏰ 时间：{time.strftime('%H:%M:%S', time.localtime())}")
+        texts.append(f"👤 歌手：{artist}")
+        if album: texts.append(f"💿 专辑：{album}")
+        texts.append(f"⏱️ 时长：{duration}")
+        texts.append(f"📦 格式：{container} · {size}")
+
+    def _get_series_id(self, event_info: WebhookEventInfo) -> Optional[str]:
+        if event_info.json_object and isinstance(event_info.json_object, dict):
+            item = event_info.json_object.get("Item", {})
+            return item.get("SeriesId") or item.get("SeriesName")
+        return getattr(event_info, "series_id", None)
+
+    # === 剧集聚合逻辑 ===
+    def _aggregate_tv_episodes(self, series_id: str, event_info: WebhookEventInfo, event: Event):
+        with self._lock:
+            if series_id not in self._pending_messages:
+                self._pending_messages[series_id] = []
+            
+            self._pending_messages[series_id].append((event_info, event))
+            
+            if series_id in self._aggregate_timers:
+                self._aggregate_timers[series_id].cancel()
+            
+            timer = threading.Timer(self._aggregate_time, self._send_aggregated_message, [series_id])
+            self._aggregate_timers[series_id] = timer
+            timer.start()
+
+    def _send_aggregated_message(self, series_id: str):
+        with self._lock:
+            if series_id not in self._pending_messages or not self._pending_messages[series_id]:
+                if series_id in self._aggregate_timers: del self._aggregate_timers[series_id]
+                return
+            msg_list = self._pending_messages.pop(series_id)
+            if series_id in self._aggregate_timers: del self._aggregate_timers[series_id]
+
+        if not msg_list: return
+        
+        # 单条直接回退到常规处理
+        if len(msg_list) == 1:
+            self._process_media_event(msg_list[0][1], msg_list[0][0])
+            return
+
+        # 多条聚合
+        first_info = msg_list[0][0]
+        events_info = [x[0] for x in msg_list]
+        count = len(events_info)
+
+        tmdb_id = self._extract_tmdb_id(first_info)
+        first_info.tmdb_id = tmdb_id
+        
+        tmdb_info = None
+        if tmdb_id:
+            try:
+                tmdb_info = self.chain.recognize_media(tmdbid=int(tmdb_id), mtype=MediaType.TV)
+            except: pass
+
+        title_name = first_info.item_name
+        if first_info.json_object:
+            title_name = first_info.json_object.get('Item', {}).get('SeriesName') or title_name
+        
+        year = tmdb_info.year if (tmdb_info and tmdb_info.year) else first_info.json_object.get('Item', {}).get('ProductionYear')
+        if year and str(year) not in title_name:
+            title_name += f" ({year})"
+        
+        server_name = self._get_server_name_cn(first_info)
+        tmdb_url = f"https://www.themoviedb.org/tv/{tmdb_id}" if tmdb_id else ""
+        
+        if tmdb_url:
+            message_title = f"[{title_name}]({tmdb_url}) 已入库 (含{count}个文件) {server_name}"
+        else:
+            message_title = f"{title_name} 已入库 (含{count}个文件) {server_name}"
+
+        message_texts = []
+        message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
+        
+        path_category = self._get_category_from_path(first_info.item_path, "TV", False)
+        if path_category:
+            message_texts.append(f"📂 分类：{path_category}")
+
+        episodes_str = self._merge_continuous_episodes(events_info)
+        message_texts.append(f"📺 季集：{episodes_str}")
+
+        self._append_meta_info(message_texts, tmdb_info)
+        self._append_genres_actors(message_texts, tmdb_info)
+
+        overview = ""
+        if tmdb_info and tmdb_info.overview: overview = tmdb_info.overview
+        elif first_info.overview: overview = first_info.overview
+        
+        if overview:
+            if len(overview) > self._overview_max_length:
+                overview = overview[:self._overview_max_length].rstrip() + "..."
+            message_texts.append("\n━━━━━━━━━━━━━━━━━━\n") 
+            message_texts.append(f"📖 剧情简介\n{overview}")
+
+        image_url = first_info.image_url
+        if not image_url and tmdb_id:
+            image_url = self._get_tmdb_image(first_info, MediaType.TV)
+        if not image_url:
+            image_url = self._webhook_images.get(first_info.channel)
+        
+        play_link = self._get_play_link(first_info)
+
+        self.post_message(
+            mtype=NotificationType.MediaServer,
+            title=message_title,
+            text="\n" + "\n".join(message_texts),
+            image=image_url,
+            link=play_link
+        )
+
+    # === 集数合并逻辑 ===
+    def _merge_continuous_episodes(self, events: List[WebhookEventInfo]) -> str:
+        season_episodes = {}
+        for event in events:
+            season, episode = None, None
+            episode_name = ""
+            if event.json_object and isinstance(event.json_object, dict):
+                item = event.json_object.get("Item", {})
+                season = item.get("ParentIndexNumber")
+                episode = item.get("IndexNumber")
+                episode_name = item.get("Name", "")
+            
+            if season is None: season = getattr(event, "season_id", None)
+            if episode is None: episode = getattr(event, "episode_id", None)
+            if not episode_name: episode_name = getattr(event, "item_name", "")
+
+            if season is not None and episode is not None:
+                if season not in season_episodes: season_episodes[season] = []
+                season_episodes[season].append({"episode": int(episode), "name": episode_name})
+
+        merged_details = []
+        for season in sorted(season_episodes.keys()):
+            episodes = season_episodes[season]
+            episodes.sort(key=lambda x: x["episode"])
+            if not episodes: continue
+
+            start = episodes[0]["episode"]
+            end = episodes[0]["episode"]
+            
+            for i in range(1, len(episodes)):
+                current = episodes[i]["episode"]
+                if current == end + 1:
+                    end = current
+                else:
+                    merged_details.append(f"S{str(season).zfill(2)}E{str(start).zfill(2)}-E{str(end).zfill(2)}" if start != end else f"S{str(season).zfill(2)}E{str(start).zfill(2)}")
+                    start = end = current
+            
+            merged_details.append(f"S{str(season).zfill(2)}E{str(start).zfill(2)}-E{str(end).zfill(2)}" if start != end else f"S{str(season).zfill(2)}E{str(start).zfill(2)}")
+        
+        return ", ".join(merged_details)
+
+    def _extract_tmdb_id(self, event_info: WebhookEventInfo) -> Optional[str]:
+        tmdb_id = event_info.tmdb_id
+        if not tmdb_id and event_info.json_object:
+            provider_ids = event_info.json_object.get('Item', {}).get('ProviderIds', {})
+            tmdb_id = provider_ids.get('Tmdb')
+        
+        if not tmdb_id and event_info.item_path:
+            if match := re.search(r'[\[{](?:tmdbid|tmdb)[=-](\d+)[\]}]', event_info.item_path, re.IGNORECASE):
+                tmdb_id = match.group(1)
+
+        if not tmdb_id and event_info.json_object:
+            item_data = event_info.json_object.get('Item', {})
+            series_id = item_data.get('SeriesId')
+            if series_id and item_data.get('Type') == 'Episode':
+                try:
+                    service = self.service_info(event_info.server_name)
+                    if service:
+                        host = service.config.config.get('host')
+                        apikey = service.config.config.get('apikey')
+                        if host and apikey:
+                            import requests
+                            api_url = f"{host}/emby/Items?Ids={series_id}&Fields=ProviderIds&api_key={apikey}"
+                            res = requests.get(api_url, timeout=5)
+                            if res.status_code == 200:
+                                data = res.json()
+                                if data and data.get('Items'):
+                                    parent_ids = data['Items'][0].get('ProviderIds', {})
+                                    tmdb_id = parent_ids.get('Tmdb')
+                except Exception: pass
+        return tmdb_id
+
+    def _get_server_name_cn(self, event_info):
+        server_name = ""
+        if event_info.json_object and isinstance(event_info.json_object.get('Server'), dict):
+            server_name = event_info.json_object.get('Server', {}).get('Name')
+        if not server_name:
+            server_name = event_info.server_name or "Emby"
+        if not server_name.lower().endswith("emby"):
+            server_name += "Emby"
+        return server_name
 
     def _get_audio_image_url(self, server_name: str, item_data: dict) -> Optional[str]:
         if not server_name: return None
@@ -480,7 +789,6 @@ class mediaservermsgai(_PluginBase):
             if genres: texts.append(f"🎭 类型：{'、'.join(genres)}")
         
         if hasattr(tmdb_info, 'actors') and tmdb_info.actors:
-            # 修改：只保留前 3 位演员
             actors = [a.get('name') if isinstance(a, dict) else str(a) for a in tmdb_info.actors[:3]]
             if actors: texts.append(f"🎬 演员：{'、'.join(actors)}")
 
@@ -510,12 +818,12 @@ class mediaservermsgai(_PluginBase):
         return service.instance.get_play_url(event_info.item_id) if service else None
 
     def _format_ticks(self, ticks) -> str:
-        if not ticks: return "未知"
+        if not ticks: return "00:00"
         s = ticks / 10000000
         return f"{int(s // 60)}:{int(s % 60):02d}"
 
     def _format_size(self, size) -> str:
-        if not size: return "未知"
+        if not size: return "0MB"
         return f"{round(size / 1024 / 1024, 1)} MB"
 
     def _add_key_cache(self, key):
@@ -525,4 +833,10 @@ class mediaservermsgai(_PluginBase):
         if key in self._webhook_msg_keys: del self._webhook_msg_keys[key]
 
     def stop_service(self):
-        pass
+        for series_id in list(self._pending_messages.keys()):
+            self._send_aggregated_message(series_id)
+        
+        for timer in self._aggregate_timers.values():
+            timer.cancel()
+        self._aggregate_timers.clear()
+        self._pending_messages.clear()
