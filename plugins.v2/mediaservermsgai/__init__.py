@@ -6,52 +6,66 @@ import os
 import urllib.parse
 from typing import Any, List, Dict, Tuple, Optional
 
+from app.core.cache import cached
 from app.core.event import eventmanager, Event
 from app.helper.mediaserver import MediaServerHelper
 from app.log import logger
+from app.modules.themoviedb import CategoryHelper
 from app.plugins import _PluginBase
-from app.schemas import WebhookEventInfo, ServiceInfo
+from app.schemas import WebhookEventInfo, ServiceInfo, MediaServerItem
 from app.schemas.types import EventType, MediaType, MediaImageType, NotificationType
 from app.utils.web import WebUtils
 
+
 class mediaservermsgai(_PluginBase):
-    # 插件名称
+    """
+    媒体服务器通知插件 AI增强版
+
+    功能：
+    1. 监听Emby/Jellyfin/Plex等媒体服务器的Webhook事件
+    2. 根据配置发送播放、入库等通知消息
+    3. 对TV剧集入库事件进行智能聚合，避免消息轰炸
+    4. 支持多种媒体服务器和丰富的消息类型配置
+    5. 基于TMDB元数据增强消息内容（评分、分类、演员等）
+    6. 支持音乐专辑和单曲入库通知
+    """
+
+    # ==================== 常量定义 ====================
+    DEFAULT_EXPIRATION_TIME = 600              # 默认过期时间（秒）
+    DEFAULT_AGGREGATE_TIME = 15                # 默认聚合时间（秒）
+    DEFAULT_OVERVIEW_MAX_LENGTH = 150          # 默认简介最大长度
+    IMAGE_CACHE_MAX_SIZE = 100                 # 图片缓存最大数量
+
+    # ==================== 插件基本信息 ====================
     plugin_name = "媒体库服务器通知AI版"
-    # 插件描述
     plugin_desc = "基于Emby识别结果+TMDB元数据+微信清爽版(全消息类型+剧集聚合)"
-    # 插件图标
     plugin_icon = "mediaplay.png"
-    # 插件版本
-    plugin_version = "1.7.6"
-    # 插件作者
+    plugin_version = "1.8.0"
     plugin_author = "jxxghp"
-    # 作者主页
     author_url = "https://github.com/jxxghp"
-    # 插件配置项ID前缀
     plugin_config_prefix = "mediaservermsgai_"
-    # 加载顺序
     plugin_order = 14
-    # 可使用的用户级别
     auth_level = 1
 
-    # 私有属性
-    _enabled = False
-    _add_play_link = False
-    _mediaservers = None
-    _types = []
-    _webhook_msg_keys = {}
-    _lock = threading.Lock()
-    _last_event_cache: Tuple[Optional[Event], float] = (None, 0.0)
-    _image_cache = {}
-    _overview_max_length = 150
+    # ==================== 插件运行时状态配置 ====================
+    _enabled = False                           # 插件是否启用
+    _add_play_link = False                     # 是否添加播放链接
+    _mediaservers = None                       # 媒体服务器列表
+    _types = []                                # 启用的消息类型
+    _webhook_msg_keys = {}                     # Webhook消息去重缓存
+    _lock = threading.Lock()                   # 线程锁
+    _last_event_cache: Tuple[Optional[Event], float] = (None, 0.0)  # 事件去重缓存
+    _image_cache = {}                          # 图片URL缓存
+    _overview_max_length = DEFAULT_OVERVIEW_MAX_LENGTH  # 简介最大长度
 
-    # === 聚合配置 ===
-    _aggregate_enabled = False
-    _aggregate_time = 15
-    _pending_messages = {}
-    _aggregate_timers = {}
+    # ==================== TV剧集消息聚合配置 ====================
+    _aggregate_enabled = False                 # 是否启用TV剧集聚合功能
+    _aggregate_time = DEFAULT_AGGREGATE_TIME   # 聚合时间窗口（秒）
+    _pending_messages = {}                     # 待聚合的消息 {series_key: [(event_info, event), ...]}
+    _aggregate_timers = {}                     # 聚合定时器 {series_key: timer}
+    _smart_category_enabled = True             # 是否启用智能分类（CategoryHelper）
 
-    # === 完整的动作映射 ===
+    # ==================== Webhook事件映射配置 ====================
     _webhook_actions = {
         "library.new": "已入库",
         "system.webhooktest": "测试",
@@ -68,16 +82,19 @@ class mediaservermsgai(_PluginBase):
         "media.resume": "继续播放",
         "item.rate": "标记了",
         "item.markplayed": "标记已播放",
-        "item.markunplayed": "标记未播放"
+        "item.markunplayed": "标记未播放",
+        "PlaybackStart": "开始播放",
+        "PlaybackStop": "停止播放"
     }
     
-    # === 优化后的官方高清图标 (方案1) ===
+    # ==================== 媒体服务器默认图标（优化后的官方高清图标）====================
     _webhook_images = {
         "emby": "https://raw.githubusercontent.com/MediaBrowser/Emby.Resources/master/images/Logos/logo.png",
         "plex": "https://raw.githubusercontent.com/plexinc/plex-media-player/master/resources/images/plex-icon.png",
         "jellyfin": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/PNG/icon-transparent.png"
     }
 
+    # ==================== 国家/地区中文映射 ====================
     _country_cn_map = {
         'CN': '中国大陆', 'US': '美国', 'JP': '日本', 'KR': '韩国',
         'HK': '中国香港', 'TW': '中国台湾', 'GB': '英国', 'FR': '法国',
@@ -89,40 +106,110 @@ class mediaservermsgai(_PluginBase):
         'NO': '挪威', 'FI': '芬兰', 'PL': '波兰', 'TR': '土耳其'
     }
 
+    def __init__(self):
+        """
+        初始化插件实例
+        """
+        super().__init__()
+        self.category = CategoryHelper()
+        logger.debug("媒体服务器消息插件AI版初始化完成")
+
     def init_plugin(self, config: dict = None):
+        """
+        初始化插件配置
+
+        Args:
+            config (dict, optional): 插件配置参数
+        """
         if config:
             self._enabled = config.get("enabled")
             self._types = config.get("types") or []
             self._mediaservers = config.get("mediaservers") or []
             self._add_play_link = config.get("add_play_link", False)
-            self._overview_max_length = config.get("overview_max_length", 150)
+            self._overview_max_length = int(config.get("overview_max_length", self.DEFAULT_OVERVIEW_MAX_LENGTH))
             self._aggregate_enabled = config.get("aggregate_enabled", False)
-            self._aggregate_time = int(config.get("aggregate_time", 15))
+            self._aggregate_time = int(config.get("aggregate_time", self.DEFAULT_AGGREGATE_TIME))
+            self._smart_category_enabled = config.get("smart_category_enabled", True)
 
     def service_infos(self, type_filter: Optional[str] = None) -> Optional[Dict[str, ServiceInfo]]:
-        if not self._mediaservers: return None
+        """
+        获取媒体服务器信息服务信息
+
+        Args:
+            type_filter (str, optional): 媒体服务器类型过滤器
+
+        Returns:
+            Dict[str, ServiceInfo]: 活跃的媒体服务器服务信息字典
+        """
+        if not self._mediaservers:
+            logger.debug("尚未配置媒体服务器")
+            return None
         services = MediaServerHelper().get_services(type_filter=type_filter, name_filters=self._mediaservers)
-        if not services: return None
-        return {k: v for k, v in services.items() if not v.instance.is_inactive()}
+        if not services:
+            logger.debug("获取媒体服务器实例失败")
+            return None
+        
+        active_services = {}
+        for service_name, service_info in services.items():
+            if service_info.instance.is_inactive():
+                logger.warning(f"媒体服务器 {service_name} 未连接")
+            else:
+                active_services[service_name] = service_info
+        
+        return active_services if active_services else None
 
     def service_info(self, name: str) -> Optional[ServiceInfo]:
+        """
+        根据名称获取特定媒体服务器服务信息
+
+        Args:
+            name (str): 媒体服务器名称
+
+        Returns:
+            ServiceInfo: 媒体服务器服务信息
+        """
         return (self.service_infos() or {}).get(name)
 
     def get_state(self) -> bool:
+        """
+        获取插件状态
+
+        Returns:
+            bool: 插件是否启用
+        """
         return self._enabled
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
+        """
+        获取插件命令（当前未实现）
+
+        Returns:
+            List[Dict[str, Any]]: 空列表
+        """
         pass
 
     def get_api(self) -> List[Dict[str, Any]]:
+        """
+        获取插件API（当前未实现）
+
+        Returns:
+            List[Dict[str, Any]]: 空列表
+        """
         pass
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """
+        拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
+        
+        Returns:
+            Tuple[List[dict], Dict[str, Any]]: 页面配置和默认数据
+        """
         types_options = [
             {"title": "新入库", "value": "library.new"},
             {"title": "开始播放", "value": "playback.start|media.play|PlaybackStart"},
             {"title": "停止播放", "value": "playback.stop|media.stop|PlaybackStop"},
+            {"title": "暂停/继续", "value": "playback.pause|playback.unpause|media.pause|media.resume"},
             {"title": "用户标记", "value": "item.rate|item.markplayed|item.markunplayed"},
             {"title": "登录提醒", "value": "user.authenticated|user.authenticationfailed"},
             {"title": "系统测试", "value": "system.webhooktest|system.notificationtest"},
@@ -153,7 +240,8 @@ class mediaservermsgai(_PluginBase):
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'aggregate_enabled', 'label': '启用TV剧集入库聚合'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'aggregate_enabled', 'label': '启用TV剧集入库聚合'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 6}, 'content': [{'component': 'VSwitch', 'props': {'model': 'smart_category_enabled', 'label': '启用智能分类（关闭则使用路径解析）'}}]}
                         ]
                     },
                     {
@@ -165,29 +253,70 @@ class mediaservermsgai(_PluginBase):
                     }
                 ]
             }
-        ], {"enabled": False, "types": [], "aggregate_enabled": False, "aggregate_time": 15}
+        ], {
+            "enabled": False, 
+            "types": [], 
+            "aggregate_enabled": False, 
+            "aggregate_time": self.DEFAULT_AGGREGATE_TIME,
+            "smart_category_enabled": True
+        }
     
     def get_page(self) -> List[dict]:
+        """
+        获取插件页面（当前未实现）
+
+        Returns:
+            List[dict]: 空列表
+        """
         pass
 
     @eventmanager.register(EventType.WebhookMessage)
     def send(self, event: Event):
-        """事件分发主入口"""
+        """
+        发送通知消息主入口函数
+        处理来自媒体服务器的Webhook事件，并根据配置决定是否发送通知消息
+
+        处理流程：
+        1. 检查插件是否启用
+        2. 验证事件数据有效性
+        3. 检查事件类型是否在支持范围内
+        4. 检查事件类型是否在用户配置的允许范围内
+        5. 验证媒体服务器配置
+        6. 根据事件类型分发到对应处理函数
+
+        Args:
+            event (Event): Webhook事件对象
+        """
         try:
-            if not self._enabled: return
+            if not self._enabled:
+                logger.debug("插件未启用")
+                return
+            
             event_info: WebhookEventInfo = event.event_data
-            if not event_info: return
+            if not event_info:
+                logger.debug("事件数据为空")
+                return
+            
+            # 打印event_info用于调试
+            logger.debug(f"收到Webhook事件: {event_info}")
             
             # 兼容性处理：如果没有映射的动作，尝试使用原始事件名
             if not self._webhook_actions.get(event_info.event):
                 logger.debug(f"未知的Webhook事件类型: {event_info.event}")
                 return
 
-            # 类型过滤
-            if not any(event_info.event in _type.split("|") for _type in self._types): 
+            # 类型过滤 - 将配置的类型预处理为一个扁平集合，提高查找效率
+            allowed_types = set()
+            for _type in self._types:
+                allowed_types.update(_type.split("|"))
+            
+            if event_info.event not in allowed_types:
+                logger.debug(f"未开启 {event_info.event} 类型的消息通知")
                 return
 
-            if event_info.server_name and not self.service_info(name=event_info.server_name): 
+            # 验证媒体服务器配置
+            if event_info.server_name and not self.service_info(name=event_info.server_name):
+                logger.debug(f"未开启媒体服务器 {event_info.server_name} 的消息通知")
                 return
 
             event_type = str(event_info.event).lower()
@@ -203,7 +332,7 @@ class mediaservermsgai(_PluginBase):
                 return
 
             # === 3. 评分/标记消息 ===
-            if "item." in event_type and "rate" in event_type:
+            if "item." in event_type and ("rate" in event_type or "mark" in event_type):
                 self._handle_rate_event(event_info)
                 return
 
@@ -219,6 +348,7 @@ class mediaservermsgai(_PluginBase):
                 
                 series_id = self._get_series_id(event_info)
                 if series_id:
+                    logger.debug(f"满足TV剧集聚合条件，series_id={series_id}")
                     self._aggregate_tv_episodes(series_id, event_info, event)
                     return
 
@@ -230,7 +360,12 @@ class mediaservermsgai(_PluginBase):
             logger.error(traceback.format_exc())
 
     def _handle_test_event(self, event_info: WebhookEventInfo):
-        """处理测试消息"""
+        """
+        处理测试消息
+
+        Args:
+            event_info (WebhookEventInfo): Webhook事件信息
+        """
         title = f"🔔 媒体服务器通知测试"
         server_name = self._get_server_name_cn(event_info)
         texts = [
@@ -249,7 +384,12 @@ class mediaservermsgai(_PluginBase):
         )
 
     def _handle_login_event(self, event_info: WebhookEventInfo):
-        """处理登录消息"""
+        """
+        处理登录消息
+
+        Args:
+            event_info (WebhookEventInfo): Webhook事件信息
+        """
         action = "登录成功" if "authenticated" in event_info.event and "failed" not in event_info.event else "登录失败"
         title = f"🔐 {action}提醒"
         
@@ -260,7 +400,12 @@ class mediaservermsgai(_PluginBase):
         if event_info.device_name:
             texts.append(f"📱 设备：{event_info.client} {event_info.device_name}")
         if event_info.ip:
-            texts.append(f"🌐 IP：{event_info.ip} {WebUtils.get_location(event_info.ip)}")
+            try:
+                location = WebUtils.get_location(event_info.ip)
+                texts.append(f"🌐 IP：{event_info.ip} {location}")
+            except Exception as e:
+                logger.debug(f"获取IP位置信息时出错: {str(e)}")
+                texts.append(f"🌐 IP：{event_info.ip}")
             
         server_name = self._get_server_name_cn(event_info)
         texts.append(f"🖥️ 服务器：{server_name}")
@@ -273,12 +418,13 @@ class mediaservermsgai(_PluginBase):
         )
 
     def _handle_rate_event(self, event_info: WebhookEventInfo):
-        """处理评分消息"""
+        """
+        处理评分/标记消息
+
+        Args:
+            event_info (WebhookEventInfo): Webhook事件信息
+        """
         item_name = event_info.item_name
-        # 尝试获取评分值（部分服务器可能不传）
-        rating = "❤️"
-        if event_info.json_object and event_info.json_object.get("Item"):
-            pass
             
         title = f"⭐ 用户评分：{item_name}"
         texts = []
@@ -290,18 +436,21 @@ class mediaservermsgai(_PluginBase):
         tmdb_id = self._extract_tmdb_id(event_info)
         image_url = event_info.image_url
         if not image_url and tmdb_id:
-             mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
-             image_url = self._get_tmdb_image(event_info, mtype)
+            mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
+            image_url = self._get_tmdb_image(event_info, mtype)
 
         self.post_message(
             mtype=NotificationType.MediaServer,
             title=title,
             text="\n".join(texts),
-            image=image_url
+            image=image_url or self._webhook_images.get(event_info.channel)
         )
 
     def _process_media_event(self, event: Event, event_info: WebhookEventInfo):
         """处理常规媒体消息（入库/播放）"""
+        # 0. 清理过期缓存
+        self._clean_expired_cache()
+        
         # 1. 防重复与防抖
         expiring_key = f"{event_info.item_id}-{event_info.client}-{event_info.user_name}-{event_info.event}"
         if str(event_info.event) == "playback.stop" and expiring_key in self._webhook_msg_keys:
@@ -374,10 +523,23 @@ class mediaservermsgai(_PluginBase):
             # 内容构造
             message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
             
-            is_folder = event_info.json_object.get('Item', {}).get('IsFolder', False) if event_info.json_object else False
-            path_category = self._get_category_from_path(event_info.item_path, event_info.item_type, is_folder)
-            if path_category:
-                message_texts.append(f"📂 分类：{path_category}")
+            # 智能分类（优先使用CategoryHelper，fallback到路径解析）
+            category = None
+            if self._smart_category_enabled and tmdb_info:
+                try:
+                    if event_info.item_type == "MOV":
+                        category = self.category.get_movie_category(tmdb_info)
+                    else:
+                        category = self.category.get_tv_category(tmdb_info)
+                except Exception as e:
+                    logger.debug(f"获取TMDB分类时出错: {str(e)}")
+            
+            if not category:
+                is_folder = event_info.json_object.get('Item', {}).get('IsFolder', False) if event_info.json_object else False
+                category = self._get_category_from_path(event_info.item_path, event_info.item_type, is_folder)
+            
+            if category:
+                message_texts.append(f"📂 分类：{category}")
 
             self._append_season_episode_info(message_texts, event_info, title_name)
             self._append_meta_info(message_texts, tmdb_info)
@@ -510,9 +672,19 @@ class mediaservermsgai(_PluginBase):
         message_texts = []
         message_texts.append(f"⏰ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
         
-        path_category = self._get_category_from_path(first_info.item_path, "TV", False)
-        if path_category:
-            message_texts.append(f"📂 分类：{path_category}")
+        # 智能分类（优先使用CategoryHelper）
+        category = None
+        if self._smart_category_enabled and tmdb_info:
+            try:
+                category = self.category.get_tv_category(tmdb_info)
+            except Exception as e:
+                logger.debug(f"获取TMDB分类时出错: {str(e)}")
+        
+        if not category:
+            category = self._get_category_from_path(first_info.item_path, "TV", False)
+        
+        if category:
+            message_texts.append(f"📂 分类：{category}")
 
         episodes_str = self._merge_continuous_episodes(events_info)
         message_texts.append(f"📺 季集：{episodes_str}")
@@ -827,16 +999,82 @@ class mediaservermsgai(_PluginBase):
         return f"{round(size / 1024 / 1024, 1)} MB"
 
     def _add_key_cache(self, key):
-        self._webhook_msg_keys[key] = time.time() + 600
+        """添加元素到过期字典中"""
+        self._webhook_msg_keys[key] = time.time() + self.DEFAULT_EXPIRATION_TIME
 
     def _remove_key_cache(self, key):
-        if key in self._webhook_msg_keys: del self._webhook_msg_keys[key]
+        """从过期字典中移除指定元素"""
+        if key in self._webhook_msg_keys: 
+            del self._webhook_msg_keys[key]
+
+    def _clean_expired_cache(self):
+        """清理过期的缓存元素"""
+        current_time = time.time()
+        expired_keys = [k for k, v in self._webhook_msg_keys.items() if v <= current_time]
+        for key in expired_keys:
+            self._webhook_msg_keys.pop(key, None)
+
+    @cached(
+        region="MediaServerMsgAI",
+        maxsize=128,
+        ttl=600,
+        skip_none=True,
+        skip_empty=False
+    )
+    def _get_tmdb_info(self, tmdb_id: str, mtype: MediaType, season: Optional[int] = None):
+        """
+        获取TMDB信息（带缓存）
+
+        Args:
+            tmdb_id: TMDB ID
+            mtype: 媒体类型
+            season: 季数（仅电视剧需要）
+
+        Returns:
+            dict: TMDB信息
+        """
+        if mtype == MediaType.MOVIE:
+            return self.chain.tmdb_info(tmdbid=tmdb_id, mtype=mtype)
+        else:
+            tmdb_info = self.chain.tmdb_info(tmdbid=tmdb_id, mtype=mtype, season=season)
+            tmdb_info2 = self.chain.tmdb_info(tmdbid=tmdb_id, mtype=mtype)
+            if tmdb_info and tmdb_info2:
+                return {**tmdb_info2, **tmdb_info}
+            return tmdb_info or tmdb_info2
 
     def stop_service(self):
-        for series_id in list(self._pending_messages.keys()):
-            self._send_aggregated_message(series_id)
-        
-        for timer in self._aggregate_timers.values():
-            timer.cancel()
-        self._aggregate_timers.clear()
-        self._pending_messages.clear()
+        """
+        退出插件时的清理工作
+
+        确保：
+        1. 所有待处理的聚合消息被立即发送
+        2. 所有定时器被取消
+        3. 清空所有内部缓存数据
+        """
+        try:
+            # 发送所有待处理的聚合消息
+            for series_id in list(self._pending_messages.keys()):
+                try:
+                    self._send_aggregated_message(series_id)
+                except Exception as e:
+                    logger.error(f"发送聚合消息时出错: {str(e)}")
+            
+            # 取消所有定时器
+            for timer in self._aggregate_timers.values():
+                try:
+                    timer.cancel()
+                except Exception as e:
+                    logger.debug(f"取消定时器时出错: {str(e)}")
+            
+            self._aggregate_timers.clear()
+            self._pending_messages.clear()
+            self._webhook_msg_keys.clear()
+            self._image_cache.clear()
+
+            # 清理TMDB缓存
+            try:
+                self._get_tmdb_info.cache_clear()
+            except Exception as e:
+                logger.debug(f"清理TMDB缓存时出错: {str(e)}")
+        except Exception as e:
+            logger.error(f"插件停止时发生错误: {str(e)}")
