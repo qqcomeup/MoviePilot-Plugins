@@ -89,7 +89,7 @@ class mediaservermsgai(_PluginBase):
     
     # ==================== 媒体服务器默认图标（优化后的官方高清图标）====================
     _webhook_images = {
-        "emby": "https://raw.githubusercontent.com/MediaBrowser/Emby.Resources/master/images/Logos/logo.png",
+        "emby": "https://github.com/xushier/HD-Icons/blob/main/border-radius/Fast-emby_A.png?raw=true",
         "plex": "https://raw.githubusercontent.com/plexinc/plex-media-player/master/resources/images/plex-icon.png",
         "jellyfin": "https://raw.githubusercontent.com/jellyfin/jellyfin-ux/master/branding/PNG/icon-transparent.png"
     }
