@@ -89,9 +89,9 @@ class mediaservermsgai(_PluginBase):
     
     # ==================== 媒体服务器默认图标（优化后的官方高清图标）====================
     _webhook_images = {
-        "emby": "https://raw.githubusercontent.com/qqcomeup/HD-Icons/refs/heads/main/border-radius/Moviepilot_A.png",
-        "plex": "https://raw.githubusercontent.com/qqcomeup/HD-Icons/refs/heads/main/border-radius/Moviepilot_A.png",
-        "jellyfin": "https://raw.githubusercontent.com/qqcomeup/HD-Icons/refs/heads/main/border-radius/Moviepilot_A.png"
+        "emby": "https://raw.githubusercontent.com/qqcomeup/MoviePilot-Plugins/bb3ca257f74cf000640f9ebadab257bb0850baac/icons/11-11.jpg",
+        "plex": "https://raw.githubusercontent.com/qqcomeup/MoviePilot-Plugins/bb3ca257f74cf000640f9ebadab257bb0850baac/icons/11-11.jpg",
+        "jellyfin": "https://raw.githubusercontent.com/qqcomeup/MoviePilot-Plugins/bb3ca257f74cf000640f9ebadab257bb0850baac/icons/11-11.jpg"
     }
 
     # ==================== 国家/地区中文映射 ====================
