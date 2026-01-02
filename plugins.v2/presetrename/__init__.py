@@ -151,7 +151,8 @@ class PresetRename(_PluginBase):
         return None, self._get_config()
 
     def get_page(self) -> Optional[List[dict]]:
-        return None
+        """返回空列表表示没有独立页面，只有设置页面"""
+        return []
 
     # ========== API 端点 ==========
     def get_api(self) -> List[Dict[str, Any]]:
@@ -164,13 +165,21 @@ class PresetRename(_PluginBase):
         ]
 
     def _get_config(self) -> Dict[str, Any]:
+        # 获取当前 MP 系统的命名格式
+        movie_format = getattr(settings, 'MOVIE_RENAME_FORMAT', None) or ''
+        tv_format = getattr(settings, 'TV_RENAME_FORMAT', None) or ''
+        
+        # 调试日志
+        logger.debug(f"当前 MOVIE_RENAME_FORMAT: {movie_format}")
+        logger.debug(f"当前 TV_RENAME_FORMAT: {tv_format}")
+        
         return {
             "enabled": self._enabled,
             "preset": self._preset,
             "movie_template": self._movie_template,
             "tv_template": self._tv_template,
-            "current_movie_format": settings.MOVIE_RENAME_FORMAT,
-            "current_tv_format": settings.TV_RENAME_FORMAT,
+            "current_movie_format": movie_format if movie_format else "（MP默认格式）",
+            "current_tv_format": tv_format if tv_format else "（MP默认格式）",
         }
 
     def _save_config(self, config: dict) -> Dict[str, Any]:
