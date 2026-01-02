@@ -3,11 +3,12 @@
     "name": "预设命名整理方案AI",
     "description": "小白友好的命名风格选择，6种预设风格一键切换，支持自定义模板。",
     "labels": "命名整理",
-    "version": "1.0",
+    "version": "2.0",
     "icon": "mediaplay.png",
     "author": "AI",
     "level": 1,
     "history": {
+      "v2.0": "test"
       "v1.0": "test"
     }
   },
