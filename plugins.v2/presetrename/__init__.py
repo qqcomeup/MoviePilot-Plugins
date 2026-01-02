@@ -93,7 +93,7 @@ EXAMPLE_DATA = {
 
 class PresetRename(_PluginBase):
     # 插件名称
-    plugin_name = "预设命名方案AI"
+    plugin_name = "预设命名整理方案AI"
     # 插件描述
     plugin_desc = "小白友好的命名风格选择，6种预设风格一键切换，支持自定义模板。"
     # 插件图标
