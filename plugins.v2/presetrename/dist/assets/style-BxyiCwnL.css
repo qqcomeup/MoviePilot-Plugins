@@ -1,0 +1,10 @@
+
+.plugin-config[data-v-a5d8e4d2] {
+  max-width: 800px;
+  margin: 0 auto;
+}
+.preview-section[data-v-a5d8e4d2] {
+  background: rgba(var(--v-theme-surface-variant), 0.3);
+  border-radius: 8px;
+  padding: 16px;
+}
