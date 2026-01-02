@@ -3,11 +3,12 @@
     "name": "预设命名方案",
     "description": "小白友好的命名风格选择，6种预设风格一键切换，支持自定义模板。",
     "labels": "命名整理",
-    "version": "2.1.1",
+    "version": "2.1.2",
     "icon": "mediaplay.png",
     "author": "AI",
     "level": 1,
     "history": {
+      "v2.1.2": "可进入实测阶段",
       "v2.1.1": "可进入实测阶段",
       "v2.1": "可进入实测阶段",
       "v2.0": "test",
