@@ -142,10 +142,10 @@ class PresetRename(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         """定义 API 端点供 Vue 组件调用"""
         return [
-            {"path": "/config", "endpoint": self._get_config, "methods": ["GET"], "summary": "获取配置", "auth": "bear"},
-            {"path": "/config", "endpoint": self._save_config, "methods": ["POST"], "summary": "保存配置", "auth": "bear"},
-            {"path": "/preview", "endpoint": self._get_preview, "methods": ["GET"], "summary": "获取预览", "auth": "bear"},
-            {"path": "/presets", "endpoint": self._get_presets, "methods": ["GET"], "summary": "获取预设列表", "auth": "bear"},
+            {"path": "/get_config", "endpoint": self._get_config, "methods": ["GET"], "summary": "获取配置", "auth": "bear"},
+            {"path": "/save_config", "endpoint": self._save_config, "methods": ["POST"], "summary": "保存配置", "auth": "bear"},
+            {"path": "/get_preview", "endpoint": self._get_preview, "methods": ["GET"], "summary": "获取预览", "auth": "bear"},
+            {"path": "/get_presets", "endpoint": self._get_presets, "methods": ["GET"], "summary": "获取预设列表", "auth": "bear"},
         ]
 
     def _get_config(self) -> Dict[str, Any]:
