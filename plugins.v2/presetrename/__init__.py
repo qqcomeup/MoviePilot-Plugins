@@ -78,7 +78,7 @@ class PresetRename(_PluginBase):
     plugin_name = "预设命名方案"
     plugin_desc = "小白友好的命名风格选择，直接修改MP系统命名配置"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/rename.png"
-    plugin_version = "2.1.1"
+    plugin_version = "2.1.2"
     plugin_author = "AI"
     author_url = "https://github.com/"
     plugin_config_prefix = "presetrename_"
