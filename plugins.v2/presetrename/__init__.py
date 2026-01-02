@@ -98,7 +98,8 @@ class PresetRename(_PluginBase):
     _enabled = False
     _preset = "recommended"
     _separator = "."
-    _custom_templates = ""
+    _movie_template = "{{title}} ({{year}})/{{title}}.{{year}}.{{videoFormat}}.{{videoCodec}}"
+    _tv_template = "{{title}} ({{year}})/Season {{season}}/{{title}}.{{season_episode}}.{{videoFormat}}.{{videoCodec}}"
     _word_replacements: Optional[list] = []
     _custom_separator: Optional[str] = "@"
     _template_cache: Dict[str, Template] = {}
@@ -110,7 +111,8 @@ class PresetRename(_PluginBase):
         self._enabled = config.get("enabled") or False
         self._preset = config.get("preset") or "recommended"
         self._separator = config.get("separator") or "."
-        self._custom_templates = config.get("custom_templates") or ""
+        self._movie_template = config.get("movie_template") or self._movie_template
+        self._tv_template = config.get("tv_template") or self._tv_template
         self._word_replacements = self.__parse_replacement_rules(config.get("word_replacements"))
         self._custom_separator = config.get("custom_separator") or "@"
         CustomizationMatcher().custom_separator = self._custom_separator
@@ -152,7 +154,8 @@ class PresetRename(_PluginBase):
             "enabled": self._enabled,
             "preset": self._preset,
             "separator": self._separator,
-            "custom_templates": self._custom_templates,
+            "movie_template": self._movie_template,
+            "tv_template": self._tv_template,
             "word_replacements": "\n".join([f"{r['old']} >> {r['new']}" for r in (self._word_replacements or [])])
         }
 
@@ -162,14 +165,16 @@ class PresetRename(_PluginBase):
             self._enabled = config.get("enabled", False)
             self._preset = config.get("preset", "recommended")
             self._separator = config.get("separator", ".")
-            self._custom_templates = config.get("custom_templates", "")
+            self._movie_template = config.get("movie_template", self._movie_template)
+            self._tv_template = config.get("tv_template", self._tv_template)
             self._word_replacements = self.__parse_replacement_rules(config.get("word_replacements", ""))
             
             self.update_config({
                 "enabled": self._enabled,
                 "preset": self._preset,
                 "separator": self._separator,
-                "custom_templates": self._custom_templates,
+                "movie_template": self._movie_template,
+                "tv_template": self._tv_template,
                 "word_replacements": config.get("word_replacements", "")
             })
             return {"success": True, "message": "配置已保存"}
@@ -181,18 +186,34 @@ class PresetRename(_PluginBase):
         """获取所有预设模板"""
         return {"presets": PRESET_TEMPLATES}
 
-    def _get_preview(self, preset: str = None, custom_templates: str = None, separator: str = ".") -> Dict[str, Any]:
+    def _get_preview(self, preset: str = None, movie_template: str = None, tv_template: str = None, separator: str = ".") -> Dict[str, Any]:
         """根据预设或自定义模板生成预览"""
         try:
             movie_data = PREVIEW_EXAMPLES["movie"]
             tv_data = PREVIEW_EXAMPLES["tv"]
             
-            if preset == "custom" and custom_templates:
-                lines = [l.strip() for l in custom_templates.strip().split("\n") if l.strip()]
-                folder_movie = lines[0] if len(lines) > 0 else "{{title}} ({{year}})"
-                file_movie = lines[1] if len(lines) > 1 else "{{title}}.{{year}}"
-                folder_tv = lines[2] if len(lines) > 2 else "{{title}} ({{year}})/Season {{season}}"
-                file_tv = lines[3] if len(lines) > 3 else "{{title}}.{{season_episode}}"
+            if preset == "custom":
+                # 自定义模板：解析路径和文件名
+                movie_tpl = movie_template or "{{title}} ({{year}})/{{title}}.{{year}}"
+                tv_tpl = tv_template or "{{title}} ({{year}})/Season {{season}}/{{title}}.{{season_episode}}"
+                
+                # 分离文件夹和文件名（最后一个/之前是文件夹，之后是文件名）
+                if "/" in movie_tpl:
+                    parts = movie_tpl.rsplit("/", 1)
+                    folder_movie = parts[0]
+                    file_movie = parts[1]
+                else:
+                    folder_movie = "{{title}} ({{year}})"
+                    file_movie = movie_tpl
+                    
+                if "/" in tv_tpl:
+                    parts = tv_tpl.rsplit("/", 1)
+                    folder_tv = parts[0]
+                    file_tv = parts[1]
+                else:
+                    folder_tv = "{{title}} ({{year}})/Season {{season}}"
+                    file_tv = tv_tpl
+                    
                 name = "自定义"
                 desc = "用户自定义模板"
             else:
@@ -307,15 +328,19 @@ class PresetRename(_PluginBase):
 
     def __get_template_string(self, is_movie: bool) -> Tuple[str, str]:
         if self._preset == "custom":
-            lines = [l.strip() for l in self._custom_templates.strip().split("\n") if l.strip()]
             if is_movie:
-                folder = lines[0] if len(lines) > 0 else "{{title}} ({{year}})"
-                file = lines[1] if len(lines) > 1 else "{{title}}.{{year}}"
-                return folder, file
+                tpl = self._movie_template
             else:
-                folder = lines[2] if len(lines) > 2 else "{{title}} ({{year}})/Season {{season}}"
-                file = lines[3] if len(lines) > 3 else "{{title}}.{{season_episode}}"
-                return folder, file
+                tpl = self._tv_template
+            # 分离文件夹和文件名
+            if "/" in tpl:
+                parts = tpl.rsplit("/", 1)
+                return parts[0], parts[1]
+            else:
+                if is_movie:
+                    return "{{title}} ({{year}})", tpl
+                else:
+                    return "{{title}} ({{year}})/Season {{season}}", tpl
         config = PRESET_TEMPLATES.get(self._preset, PRESET_TEMPLATES["recommended"])
         if is_movie:
             return config["folder_movie"], config["file_movie"]
