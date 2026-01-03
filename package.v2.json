@@ -1,21 +1,4 @@
 {
-  "PresetRename": {
-    "name": "预设命名方案",
-    "description": "小白友好的命名风格选择，6种预设风格一键切换，支持自定义模板。",
-    "labels": "命名整理",
-    "version": "2.1.4",
-    "icon": "mediaplay.png",
-    "author": "AI",
-    "level": 1,
-    "history": {
-      "v2.1.4": "更不动了，给牛牛吧",
-      "v2.1.2": "可进入实测阶段",
-      "v2.1.1": "可进入实测阶段",
-      "v2.1": "可进入实测阶段",
-      "v2.0": "test",
-      "v1.0": "test"
-    }
-  },
   "mediaservermsgai": {
     "name": "媒体库服务器通知AI版",
     "description": "基于Emby识别结果+TMDB元数据+微信清爽版(全消息类型+剧集聚合)",
