@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Tuple, Optional
 from jinja2 import Template
 
 from app.core.config import settings
-from app.core.meta.customization import CustomizationMatcher
 from app.log import logger
 from app.plugins import _PluginBase
 
@@ -78,7 +77,7 @@ class PresetRename(_PluginBase):
     plugin_name = "预设命名方案"
     plugin_desc = "小白友好的命名风格选择，直接修改MP系统命名配置"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/rename.png"
-    plugin_version = "2.1.2"
+    plugin_version = "2.1.4"
     plugin_author = "AI"
     author_url = "https://github.com/"
     plugin_config_prefix = "presetrename_"
@@ -104,7 +103,7 @@ class PresetRename(_PluginBase):
             self._apply_rename_format()
 
     def _apply_rename_format(self) -> Tuple[bool, str]:
-        """应用命名格式到 MP 系统配置（使用官方 update_setting 方法）"""
+        """应用命名格式到 MP 系统配置"""
         try:
             # 获取要应用的模板
             if self._preset == "custom":
@@ -118,18 +117,13 @@ class PresetRename(_PluginBase):
             if not movie_format or not tv_format:
                 return False, "命名格式为空"
             
-            # 使用 MP 官方方法更新配置（自动持久化 + 立即生效 + 发送事件）
-            success1, msg1 = settings.update_setting(key="MOVIE_RENAME_FORMAT", value=movie_format)
-            success2, msg2 = settings.update_setting(key="TV_RENAME_FORMAT", value=tv_format)
+            # 直接修改 settings 属性（立即生效）
+            settings.MOVIE_RENAME_FORMAT = movie_format
+            settings.TV_RENAME_FORMAT = tv_format
             
-            if success1 and success2:
-                logger.info(f"命名格式已应用 - 电影: {movie_format}")
-                logger.info(f"命名格式已应用 - 剧集: {tv_format}")
-                return True, "命名格式已成功应用到 MP 系统"
-            else:
-                error_msg = f"电影: {msg1}, 剧集: {msg2}"
-                logger.error(f"应用命名格式失败: {error_msg}")
-                return False, error_msg
+            logger.info(f"命名格式已应用 - 电影: {movie_format}")
+            logger.info(f"命名格式已应用 - 剧集: {tv_format}")
+            return True, "命名格式已成功应用到 MP 系统（重启后需重新应用）"
             
         except Exception as e:
             logger.error(f"应用命名格式失败: {e}")
