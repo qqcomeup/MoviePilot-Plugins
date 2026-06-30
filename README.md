@@ -1,6 +1,12 @@
 # MoviePilot-Plugins
 MoviePilot官方插件市场：https://github.com/jxxghp/MoviePilot-Plugins
 
+## 插件列表
+
+| 插件 | 说明 | 文档 |
+| --- | --- | --- |
+| TVH Helper | 对接 TVHeadend（TVH）的 IPTV / DVB / 电视直播管理插件，可通过 MoviePilot 机器人查看 TVH 状态、复制用户 M3U/XMLTV 链接、查看和断开在线播放连接。适配项目：[qqcomeup/tvheadend bata](https://github.com/qqcomeup/tvheadend/tree/bata)。 | [查看说明](plugins.v2/tvhhelper/README.md) |
+
 ============================================
 需要开启神医插件通知增强
 EMBY设置 <img width="1238" height="909" alt="image" src="https://github.com/user-attachments/assets/750085a7-f563-48c9-a737-8af0fa3eac7a" />
