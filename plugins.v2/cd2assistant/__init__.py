@@ -219,18 +219,33 @@ class Cd2Assistant(_PluginBase):
         """
         logger.info(f"开始检查 {cd2_name} 上传任务")
         # 获取上传任务列表
-        upload_tasklist = cd2_client.upload_tasklist.list(page=0, page_size=10, filter="")
+        try:
+            if hasattr(cd2_client, "upload_tasklist"):
+                upload_tasklist = cd2_client.upload_tasklist.list(page=0, page_size=10, filter="")
+            else:
+                upload_tasklist_result = cd2_client.get_upload_file_list(get_all=False, items_per_page=10, page_number=0)
+                upload_tasklist = getattr(upload_tasklist_result, "uploadFiles", [])
+        except Exception as err:
+            logger.error(f"获取 {cd2_name} 上传任务失败：{err}")
+            return
+
         if not upload_tasklist:
             logger.info("没有发现上传任务")
             return
 
         for task in upload_tasklist:
-            if task.get("status") == "FatalError" and self._keyword and re.search(self._keyword,
-                                                                                  task.get("errorMessage")):
-                logger.info(f"发现异常上传任务：{task.get('errorMessage')}")
+            if isinstance(task, dict):
+                status = task.get("status")
+                error_message = task.get("errorMessage")
+            else:
+                status = getattr(task, "status", "")
+                error_message = getattr(task, "errorMessage", "")
+
+            if status == "FatalError" and self._keyword and re.search(self._keyword, error_message):
+                logger.info(f"发现异常上传任务：{error_message}")
                 # 发送通知
                 if self._notify:
-                    self.__send_notify(task.get("errorMessage"))
+                    self.__send_notify(error_message)
                     break
 
     @eventmanager.register(EventType.PluginAction)
