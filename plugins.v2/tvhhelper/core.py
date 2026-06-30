@@ -129,6 +129,9 @@ def build_subscription_close_buttons(plugin_id: str, subscriptions: list[TvhSubs
     return [[{
         "text": "一键断开全部",
         "callback_data": plugin_callback(plugin_id, "close_all"),
+    }], [{
+        "text": "刷新",
+        "callback_data": plugin_callback(plugin_id, "close_menu"),
     }]] + [
         [{
             "text": f"关闭 {_subscription_button_label(subscription)}",
@@ -541,7 +544,33 @@ def enrich_subscriptions_with_ip_locations(
 
 
 def fetch_ip_location(ip: str, timeout: int = 2) -> tuple[str | None, str | None]:
-    return fetch_ip_location_from_ip_api(ip, timeout) or fetch_ip_location_from_ipapi(ip, timeout)
+    location = fetch_ip_location_from_pconline(ip, timeout)
+    fallback = fetch_ip_location_from_ip_api(ip, timeout) or fetch_ip_location_from_ipapi(ip, timeout)
+    fallback_location, isp = _split_location_result(fallback)
+    return location or fallback_location, isp
+
+
+def fetch_ip_location_from_pconline(ip: str, timeout: int = 2) -> str | None:
+    url = f"https://whois.pconline.com.cn/ipJson.jsp?{urllib.parse.urlencode({'json': 'true', 'ip': ip})}"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload_bytes = response.read()
+    except (OSError, urllib.error.URLError):
+        return None
+    for encoding in ("utf-8", "gbk"):
+        try:
+            payload = json.loads(payload_bytes.decode(encoding))
+            break
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+    if not payload or payload.get("err"):
+        return None
+    parts = [
+        _normalize_cn_geo_part(payload.get(key))
+        for key in ("pro", "city", "region")
+        if _normalize_cn_geo_part(payload.get(key))
+    ]
+    return " ".join(dict.fromkeys(parts)) or None
 
 
 def fetch_ip_location_from_ipapi(ip: str, timeout: int = 2) -> tuple[str | None, str | None] | None:
@@ -588,6 +617,16 @@ def _split_location_result(result) -> tuple[str | None, str | None]:
     if isinstance(result, tuple):
         return result
     return result, None
+
+
+def _normalize_cn_geo_part(value) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for suffix in ("省", "市"):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            text = text[:-len(suffix)]
+    return text or None
 
 
 def _is_public_ip(value: str) -> bool:

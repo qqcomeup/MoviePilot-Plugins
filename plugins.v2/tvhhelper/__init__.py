@@ -35,7 +35,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.20"
+    plugin_version = "0.1.21"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -154,22 +154,7 @@ class tvhhelper(_PluginBase):
                     buttons=build_user_select_buttons(self.__class__.__name__, users),
                 )
             elif payload == "close_menu":
-                connections = self.__tvh_online_subscriptions()
-                if not connections:
-                    self.__edit_or_reply(
-                        event,
-                        "关闭TVH用户",
-                        "当前没有在线播放用户。",
-                        buttons=build_secondary_nav_buttons(self.__class__.__name__),
-                    )
-                    return
-                connections = enrich_subscriptions_with_ip_locations(connections)
-                self.__edit_or_reply_copy(
-                    event,
-                    "关闭TVH用户",
-                    self.__online_users_text(connections),
-                    buttons=build_subscription_close_buttons(self.__class__.__name__, connections),
-                )
+                self.__show_close_menu(event)
             elif payload.startswith("user|"):
                 username = payload.split("|", 1)[1]
                 users = self.__tvh_users()
@@ -193,12 +178,7 @@ class tvhhelper(_PluginBase):
                 )
                 cancel_tvh_subscription(self._tvh_url, self._tvh_user, self._tvh_pass, subscription_id)
                 username = connection.username if connection else "未知用户"
-                self.__edit_or_reply(
-                    event,
-                    "TVH连接已关闭",
-                    f"已请求关闭用户: {username} ({subscription_id})",
-                    buttons=build_secondary_nav_buttons(self.__class__.__name__),
-                )
+                self.__show_close_menu(event, f"已请求关闭用户: {username} ({subscription_id})")
             elif payload == "close_all":
                 connections = self.__tvh_connections()
                 for connection in connections:
@@ -208,12 +188,7 @@ class tvhhelper(_PluginBase):
                         self._tvh_pass,
                         connection.subscription_id,
                     )
-                self.__edit_or_reply(
-                    event,
-                    "TVH连接已关闭",
-                    f"已请求断开全部连接: {len(connections)}",
-                    buttons=build_secondary_nav_buttons(self.__class__.__name__),
-                )
+                self.__show_close_menu(event, f"已请求断开全部连接: {len(connections)}")
         except Exception as err:
             logger.error(f"TVH助手按钮执行失败: {err}", exc_info=True)
             self.__reply(event, "TVH助手执行失败", str(err))
@@ -302,6 +277,30 @@ class tvhhelper(_PluginBase):
 
     def __online_users_text(self, subscriptions) -> str:
         return "\n".join(format_status_message(True, None, [], 0, subscriptions).splitlines()[3:])
+
+    def __show_close_menu(self, event: Event, prefix: str | None = None):
+        connections = self.__tvh_online_subscriptions()
+        if not connections:
+            text = "当前没有在线播放用户。"
+            if prefix:
+                text = f"{prefix}\n\n{text}"
+            self.__edit_or_reply(
+                event,
+                "关闭TVH用户",
+                text,
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        connections = enrich_subscriptions_with_ip_locations(connections)
+        text = self.__online_users_text(connections)
+        if prefix:
+            text = f"{prefix}\n\n{text}"
+        self.__edit_or_reply_copy(
+            event,
+            "关闭TVH用户",
+            text,
+            buttons=build_subscription_close_buttons(self.__class__.__name__, connections),
+        )
 
     def __tvh_online_subscriptions(self):
         return merge_subscription_details(
