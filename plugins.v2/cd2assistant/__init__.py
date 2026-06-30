@@ -19,13 +19,13 @@ from app.schemas.types import EventType
 
 class Cd2Assistant(_PluginBase):
     # 插件名称
-    plugin_name = "CloudDrive2助手修复版"
+    plugin_name = "CloudDrive2助手"
     # 插件描述
-    plugin_desc = "CloudDrive2助手修复版，使用原 Cd2Assistant 插件 ID 兼容旧 HomePage 地址。"
+    plugin_desc = "监控上传任务，检测是否有异常，发送通知。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "2.0.5.2"
+    plugin_version = "2.0.6"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -78,14 +78,14 @@ class Cd2Assistant(_PluginBase):
 
         if self._enabled or self._onlyonce or self._cd2_restart:
             if not self._cd2_confs:
-                logger.error("CloudDrive2助手修复版配置错误，请检查配置")
+                logger.error("CloudDrive2助手配置错误，请检查配置")
                 return
 
             for cd2_conf in self._cd2_confs.split("\n"):
                 _cd2_name = str(cd2_conf).split("#")[0]
                 _cd2_client = self.__build_cd2_client(cd2_conf)
                 if not _cd2_client:
-                    logger.error(f"CloudDrive2助手修复版连接失败，请检查配置：{_cd2_name}")
+                    logger.error(f"CloudDrive2助手连接失败，请检查配置：{_cd2_name}")
                     continue
                 self._cd2_clients[_cd2_name] = _cd2_client
                 self._clients[_cd2_name] = _cd2_client
@@ -98,7 +98,7 @@ class Cd2Assistant(_PluginBase):
                 try:
                     self._scheduler.add_job(func=self.check,
                                             trigger=CronTrigger.from_crontab(self._cron),
-                                            name="CloudDrive2助手修复版定时任务")
+                                            name="CloudDrive2助手定时任务")
                 except Exception as err:
                     logger.error(f"定时任务配置错误：{err}")
                     # 推送实时消息
@@ -106,11 +106,11 @@ class Cd2Assistant(_PluginBase):
 
             # 立即运行一次
             if self._onlyonce:
-                logger.info(f"CloudDrive2助手修复版定时任务，立即运行一次")
+                logger.info(f"CloudDrive2助手定时任务，立即运行一次")
                 self._scheduler.add_job(self.check, 'date',
                                         run_date=datetime.now(
                                             tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-                                        name="CloudDrive2助手修复版定时任务")
+                                        name="CloudDrive2助手定时任务")
                 # 关闭一次性开关
                 self._onlyonce = False
 
@@ -144,11 +144,11 @@ class Cd2Assistant(_PluginBase):
             address = parts[1].replace("http://", "").replace("https://", "")
             client = CloudDriveClient(address)
             if len(parts) >= 4 and not client.authenticate(parts[2], parts[3]):
-                logger.error("CloudDrive2助手修复版认证失败，请检查用户名密码")
+                logger.error("CloudDrive2助手认证失败，请检查用户名密码")
                 return None
             return client
         except Exception as err:
-            logger.error(f"CloudDrive2助手修复版客户端初始化失败：{err}")
+            logger.error(f"CloudDrive2助手客户端初始化失败：{err}")
             return None
 
     def __sync_old_config(self):
@@ -191,7 +191,7 @@ class Cd2Assistant(_PluginBase):
         """
         logger.info(f"开始检查 {cd2_name} cookie")
         if not cd2_client:
-            logger.error("CloudDrive2助手修复版连接失败，请检查配置")
+            logger.error("CloudDrive2助手连接失败，请检查配置")
             return
         for item in cd2_client.get_sub_files("/"):
             f = item.name if hasattr(item, "name") else item.get("name") if isinstance(item, dict) else str(item)
@@ -503,7 +503,7 @@ class Cd2Assistant(_PluginBase):
         mtype = NotificationType.Manual
         if self._msgtype:
             mtype = NotificationType.__getitem__(str(self._msgtype)) or NotificationType.Manual
-        self.post_message(title="CloudDrive2助手修复版通知",
+        self.post_message(title="CloudDrive2助手通知",
                           mtype=mtype,
                           text=msg)
 
