@@ -1,3 +1,4 @@
+import importlib
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -10,11 +11,17 @@ from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
 from app.schemas.types import ChainEventType, EventType
 
+from . import core as _tvh_core
+
+importlib.reload(_tvh_core)
+
 from .core import (
     DvbMonitor,
+    build_user_action_buttons,
     build_main_buttons,
     build_secondary_nav_buttons,
     build_subscription_close_buttons,
+    build_user_manage_buttons,
     build_user_select_buttons,
     cancel_tvh_subscription,
     enrich_subscriptions_with_ip_locations,
@@ -26,7 +33,10 @@ from .core import (
     format_user_links_message,
     format_dvb_message,
     format_status_message,
+    find_user,
     merge_subscription_details,
+    reset_tvh_user_token,
+    set_tvh_user_enabled,
     token_for_user,
     TvhUser,
 )
@@ -176,6 +186,41 @@ class tvhhelper(_PluginBase):
                     "请选择要复制短链的用户：",
                     buttons=build_user_select_buttons(self.__class__.__name__, users),
                 )
+            elif payload == "manage_users":
+                self.__show_manage_users(event)
+            elif payload.startswith("manage_user|"):
+                username = payload.split("|", 1)[1]
+                self.__show_manage_user(event, username)
+            elif payload.startswith("reset_token|"):
+                username = payload.split("|", 1)[1]
+                users = self.__tvh_users()
+                user = find_user(users, username)
+                if not user:
+                    raise ValueError(f"未找到 TVH 用户: {username}")
+                new_token = reset_tvh_user_token(self._tvh_url, self._tvh_user, self._tvh_pass, user)
+                updated_user = TvhUser(
+                    username=user.username,
+                    token=new_token,
+                    access_uuid=user.access_uuid,
+                    passwd_uuid=user.passwd_uuid,
+                    enabled=user.enabled,
+                    passwd_enabled=user.passwd_enabled,
+                )
+                self.__edit_or_reply_copy(
+                    event,
+                    f"TVH用户 {username}",
+                    "Token 已重置\n\n" + format_user_links_message(self._public_base_url, updated_user),
+                    buttons=build_user_action_buttons(self.__class__.__name__, updated_user),
+                )
+            elif payload.startswith("toggle_user|"):
+                _, username, enabled_text = payload.split("|", 2)
+                users = self.__tvh_users()
+                user = find_user(users, username)
+                if not user:
+                    raise ValueError(f"未找到 TVH 用户: {username}")
+                enabled = enabled_text == "1"
+                set_tvh_user_enabled(self._tvh_url, self._tvh_user, self._tvh_pass, user, enabled)
+                self.__show_manage_user(event, username, f"用户已{'启用' if enabled else '禁用'}")
             elif payload == "close_menu":
                 self.__show_close_menu(event)
             elif payload.startswith("user|"):
@@ -300,6 +345,32 @@ class tvhhelper(_PluginBase):
 
     def __online_users_text(self, subscriptions) -> str:
         return "\n".join(format_status_message(True, None, [], 0, subscriptions).splitlines()[3:])
+
+    def __show_manage_users(self, event: Event):
+        users = self.__tvh_users()
+        self.__edit_or_reply(
+            event,
+            "TVH用户管理",
+            "请选择要管理的用户：",
+            buttons=build_user_manage_buttons(self.__class__.__name__, users),
+        )
+
+    def __show_manage_user(self, event: Event, username: str, prefix: str | None = None):
+        users = self.__tvh_users()
+        user = find_user(users, username)
+        if not user:
+            raise ValueError(f"未找到 TVH 用户: {username}")
+        state = "已启用" if user.enabled is not False else "已禁用"
+        token = user.token or "未设置"
+        text = f"用户: {user.username}\n状态: {state}\nToken: {token}"
+        if prefix:
+            text = f"{prefix}\n\n{text}"
+        self.__edit_or_reply(
+            event,
+            f"TVH用户 {username}",
+            text,
+            buttons=build_user_action_buttons(self.__class__.__name__, user),
+        )
 
     def __show_close_menu(self, event: Event, prefix: str | None = None):
         connections = self.__tvh_online_subscriptions()

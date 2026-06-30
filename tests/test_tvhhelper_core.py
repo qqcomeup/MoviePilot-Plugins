@@ -1,0 +1,635 @@
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins.v2" / "tvhhelper"))
+
+from core import (
+    DvbMonitor,
+    TvhUser,
+    TvhSubscription,
+    build_epg_url,
+    build_long_epg_url,
+    build_long_m3u_url,
+    build_m3u_url,
+    build_main_buttons,
+    build_idnode_save_body,
+    build_user_action_buttons,
+    build_secondary_nav_buttons,
+    build_subscription_close_buttons,
+    build_user_link,
+    build_user_manage_buttons,
+    build_user_select_buttons,
+    enrich_subscriptions_with_ip_locations,
+    fetch_ip_location_from_ip_api,
+    fetch_ip_location,
+    fetch_ip_location_from_pconline,
+    fetch_ip_location_from_ipapi,
+    format_copyable_url,
+    format_user_links_message,
+    format_user_message,
+    format_dvb_message,
+    format_status_message,
+    merge_subscription_details,
+    normalize_base_url,
+    normalize_isp_carrier,
+    generate_auth_token,
+    load_passwd_tokens,
+    merge_tokens,
+    parse_tvh_passwd_users,
+    parse_tvh_inputs,
+    parse_tvh_connections,
+    parse_tvh_subscriptions,
+    parse_tvh_users,
+    tokens_from_passwd_payload,
+    scan_dvb_adapters,
+)
+
+
+def test_short_urls_are_built_with_a_parameter():
+    assert build_m3u_url("https://m3u.example.com/", "test-test_123456") == (
+        "https://m3u.example.com/m3u?a=test-test_123456"
+    )
+    assert build_epg_url("https://m3u.example.com", "test-test_123456") == (
+        "https://m3u.example.com/epg?a=test-test_123456"
+    )
+
+
+def test_base_url_without_scheme_is_normalized_to_https():
+    assert normalize_base_url("m3u.example.com/") == "https://m3u.example.com"
+    assert normalize_base_url("https://m3u.example.com/") == "https://m3u.example.com"
+
+
+def test_long_tvh_urls_are_built_with_auth_token():
+    assert build_long_m3u_url("https://m3u.example.com/", "test-test_123456") == (
+        "https://m3u.example.com/playlist/auth/channels.m3u?download=1&auth=test-test_123456"
+    )
+    assert build_long_epg_url("https://m3u.example.com", "test-test_123456") == (
+        "https://m3u.example.com/xmltv/channels?auth=test-test_123456&profile=pass"
+    )
+
+
+def test_passwd_tokens_are_loaded_from_tvh_passwd_files(tmp_path):
+    (tmp_path / "abc").write_text(
+        json.dumps({"username": "test", "authcode": "test-test_123456"}),
+        encoding="utf-8",
+    )
+
+    assert load_passwd_tokens(str(tmp_path)) == {"test": "test-test_123456"}
+
+
+def test_users_from_grid_are_merged_with_passwd_tokens():
+    users = parse_tvh_users({
+        "entries": [
+            {"uuid": "access-1", "username": "test", "enabled": True},
+            {"uuid": "access-2", "username": "*", "enabled": False},
+        ]
+    })
+    passwd_users = parse_tvh_passwd_users({
+        "entries": [
+            {"uuid": "passwd-1", "username": "test", "enabled": True, "authcode": "test-test_123456"},
+        ]
+    })
+    merged = merge_tokens(users, {"test": "test-test_123456"}, passwd_users)
+
+    assert merged[0].token == "test-test_123456"
+    assert merged[0].access_uuid == "access-1"
+    assert merged[0].passwd_uuid == "passwd-1"
+    assert merged[0].enabled is True
+    assert merged[0].passwd_enabled is True
+    assert merged[1].token is None
+    assert merged[1].enabled is False
+
+
+def test_tokens_from_passwd_payload_reads_authcode():
+    payload = {
+        "entries": [
+            {"username": "test", "authcode": "test-test_123456"},
+            {"username": "empty", "authcode": ""},
+        ]
+    }
+
+    assert tokens_from_passwd_payload(payload) == {"test": "test-test_123456"}
+
+
+def test_generated_auth_token_is_safe_for_tvh_urls():
+    token = generate_auth_token("user.name_1")
+
+    assert token.startswith("user.name_1-")
+    assert 8 <= len(token) <= 41
+    assert all(char.isalnum() or char in "._-" for char in token)
+
+    cn_token = generate_auth_token("中文用户")
+    assert cn_token.startswith("tvh-")
+    assert all(char in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for char in cn_token)
+
+
+def test_idnode_save_body_uses_tvh_node_list_payload():
+    body = build_idnode_save_body([
+        {"uuid": "access-1", "enabled": False},
+        {"uuid": "passwd-1", "authcode": "token-123", "auth": ["enable"]},
+    ])
+
+    assert body == (
+        b"node=%5B%7B%22uuid%22%3A%22access-1%22%2C%22enabled%22%3Afalse%7D%2C"
+        b"%7B%22uuid%22%3A%22passwd-1%22%2C%22authcode%22%3A%22token-123%22%2C"
+        b"%22auth%22%3A%5B%22enable%22%5D%7D%5D"
+    )
+
+
+def test_scan_dvb_adapters_only_lists_adapter_dirs(tmp_path):
+    (tmp_path / "adapter0").mkdir()
+    (tmp_path / "adapter1").mkdir()
+    (tmp_path / "frontend0").mkdir()
+
+    assert scan_dvb_adapters(str(tmp_path)) == ["adapter0", "adapter1"]
+
+
+def test_dvb_monitor_reports_drop_once_and_recover_once():
+    monitor = DvbMonitor(expected_count=2)
+
+    assert monitor.evaluate(["adapter0", "adapter1"]) is None
+    assert monitor.evaluate(["adapter0"]) == "drop"
+    assert monitor.evaluate(["adapter0"]) is None
+    assert monitor.evaluate(["adapter0", "adapter1"]) == "recover"
+    assert monitor.evaluate(["adapter0", "adapter1"]) is None
+
+
+def test_tvh_inputs_are_parsed_from_status_inputs_payload():
+    payload = {
+        "entries": [
+            {"input": "HDIC HD2312 #2 : DVB-T #0"},
+            {"input": "HDIC HD2312 #1 : DVB-T #0"},
+            {"input": ""},
+            {"name": "ignored"},
+        ]
+    }
+
+    assert parse_tvh_inputs(payload) == [
+        "HDIC HD2312 #2 : DVB-T #0",
+        "HDIC HD2312 #1 : DVB-T #0",
+    ]
+
+
+def test_dvb_message_uses_tvh_input_names():
+    message = format_dvb_message(
+        ["HDIC HD2312 #2 : DVB-T #0", "HDIC HD2312 #1 : DVB-T #0"],
+        expected_dvb_count=3,
+    )
+
+    assert "DVB: 2/3" in message
+    assert "HDIC HD2312 #2 : DVB-T #0" in message
+
+
+def test_user_message_contains_short_urls():
+    users = merge_tokens(parse_tvh_users({"entries": [{"username": "test"}]}), {"test": "abc12345"})
+
+    message = format_user_message("https://m3u.example.com", users[0])
+
+    assert "用户: test" in message
+    assert "M3U: https://m3u.example.com/m3u?a=abc12345" in message
+    assert "EPG: https://m3u.example.com/epg?a=abc12345" in message
+
+
+def test_main_buttons_use_plugin_callbacks():
+    assert build_main_buttons("tvhhelper") == [
+        [
+            {"text": "状态", "callback_data": "[PLUGIN]tvhhelper|status"},
+        ],
+        [
+            {"text": "用户链接", "callback_data": "[PLUGIN]tvhhelper|users"},
+            {"text": "用户管理", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
+        ],
+        [
+            {"text": "关闭用户", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_user_select_buttons_are_two_per_row():
+    buttons = build_user_select_buttons(
+        "tvhhelper",
+        [
+            TvhUser(username="test", token="abc12345"),
+            TvhUser(username="empty"),
+            TvhUser(username="third"),
+        ],
+    )
+
+    assert buttons == [
+        [
+            {"text": "test", "callback_data": "[PLUGIN]tvhhelper|user|test"},
+            {"text": "empty", "callback_data": "[PLUGIN]tvhhelper|user|empty"},
+        ],
+        [{"text": "third", "callback_data": "[PLUGIN]tvhhelper|user|third"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_user_manage_buttons_show_enabled_state_two_per_row():
+    buttons = build_user_manage_buttons(
+        "tvhhelper",
+        [
+            TvhUser(username="test", enabled=True),
+            TvhUser(username="disabled", enabled=False),
+            TvhUser(username="unknown"),
+        ],
+    )
+
+    assert buttons == [
+        [
+            {"text": "test 已启用", "callback_data": "[PLUGIN]tvhhelper|manage_user|test"},
+            {"text": "disabled 已禁用", "callback_data": "[PLUGIN]tvhhelper|manage_user|disabled"},
+        ],
+        [{"text": "unknown 未知", "callback_data": "[PLUGIN]tvhhelper|manage_user|unknown"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_user_action_buttons_reset_token_and_toggle_user():
+    assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=True)) == [
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|reset_token|test"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|toggle_user|test|0"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+    assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=False))[1] == [
+        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|toggle_user|test|1"}
+    ]
+
+
+def test_secondary_nav_buttons_use_plugin_callbacks():
+    assert build_secondary_nav_buttons("tvhhelper") == [
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ]
+    ]
+
+
+def test_user_link_builder_returns_original_tvh_urls_by_default():
+    user = TvhUser(username="test", token="abc12345")
+
+    assert build_user_link("https://m3u.example.com", user, "m3u") == (
+        "https://m3u.example.com/playlist/auth/channels.m3u?download=1&auth=abc12345"
+    )
+    assert build_user_link("https://m3u.example.com", user, "xml") == (
+        "https://m3u.example.com/xmltv/channels?auth=abc12345&profile=pass"
+    )
+
+
+def test_copyable_url_uses_code_block_to_avoid_link_preview():
+    assert format_copyable_url("https://m3u.example.com/m3u?a=abc12345") == (
+        "```text\nhttps://m3u.example.com/m3u?a=abc12345\n```"
+    )
+
+
+def test_user_links_message_contains_two_copyable_urls():
+    message = format_user_links_message("https://m3u.example.com", TvhUser(username="test", token="abc12345"))
+
+    assert "用户: test" in message
+    assert "M3U:" in message
+    assert "XML:" in message
+    assert "```text\nhttps://m3u.example.com/playlist/auth/channels.m3u?download=1&auth=abc12345\n```" in message
+    assert "```text\nhttps://m3u.example.com/xmltv/channels?auth=abc12345&profile=pass\n```" in message
+
+
+def test_tvh_subscriptions_are_parsed_for_online_users():
+    payload = {
+        "entries": [
+            {
+                "id": 12,
+                "hostname": "151.243.229.106",
+                "username": "test",
+                "title": "HTTP",
+                "client": "WINAMP",
+                "channel": "News",
+                "service": "HDIC HD2312",
+                "profile": "pass",
+                "start": 1782819002,
+                "state": "Running",
+                "errors": 5,
+                "input": 10306,
+                "output": 10306,
+            },
+            {"id": 13, "user": "zdx", "title": "Movie"},
+        ]
+    }
+
+    assert parse_tvh_subscriptions(payload) == [
+        TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            hostname="151.243.229.106",
+            title="HTTP",
+            service="HDIC HD2312",
+            profile="pass",
+            started="2026-06-30 19:30:02",
+            state="Running",
+            errors="5",
+            input_kbps="10306",
+            output_kbps="10306",
+            client="WINAMP",
+        ),
+        TvhSubscription(subscription_id="13", username="zdx", channel="Movie", title="Movie"),
+    ]
+
+
+def test_tvh_connections_are_parsed_for_close_buttons():
+    payload = {
+        "entries": [
+            {"id": 117, "user": "zdx", "peer": "151.243.229.106", "streaming": 1, "type": "HTTP"},
+            {"id": 118, "user": "", "peer": "1.1.1.1", "streaming": 0},
+        ]
+    }
+
+    assert parse_tvh_connections(payload) == [
+        TvhSubscription(
+            subscription_id="117",
+            username="zdx",
+            channel="151.243.229.106",
+            peer="151.243.229.106",
+            client="HTTP",
+        ),
+    ]
+
+
+def test_status_message_includes_online_users():
+    message = format_status_message(
+        True,
+        "4.3",
+        ["HDIC HD2312 #0 : DVB-T #0"],
+        3,
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            hostname="151.243.229.106",
+            title="HTTP",
+            service="HDIC HD2312",
+            profile="pass",
+            started="2026-06-30 19:30:02",
+            state="Running",
+            errors="5",
+            input_kbps="10306",
+            output_kbps="10306",
+            peer="1.2.3.4",
+            client="HTTP",
+            user_agent="VLC",
+        )],
+    )
+
+    assert message == (
+        "TVH: OK | DVB: 1/3\n"
+        "版本: 4.3\n"
+        "\n"
+        "在线: 1\n"
+        "```text\n"
+        "test / News\n"
+        "IP: 1.2.3.4\n"
+        "客户端: VLC | pass | Running\n"
+        "服务: HDIC HD2312\n"
+        "错误: 5 | 输入/输出: 0.01/0.01 Mb/s\n"
+        "```"
+    )
+
+
+def test_status_message_includes_ip_location():
+    message = format_status_message(
+        True,
+        "4.3",
+        ["HDIC HD2312 #0 : DVB-T #0"],
+        3,
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            hostname="151.243.229.106",
+            peer="1.2.3.4",
+            location="澳大利亚",
+            isp="Zouter Limited",
+            hostname_location="香港",
+            hostname_isp="China Mobile",
+        )],
+    )
+
+    assert "IP: 1.2.3.4 (澳大利亚)" in message
+    assert "ISP: Zouter Limited" in message
+    assert "151.243.229.106" not in message
+    assert "China Mobile" not in message
+
+
+def test_status_message_adds_normalized_china_isp_to_ip_line():
+    message = format_status_message(
+        True,
+        "4.3",
+        [],
+        0,
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            peer="58.253.166.121",
+            location="广东 中山",
+            isp="CNC Group CHINA169 Guangdong Province Network",
+        )],
+    )
+
+    assert "IP: 58.253.166.121 (广东 中山 / 中国联通)" in message
+    assert "ISP: CNC Group CHINA169 Guangdong Province Network" in message
+    assert normalize_isp_carrier("China Mobile communications corporation") == "中国移动"
+    assert normalize_isp_carrier("Chinanet Guangdong Province Network") == "中国电信"
+
+
+def test_status_message_omits_source_isp_without_source():
+    message = format_status_message(
+        True,
+        "4.3",
+        [],
+        0,
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            peer="1.2.3.4",
+            location="澳大利亚",
+            isp="Zouter Limited",
+            hostname_location="澳大利亚",
+            hostname_isp="Zouter Limited",
+        )],
+    )
+
+    assert "ISP: Zouter Limited" in message
+    assert "代理:" not in message
+    assert "代理ISP:" not in message
+
+
+def test_status_message_wraps_each_online_user_in_own_code_block():
+    message = format_status_message(
+        True,
+        "4.3",
+        ["HDIC HD2312 #0 : DVB-T #0"],
+        3,
+        [
+            TvhSubscription(subscription_id="12", username="zdx", channel="翡翠台"),
+            TvhSubscription(subscription_id="13", username="Flora", channel="無綫新聞台"),
+        ],
+    )
+
+    assert message.count("```text") == 2
+    assert message.count("```") == 4
+    assert "```\n\n```text\nFlora / 無綫新聞台" in message
+
+
+def test_ip_location_enrichment_skips_private_ips():
+    calls = []
+
+    enriched = enrich_subscriptions_with_ip_locations(
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            peer="192.168.9.2",
+        )],
+        resolver=lambda ip: calls.append(ip) or "内网",
+    )
+
+    assert calls == []
+    assert enriched[0].location is None
+
+
+def test_ip_location_enrichment_uses_resolver_for_public_ips():
+    calls = []
+
+    enriched = enrich_subscriptions_with_ip_locations(
+        [TvhSubscription(
+            subscription_id="12",
+            username="test",
+            channel="News",
+            peer="8.8.8.8",
+            proxy="1.1.1.1",
+        )],
+        resolver=lambda ip: calls.append(ip) or ("美国", "Google"),
+    )
+
+    assert calls == ["8.8.8.8"]
+    assert enriched[0].location == "美国"
+    assert enriched[0].isp == "Google"
+    assert enriched[0].proxy_location is None
+    assert enriched[0].proxy_isp is None
+
+
+def test_ip_location_parsers_return_geo_only(monkeypatch):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(url, timeout):
+        if "pconline" in url:
+            return Response({
+                "pro": "广东省",
+                "city": "佛山市",
+                "region": "",
+                "err": "",
+            })
+        if "ip-api.com" in url:
+            return Response({
+                "status": "success",
+                "country": "香港",
+                "regionName": "葵青區",
+                "city": "葵涌",
+                "isp": "Zouter Limited",
+            })
+        return Response({
+            "country_name": "Hong Kong",
+            "region": "Kwai Tsing",
+            "city": "Kwai Chung",
+            "org": "Zouter Limited",
+        })
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert fetch_ip_location_from_ip_api("151.243.229.106") == ("香港 葵青區 葵涌", "Zouter Limited")
+    assert fetch_ip_location_from_ipapi("151.243.229.106") == (
+        "Hong Kong Kwai Tsing Kwai Chung",
+        "Zouter Limited",
+    )
+    assert fetch_ip_location_from_pconline("223.73.229.155") == "广东 佛山"
+    assert fetch_ip_location("223.73.229.155") == ("广东 佛山", "Zouter Limited")
+
+
+def test_subscription_details_merge_connection_ip_and_client():
+    merged = merge_subscription_details(
+        [TvhSubscription(
+            subscription_id="14",
+            username="zdx",
+            channel="翡翠台",
+            title="HTTP",
+            client="WINAMP",
+        )],
+        [TvhSubscription(
+            subscription_id="122",
+            username="zdx",
+            channel="151.243.229.106",
+            peer="151.243.229.106",
+            proxy="223.73.31.105",
+            client="HTTP",
+        )],
+    )
+
+    assert merged == [
+        TvhSubscription(
+            subscription_id="122",
+            username="zdx",
+            channel="翡翠台",
+            title="HTTP",
+            peer="151.243.229.106",
+            proxy="223.73.31.105",
+            client="WINAMP",
+        )
+    ]
+
+
+def test_subscription_close_buttons_use_plugin_callbacks():
+    buttons = build_subscription_close_buttons(
+        "tvhhelper",
+        [
+            TvhSubscription(subscription_id="12", username="test", channel="News"),
+            TvhSubscription(subscription_id="13", username="test", channel="Movie"),
+        ],
+    )
+
+    assert buttons == [
+        [
+            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
+            {"text": "一键断开全部", "callback_data": "[PLUGIN]tvhhelper|close_all"},
+        ],
+        [
+            {"text": "关闭 test / News", "callback_data": "[PLUGIN]tvhhelper|close|12"},
+            {"text": "关闭 test / Movie", "callback_data": "[PLUGIN]tvhhelper|close|13"},
+        ],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]

@@ -1,5 +1,7 @@
 import json
 import ipaddress
+import secrets
+import string
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,6 +15,10 @@ from typing import Iterable
 class TvhUser:
     username: str
     token: str | None = None
+    access_uuid: str | None = None
+    passwd_uuid: str | None = None
+    enabled: bool | None = None
+    passwd_enabled: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -107,9 +113,10 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
         ],
         [
             {"text": "用户链接", "callback_data": plugin_callback(plugin_id, "users")},
-            {"text": "关闭用户", "callback_data": plugin_callback(plugin_id, "close_menu")},
+            {"text": "用户管理", "callback_data": plugin_callback(plugin_id, "manage_users")},
         ],
         [
+            {"text": "关闭用户", "callback_data": plugin_callback(plugin_id, "close_menu")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -121,6 +128,30 @@ def build_user_select_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
         for user in users
     ]
     return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
+
+
+def build_user_manage_buttons(plugin_id: str, users: list[TvhUser]) -> list[list[dict]]:
+    buttons = [
+        {
+            "text": f"{user.username} {_enabled_label(user.enabled)}",
+            "callback_data": plugin_callback(plugin_id, f"manage_user|{user.username}"),
+        }
+        for user in users
+    ]
+    return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
+
+
+def build_user_action_buttons(plugin_id: str, user: TvhUser) -> list[list[dict]]:
+    target_enabled = "0" if user.enabled is not False else "1"
+    toggle_text = "禁用用户" if target_enabled == "0" else "启用用户"
+    return [
+        [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"reset_token|{user.username}")}],
+        [{"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"toggle_user|{user.username}|{target_enabled}")}],
+        [
+            {"text": "返回", "callback_data": plugin_callback(plugin_id, "manage_users")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
 
 
 def build_subscription_close_buttons(plugin_id: str, subscriptions: list[TvhSubscription]) -> list[list[dict]]:
@@ -147,6 +178,14 @@ def build_secondary_nav_buttons(plugin_id: str) -> list[list[dict]]:
         {"text": "返回", "callback_data": plugin_callback(plugin_id, "main_menu")},
         {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
     ]]
+
+
+def _enabled_label(value: bool | None) -> str:
+    if value is True:
+        return "已启用"
+    if value is False:
+        return "已禁用"
+    return "未知"
 
 
 def _subscription_button_label(subscription: TvhSubscription) -> str:
@@ -225,6 +264,22 @@ def tokens_from_passwd_payload(payload: dict) -> dict[str, str]:
     return tokens
 
 
+def parse_tvh_passwd_users(payload: dict) -> list[TvhUser]:
+    users: list[TvhUser] = []
+    for entry in payload.get("entries", []):
+        username = entry.get("username")
+        if not username:
+            continue
+        token = entry.get("authcode") or None
+        users.append(TvhUser(
+            username=str(username),
+            token=str(token) if token else None,
+            passwd_uuid=_string_or_none(entry.get("uuid")),
+            passwd_enabled=_bool_or_none(entry.get("enabled")),
+        ))
+    return users
+
+
 def parse_tvh_users(payload: dict) -> list[TvhUser]:
     users: list[TvhUser] = []
     for entry in payload.get("entries", []):
@@ -232,7 +287,12 @@ def parse_tvh_users(payload: dict) -> list[TvhUser]:
         if not username:
             continue
         token = entry.get("authcode") or entry.get("auth") or entry.get("token") or None
-        users.append(TvhUser(username=str(username), token=str(token) if token else None))
+        users.append(TvhUser(
+            username=str(username),
+            token=str(token) if token else None,
+            access_uuid=_string_or_none(entry.get("uuid") or entry.get("id")),
+            enabled=_bool_or_none(entry.get("enabled")),
+        ))
     return users
 
 
@@ -305,9 +365,35 @@ def _string_or_none(value) -> str | None:
     return str(value)
 
 
-def merge_tokens(users: list[TvhUser], tokens: dict[str, str]) -> list[TvhUser]:
+def _bool_or_none(value) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "enabled"}:
+            return True
+        if lowered in {"0", "false", "no", "disabled"}:
+            return False
+    return bool(value)
+
+
+def merge_tokens(
+    users: list[TvhUser],
+    tokens: dict[str, str],
+    passwd_users: list[TvhUser] | None = None,
+) -> list[TvhUser]:
+    passwd_by_name = {user.username: user for user in passwd_users or []}
     return [
-        TvhUser(username=user.username, token=user.token or tokens.get(user.username))
+        TvhUser(
+            username=user.username,
+            token=user.token or tokens.get(user.username) or (passwd_by_name.get(user.username).token if passwd_by_name.get(user.username) else None),
+            access_uuid=user.access_uuid,
+            passwd_uuid=(passwd_by_name.get(user.username).passwd_uuid if passwd_by_name.get(user.username) else user.passwd_uuid),
+            enabled=user.enabled,
+            passwd_enabled=(passwd_by_name.get(user.username).passwd_enabled if passwd_by_name.get(user.username) else user.passwd_enabled),
+        )
         for user in users
     ]
 
@@ -317,6 +403,25 @@ def token_for_user(users: list[TvhUser], username: str) -> str | None:
         if user.username == username:
             return user.token
     return None
+
+
+def find_user(users: list[TvhUser], username: str) -> TvhUser | None:
+    for user in users:
+        if user.username == username:
+            return user
+    return None
+
+
+def generate_auth_token(username: str, suffix_length: int = 16) -> str:
+    allowed_prefix_chars = string.ascii_letters + string.digits + "._-"
+    safe_prefix = "".join(
+        char for char in (username or "")
+        if char in allowed_prefix_chars
+    )[:16] or "tvh"
+    alphabet = string.ascii_letters + string.digits
+    suffix = "".join(secrets.choice(alphabet) for _ in range(max(8, suffix_length)))
+    token = f"{safe_prefix}-{suffix}"
+    return token[:41]
 
 
 def format_dvb_message(inputs: list[str], expected_dvb_count: int) -> str:
@@ -354,7 +459,8 @@ def format_status_message(
 
 def format_subscription_status_line(subscription: TvhSubscription) -> str:
     endpoint = subscription.peer or subscription.hostname or "未知IP"
-    endpoint_text = f"{endpoint} ({subscription.location})" if subscription.location else endpoint
+    endpoint_meta = _endpoint_meta(subscription.location, subscription.isp)
+    endpoint_text = f"{endpoint} ({endpoint_meta})" if endpoint_meta else endpoint
     client_line = " | ".join(
         value
         for value in [
@@ -386,6 +492,28 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
             if item
         ))
     return "\n".join(details)
+
+
+def _endpoint_meta(location: str | None, isp: str | None) -> str | None:
+    carrier = normalize_isp_carrier(isp)
+    parts = [part for part in [location, carrier] if part]
+    return " / ".join(parts) if parts else None
+
+
+def normalize_isp_carrier(isp: str | None) -> str | None:
+    if not isp:
+        return None
+    text = str(isp).strip().lower()
+    rules = [
+        (("china169", "china unicom", "unicom", "cnc group", "cnc"), "中国联通"),
+        (("china mobile", "chinamobile", "cmcc"), "中国移动"),
+        (("chinanet", "china telecom", "telecom"), "中国电信"),
+        (("cernet",), "教育网"),
+    ]
+    for keywords, carrier in rules:
+        if any(keyword in text for keyword in keywords):
+            return carrier
+    return None
 
 
 def _format_rate(value: str | None) -> str | None:
@@ -640,6 +768,24 @@ def format_user_message(public_base_url: str, user: TvhUser) -> str:
 def fetch_tvh_json(base_url: str, path: str, username: str, password: str, timeout: int = 10) -> dict:
     url = f"{normalize_base_url(base_url)}{path}"
     request = urllib.request.Request(url)
+    return _open_tvh_json(request, url, username, password, timeout)
+
+
+def post_tvh_form(
+    base_url: str,
+    path: str,
+    username: str,
+    password: str,
+    data: dict[str, str],
+    timeout: int = 10,
+) -> dict:
+    url = f"{normalize_base_url(base_url)}{path}"
+    request = urllib.request.Request(url, data=urllib.parse.urlencode(data).encode("utf-8"), method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    return _open_tvh_json(request, url, username, password, timeout)
+
+
+def _open_tvh_json(request: urllib.request.Request, url: str, username: str, password: str, timeout: int) -> dict:
     password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     password_manager.add_password(None, url, username, password)
     auth_handler = urllib.request.HTTPBasicAuthHandler(password_manager)
@@ -647,9 +793,58 @@ def fetch_tvh_json(base_url: str, path: str, username: str, password: str, timeo
     opener = urllib.request.build_opener(auth_handler, digest_handler)
     try:
         with opener.open(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            payload = response.read().decode("utf-8")
+            return json.loads(payload) if payload else {}
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as err:
         raise TvhError(str(err)) from err
+
+
+def build_idnode_save_body(nodes: list[dict]) -> bytes:
+    node_json = json.dumps(nodes, ensure_ascii=False, separators=(",", ":"))
+    return urllib.parse.urlencode({"node": node_json}).encode("utf-8")
+
+
+def save_tvh_idnodes(base_url: str, username: str, password: str, nodes: list[dict]) -> bool:
+    if not nodes:
+        raise TvhError("没有可保存的 TVH 节点。")
+    node_json = json.dumps(nodes, ensure_ascii=False, separators=(",", ":"))
+    post_tvh_form(base_url, "/api/idnode/save", username, password, {"node": node_json})
+    return True
+
+
+def reset_tvh_user_token(
+    base_url: str,
+    username: str,
+    password: str,
+    user: TvhUser,
+    token: str | None = None,
+) -> str:
+    if not user.passwd_uuid:
+        raise TvhError(f"用户 {user.username} 缺少 passwd uuid，无法重置 Token。")
+    new_token = token or generate_auth_token(user.username)
+    save_tvh_idnodes(base_url, username, password, [{
+        "uuid": user.passwd_uuid,
+        "authcode": new_token,
+        "auth": ["enable"],
+    }])
+    return new_token
+
+
+def set_tvh_user_enabled(
+    base_url: str,
+    username: str,
+    password: str,
+    user: TvhUser,
+    enabled: bool,
+) -> bool:
+    nodes = []
+    if user.access_uuid:
+        nodes.append({"uuid": user.access_uuid, "enabled": bool(enabled)})
+    elif user.passwd_uuid:
+        nodes.append({"uuid": user.passwd_uuid, "enabled": bool(enabled)})
+    if not nodes:
+        raise TvhError(f"用户 {user.username} 缺少 uuid，无法修改启用状态。")
+    return save_tvh_idnodes(base_url, username, password, nodes)
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -706,11 +901,12 @@ def fetch_tvh_users(
 ) -> list[TvhUser]:
     payload = fetch_tvh_json(base_url, "/api/access/entry/grid", username, password)
     tokens: dict[str, str] = {}
+    passwd_users: list[TvhUser] = []
     try:
-        tokens.update(tokens_from_passwd_payload(
-            fetch_tvh_json(base_url, "/api/passwd/entry/grid", username, password)
-        ))
+        passwd_payload = fetch_tvh_json(base_url, "/api/passwd/entry/grid", username, password)
+        tokens.update(tokens_from_passwd_payload(passwd_payload))
+        passwd_users = parse_tvh_passwd_users(passwd_payload)
     except TvhError:
         pass
     tokens.update({k: v for k, v in load_passwd_tokens(passwd_path).items() if k not in tokens})
-    return merge_tokens(parse_tvh_users(payload), tokens)
+    return merge_tokens(parse_tvh_users(payload), tokens, passwd_users)
