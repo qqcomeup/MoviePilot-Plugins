@@ -1,0 +1,11 @@
+glob_pattern
+http_response
+path_ignore_pattern
+python-argtools
+python-dateutil
+python-download>=0.0.3
+python-filewrap>=0.1.1
+python-httpfile>=0.0.2
+python-http_request>=0.0.6
+python-urlopen
+yarl
