@@ -126,18 +126,19 @@ def build_user_select_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
 def build_subscription_close_buttons(plugin_id: str, subscriptions: list[TvhSubscription]) -> list[list[dict]]:
     if not subscriptions:
         return build_secondary_nav_buttons(plugin_id)
-    return [[{
-        "text": "一键断开全部",
-        "callback_data": plugin_callback(plugin_id, "close_all"),
-    }], [{
-        "text": "刷新",
-        "callback_data": plugin_callback(plugin_id, "close_menu"),
-    }]] + [
-        [{
+    close_buttons = [
+        {
             "text": f"关闭 {_subscription_button_label(subscription)}",
             "callback_data": plugin_callback(plugin_id, f"close|{subscription.subscription_id}"),
-        }]
+        }
         for subscription in subscriptions
+    ]
+    return [[
+        {"text": "刷新", "callback_data": plugin_callback(plugin_id, "close_menu")},
+        {"text": "一键断开全部", "callback_data": plugin_callback(plugin_id, "close_all")},
+    ]] + [
+        close_buttons[index:index + 2]
+        for index in range(0, len(close_buttons), 2)
     ] + build_secondary_nav_buttons(plugin_id)
 
 

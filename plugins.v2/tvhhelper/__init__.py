@@ -35,7 +35,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.21"
+    plugin_version = "0.1.22"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -47,7 +47,7 @@ class tvhhelper(_PluginBase):
     _tvh_url = "http://127.0.0.1:9981"
     _tvh_user = ""
     _tvh_pass = ""
-    _public_base_url = "https://m3u.066671.xyz"
+    _public_base_url = "https://m3u.example.com"
     _dvb_path = "/dev/dvb"
     _expected_dvb_count = 1
     _check_interval = 60
@@ -431,7 +431,7 @@ class tvhhelper(_PluginBase):
                                 "props": {"cols": 12, "md": 6},
                                 "content": [{
                                     "component": "VTextField",
-                                    "props": {"model": "public_base_url", "label": "公网播放域名", "placeholder": "https://m3u.066671.xyz"},
+                                    "props": {"model": "public_base_url", "label": "公网播放域名", "placeholder": "https://m3u.example.com"},
                                 }],
                             },
                         ],
@@ -494,7 +494,7 @@ class tvhhelper(_PluginBase):
             "tvh_url": "http://127.0.0.1:9981",
             "tvh_user": "",
             "tvh_pass": "",
-            "public_base_url": "https://m3u.066671.xyz",
+            "public_base_url": "https://m3u.example.com",
             "dvb_path": "/dev/dvb",
             "expected_dvb_count": 1,
             "check_interval": 60,
