@@ -21,5 +21,18 @@
       "v1.5": "支持独立控制媒体服务器通知",
       "v1.4": "MoviePilot V2 版本媒体库服务器通知插件"
     }
+  },
+  "Cd2AssistantFix": {
+    "name": "CloudDrive2助手修复版",
+    "description": "复用 clouddrive2_client，避免与 CloudDrive2储存同时加载时出现 duplicate symbol clouddrive.ProxyType。",
+    "labels": "云盘",
+    "version": "2.0.5.1",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=2.13.0",
+    "history": {
+      "v2.0.5.1": "基于 Cd2Assistant v2.0.5 fork，改用 clouddrive2_client 以避免 proto 重复注册冲突。"
+    }
   }
 }
