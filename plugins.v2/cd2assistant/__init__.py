@@ -7,6 +7,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from clouddrive2_client import CloudDriveClient
+from google.protobuf import empty_pb2
 
 from app import schemas
 from app.core.config import settings
@@ -425,8 +426,12 @@ class Cd2Assistant(_PluginBase):
 
     @staticmethod
     def __get_running_info(client):
-        """获取 CloudDrive2 运行信息，兼容新版客户端。"""
+        """获取 CloudDrive2 运行信息，优先使用底层 gRPC 接口。"""
         try:
+            stub = getattr(client, "stub", None)
+            metadata = client._create_authorized_metadata() if hasattr(client, "_create_authorized_metadata") else []
+            if stub and hasattr(stub, "GetRunningInfo"):
+                return stub.GetRunningInfo(empty_pb2.Empty(), metadata=metadata)
             if hasattr(client, "get_running_info"):
                 return client.get_running_info()
             if hasattr(client, "get_system_info"):
