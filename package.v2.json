@@ -1,15 +1,15 @@
 {
   "Cd2Assistant": {
-    "name": "CloudDrive2助手修复版",
-    "description": "使用原 Cd2Assistant 插件 ID 的修复版，兼容旧 HomePage 地址，复用 clouddrive2_client 并修复 fs/GetRunningInfo 兼容问题。",
+    "name": "CloudDrive2助手",
+    "description": "监控上传任务，检测是否有异常，发送通知。",
     "labels": "云盘",
-    "version": "2.0.5.2",
+    "version": "2.0.6",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
-    "author": "local",
+    "author": "thsrite",
     "level": 1,
     "system_version": ">=2.13.0",
     "history": {
-      "v2.0.5.2": "将修复版改为原 Cd2Assistant 插件 ID，旧 HomePage 地址直接由修复版处理，无额外转发。"
+      "v2.0.6": "兼容新版 clouddrive2_client：修复运行信息读取、fs 属性缺失、CloudDrive2 地址尾斜杠导致 gRPC 解析失败等问题。"
     }
   }
 }
