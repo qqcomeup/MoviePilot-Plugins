@@ -1,4 +1,3 @@
-import importlib
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -11,19 +10,17 @@ from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
 from app.schemas.types import ChainEventType, EventType
 
-from . import core as _tvh_core
-
-importlib.reload(_tvh_core)
-
 from .core import (
     DvbMonitor,
     build_user_action_buttons,
+    build_user_confirm_buttons,
     build_main_buttons,
     build_secondary_nav_buttons,
     build_subscription_close_buttons,
     build_user_manage_buttons,
     build_user_select_buttons,
     cancel_tvh_subscription,
+    decode_callback_value,
     enrich_subscriptions_with_ip_locations,
     fetch_tvh_connections,
     fetch_tvh_inputs,
@@ -189,10 +186,29 @@ class tvhhelper(_PluginBase):
             elif payload == "manage_users":
                 self.__show_manage_users(event)
             elif payload.startswith("manage_user|"):
-                username = payload.split("|", 1)[1]
+                username = decode_callback_value(payload.split("|", 1)[1])
                 self.__show_manage_user(event, username)
+            elif payload.startswith("confirm_reset_token|"):
+                username = decode_callback_value(payload.split("|", 1)[1])
+                self.__edit_or_reply(
+                    event,
+                    f"确认重置 {username}",
+                    f"确认重置用户 {username} 的 Token？\n\n旧的 M3U/XMLTV 链接会立刻失效。",
+                    buttons=build_user_confirm_buttons(self.__class__.__name__, "reset_token", username),
+                )
+            elif payload.startswith("confirm_toggle_user|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = decode_callback_value(encoded_username)
+                enabled = enabled_text == "1"
+                action = "启用" if enabled else "禁用"
+                self.__edit_or_reply(
+                    event,
+                    f"确认{action} {username}",
+                    f"确认{action}用户 {username}？",
+                    buttons=build_user_confirm_buttons(self.__class__.__name__, "toggle_user", username, enabled),
+                )
             elif payload.startswith("reset_token|"):
-                username = payload.split("|", 1)[1]
+                username = decode_callback_value(payload.split("|", 1)[1])
                 users = self.__tvh_users()
                 user = find_user(users, username)
                 if not user:
@@ -213,7 +229,8 @@ class tvhhelper(_PluginBase):
                     buttons=build_user_action_buttons(self.__class__.__name__, updated_user),
                 )
             elif payload.startswith("toggle_user|"):
-                _, username, enabled_text = payload.split("|", 2)
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = decode_callback_value(encoded_username)
                 users = self.__tvh_users()
                 user = find_user(users, username)
                 if not user:
@@ -224,7 +241,7 @@ class tvhhelper(_PluginBase):
             elif payload == "close_menu":
                 self.__show_close_menu(event)
             elif payload.startswith("user|"):
-                username = payload.split("|", 1)[1]
+                username = decode_callback_value(payload.split("|", 1)[1])
                 users = self.__tvh_users()
                 token = token_for_user(users, username)
                 user = TvhUser(username=username, token=token)
@@ -360,7 +377,7 @@ class tvhhelper(_PluginBase):
         user = find_user(users, username)
         if not user:
             raise ValueError(f"未找到 TVH 用户: {username}")
-        state = "已启用" if user.enabled is not False else "已禁用"
+        state = "未知" if user.enabled is None else ("已启用" if user.enabled else "已禁用")
         token = user.token or "未设置"
         text = f"用户: {user.username}\n状态: {state}\nToken: {token}"
         if prefix:

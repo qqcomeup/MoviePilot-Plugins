@@ -1,4 +1,4 @@
-﻿# TVH Helper
+# TVH Helper
 
 TVH Helper 是 MoviePilot V2 插件，用于对接 TVHeadend（TVH），通过 MoviePilot 机器人管理 IPTV 播放相关功能。
 

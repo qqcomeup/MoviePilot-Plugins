@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins.v2" / "tvhhelper"))
 
+import core
 from core import (
     DvbMonitor,
     TvhUser,
@@ -12,8 +13,11 @@ from core import (
     build_long_epg_url,
     build_long_m3u_url,
     build_m3u_url,
+    build_user_confirm_buttons,
     build_main_buttons,
     build_idnode_save_body,
+    decode_callback_value,
+    encode_callback_value,
     build_user_action_buttons,
     build_secondary_nav_buttons,
     build_subscription_close_buttons,
@@ -43,6 +47,7 @@ from core import (
     parse_tvh_users,
     tokens_from_passwd_payload,
     scan_dvb_adapters,
+    set_tvh_user_enabled,
 )
 
 
@@ -255,8 +260,8 @@ def test_user_manage_buttons_show_enabled_state_two_per_row():
 
 def test_user_action_buttons_reset_token_and_toggle_user():
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=True)) == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|reset_token|test"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|toggle_user|test|0"}],
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|test"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|test"}],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
@@ -264,8 +269,75 @@ def test_user_action_buttons_reset_token_and_toggle_user():
     ]
 
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=False))[1] == [
-        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|toggle_user|test|1"}
+        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|1|test"}
     ]
+
+
+def test_user_action_buttons_encode_usernames_and_confirm_sensitive_actions():
+    encoded = encode_callback_value("a|b")
+    assert encoded == "a%7Cb"
+    assert decode_callback_value(encoded) == "a|b"
+    assert build_user_action_buttons("tvhhelper", TvhUser(username="a|b", enabled=True))[:2] == [
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|a%7Cb"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|a%7Cb"}],
+    ]
+
+
+def test_unknown_user_enabled_state_does_not_show_destructive_toggle():
+    buttons = build_user_action_buttons("tvhhelper", TvhUser(username="unknown"))
+
+    assert buttons == [
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|unknown"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_user_confirm_buttons_put_state_before_encoded_username():
+    assert build_user_confirm_buttons("tvhhelper", "toggle_user", "a|b", False) == [
+        [{"text": "确认禁用", "callback_data": "[PLUGIN]tvhhelper|toggle_user|0|a%7Cb"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_user|a%7Cb"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+    assert build_user_confirm_buttons("tvhhelper", "reset_token", "a|b") == [
+        [{"text": "确认重置", "callback_data": "[PLUGIN]tvhhelper|reset_token|a%7Cb"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_user|a%7Cb"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_set_tvh_user_enabled_saves_access_and_passwd_nodes(monkeypatch):
+    calls = []
+
+    def fake_save(base_url, username, password, nodes):
+        calls.append((base_url, username, password, nodes))
+        return True
+
+    monkeypatch.setattr(core, "save_tvh_idnodes", fake_save)
+
+    assert set_tvh_user_enabled(
+        "http://tvh",
+        "admin",
+        "pass",
+        TvhUser(username="test", access_uuid="access-1", passwd_uuid="passwd-1"),
+        False,
+    ) is True
+
+    assert calls == [(
+        "http://tvh",
+        "admin",
+        "pass",
+        [
+            {"uuid": "access-1", "enabled": False},
+            {"uuid": "passwd-1", "enabled": False},
+        ],
+    )]
 
 
 def test_secondary_nav_buttons_use_plugin_callbacks():

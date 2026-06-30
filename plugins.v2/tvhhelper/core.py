@@ -106,6 +106,14 @@ def plugin_callback(plugin_id: str, payload: str) -> str:
     return f"[PLUGIN]{plugin_id}|{payload}"
 
 
+def encode_callback_value(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def decode_callback_value(value: str) -> str:
+    return urllib.parse.unquote(value)
+
+
 def build_main_buttons(plugin_id: str) -> list[list[dict]]:
     return [
         [
@@ -124,7 +132,7 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
 
 def build_user_select_buttons(plugin_id: str, users: list[TvhUser]) -> list[list[dict]]:
     buttons = [
-        {"text": user.username, "callback_data": plugin_callback(plugin_id, f"user|{user.username}")}
+        {"text": user.username, "callback_data": plugin_callback(plugin_id, f"user|{encode_callback_value(user.username)}")}
         for user in users
     ]
     return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
@@ -134,7 +142,7 @@ def build_user_manage_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
     buttons = [
         {
             "text": f"{user.username} {_enabled_label(user.enabled)}",
-            "callback_data": plugin_callback(plugin_id, f"manage_user|{user.username}"),
+            "callback_data": plugin_callback(plugin_id, f"manage_user|{encode_callback_value(user.username)}"),
         }
         for user in users
     ]
@@ -142,13 +150,38 @@ def build_user_manage_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
 
 
 def build_user_action_buttons(plugin_id: str, user: TvhUser) -> list[list[dict]]:
-    target_enabled = "0" if user.enabled is not False else "1"
-    toggle_text = "禁用用户" if target_enabled == "0" else "启用用户"
-    return [
-        [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"reset_token|{user.username}")}],
-        [{"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"toggle_user|{user.username}|{target_enabled}")}],
+    username = encode_callback_value(user.username)
+    buttons = [
+        [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"confirm_reset_token|{username}")}],
+    ]
+    if user.enabled is not None:
+        target_enabled = "0" if user.enabled else "1"
+        toggle_text = "禁用用户" if target_enabled == "0" else "启用用户"
+        buttons.append([
+            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"confirm_toggle_user|{target_enabled}|{username}")},
+        ])
+    return buttons + [
         [
             {"text": "返回", "callback_data": plugin_callback(plugin_id, "manage_users")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabled: bool | None = None) -> list[list[dict]]:
+    encoded_username = encode_callback_value(username)
+    if action == "reset_token":
+        confirm_payload = f"reset_token|{encoded_username}"
+        confirm_text = "确认重置"
+    elif action == "toggle_user" and enabled is not None:
+        confirm_payload = f"toggle_user|{'1' if enabled else '0'}|{encoded_username}"
+        confirm_text = "确认启用" if enabled else "确认禁用"
+    else:
+        raise ValueError("未知确认操作")
+    return [
+        [{"text": confirm_text, "callback_data": plugin_callback(plugin_id, confirm_payload)}],
+        [
+            {"text": "返回", "callback_data": plugin_callback(plugin_id, f"manage_user|{encoded_username}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -785,6 +818,20 @@ def post_tvh_form(
     return _open_tvh_json(request, url, username, password, timeout)
 
 
+def post_tvh_body(
+    base_url: str,
+    path: str,
+    username: str,
+    password: str,
+    body: bytes,
+    timeout: int = 10,
+) -> dict:
+    url = f"{normalize_base_url(base_url)}{path}"
+    request = urllib.request.Request(url, data=body, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    return _open_tvh_json(request, url, username, password, timeout)
+
+
 def _open_tvh_json(request: urllib.request.Request, url: str, username: str, password: str, timeout: int) -> dict:
     password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     password_manager.add_password(None, url, username, password)
@@ -807,8 +854,7 @@ def build_idnode_save_body(nodes: list[dict]) -> bytes:
 def save_tvh_idnodes(base_url: str, username: str, password: str, nodes: list[dict]) -> bool:
     if not nodes:
         raise TvhError("没有可保存的 TVH 节点。")
-    node_json = json.dumps(nodes, ensure_ascii=False, separators=(",", ":"))
-    post_tvh_form(base_url, "/api/idnode/save", username, password, {"node": node_json})
+    post_tvh_body(base_url, "/api/idnode/save", username, password, build_idnode_save_body(nodes))
     return True
 
 
@@ -840,7 +886,7 @@ def set_tvh_user_enabled(
     nodes = []
     if user.access_uuid:
         nodes.append({"uuid": user.access_uuid, "enabled": bool(enabled)})
-    elif user.passwd_uuid:
+    if user.passwd_uuid:
         nodes.append({"uuid": user.passwd_uuid, "enabled": bool(enabled)})
     if not nodes:
         raise TvhError(f"用户 {user.username} 缺少 uuid，无法修改启用状态。")
