@@ -380,11 +380,11 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
         f"IP: {endpoint_text}",
     ]
     if source_text:
-        details.append(f"来源: {source_text}")
+        details.append(f"代理: {source_text}")
     if subscription.isp:
         details.append(f"ISP: {subscription.isp}")
     if source_text and source_isp:
-        details.append(f"来源ISP: {source_isp}")
+        details.append(f"代理ISP: {source_isp}")
     if client_line:
         details.append(f"客户端: {client_line}")
     if service:
