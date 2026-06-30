@@ -52,5 +52,38 @@
       "v1.1": "交互命令重启cd2、获取cd2系统信息，支持仪表盘",
       "v1.0": "监控上传任务，检测是否有异常，发送通知"
     }
+  },
+  "tvhhelper": {
+    "name": "TVH Helper",
+    "description": "Control TVHeadend from MoviePilot bot: status, DVB adapters, user M3U and EPG URLs.",
+    "labels": "TVH,Tool,Bot",
+    "version": "0.1.20",
+    "release": true,
+    "icon": "mediaplay.png",
+    "author": "qqcomeup",
+    "level": 2,
+    "history": {
+      "v0.1.20": "Show online stream details on the TVH close-user menu.",
+      "v0.1.19": "Show ISP information separately for TVH client and source IPs.",
+      "v0.1.18": "Add a close button to the top-level TVH bot menu.",
+      "v0.1.17": "Show channel names on TVH close buttons so duplicate users are distinguishable.",
+      "v0.1.16": "Edit or delete the original TVH bot menu on callbacks and show geo-only IP locations.",
+      "v0.1.15": "Render each online TVH user in a separate monospace block.",
+      "v0.1.14": "Add back/close buttons to TVH submenus, improve IP location fallback, and fix bitrate conversion.",
+      "v0.1.13": "Show online TVH details in monospace text, convert rates to Mb/s, and include source IP locations.",
+      "v0.1.12": "Format online TVH user details as quoted bot text and label client/source IPs clearly.",
+      "v0.1.11": "Show the username when closing a TVH connection and add public IP location display in status.",
+      "v0.1.10": "Compact the TVH status message into the selected short layout for bot display.",
+      "v0.1.9": "Normalize TVHeadend base URLs and keep status usable when optional status APIs return forbidden.",
+      "v0.1.8": "Improve online stream status formatting and parse TVHeadend subscription fields such as host, title, service, profile, state, and bitrate.",
+      "v0.1.7": "Remove default detail links from bot replies, add stream IP/client details, and add close-all support.",
+      "v0.1.6": "Move stream closing into a separate menu, show user buttons two per row, and use TVHeadend connections cancel API.",
+      "v0.1.5": "Send user M3U/XML as copyable code blocks, remove the passwd path setting, and simplify plugin metadata for faster UI loading.",
+      "v0.1.4": "Remove the separate DVB menu button, show online streaming users in status, and add close connection buttons.",
+      "v0.1.3": "Keep /tvh as the only bot command and make link buttons reply with copyable short or original TVH URLs.",
+      "v0.1.2": "Add /tvh one-level menu and plugin callback flow for selecting a user before showing M3U/XML links.",
+      "v0.1.1": "Use TVHeadend status inputs for DVB checks and add bot buttons for user M3U/EPG URLs.",
+      "v0.1.0": "Add TVH status, DVB adapter, user short URL query, and DVB change notifications."
+    }
   }
 }
