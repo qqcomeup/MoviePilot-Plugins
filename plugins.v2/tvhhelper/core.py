@@ -354,16 +354,7 @@ def format_status_message(
 
 def format_subscription_status_line(subscription: TvhSubscription) -> str:
     endpoint = subscription.peer or subscription.hostname or "未知IP"
-    proxy = subscription.proxy if subscription.proxy and subscription.proxy != endpoint else None
     endpoint_text = f"{endpoint} ({subscription.location})" if subscription.location else endpoint
-    source_location = subscription.proxy_location if proxy else subscription.hostname_location
-    source_isp = subscription.proxy_isp if proxy else subscription.hostname_isp
-    source = proxy or (
-        subscription.hostname
-        if subscription.hostname and subscription.hostname != endpoint
-        else None
-    )
-    source_text = f"{source} ({source_location})" if source and source_location else source
     client_line = " | ".join(
         value
         for value in [
@@ -379,12 +370,8 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
         f"{subscription.username} / {subscription.channel}",
         f"IP: {endpoint_text}",
     ]
-    if source_text:
-        details.append(f"代理: {source_text}")
     if subscription.isp:
         details.append(f"ISP: {subscription.isp}")
-    if source_text and source_isp:
-        details.append(f"代理ISP: {source_isp}")
     if client_line:
         details.append(f"客户端: {client_line}")
     if service:
