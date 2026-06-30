@@ -488,18 +488,12 @@ def enrich_subscriptions_with_ip_locations(
         ip = subscription.peer or subscription.hostname
         location = None
         isp = None
-        proxy_location = None
-        proxy_isp = None
         hostname_location = None
         hostname_isp = None
         if ip and _is_public_ip(ip):
             if ip not in cache:
                 cache[ip] = resolver(ip)
             location, isp = _split_location_result(cache[ip])
-        if subscription.proxy and _is_public_ip(subscription.proxy):
-            if subscription.proxy not in cache:
-                cache[subscription.proxy] = resolver(subscription.proxy)
-            proxy_location, proxy_isp = _split_location_result(cache[subscription.proxy])
         if subscription.hostname and _is_public_ip(subscription.hostname):
             if subscription.hostname not in cache:
                 cache[subscription.hostname] = resolver(subscription.hostname)
@@ -523,8 +517,8 @@ def enrich_subscriptions_with_ip_locations(
             user_agent=subscription.user_agent,
             location=location,
             isp=isp,
-            proxy_location=proxy_location,
-            proxy_isp=proxy_isp,
+            proxy_location=None,
+            proxy_isp=None,
             hostname_location=hostname_location,
             hostname_isp=hostname_isp,
         ))

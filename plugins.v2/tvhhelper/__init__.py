@@ -4,10 +4,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.core.config import settings
 from app.core.event import eventmanager, Event
+from app.db.systemconfig_oper import SystemConfigOper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
-from app.schemas.types import EventType
+from app.schemas.types import ChainEventType, EventType
 
 from .core import (
     DvbMonitor,
@@ -35,7 +36,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.24"
+    plugin_version = "0.1.25"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -54,6 +55,8 @@ class tvhhelper(_PluginBase):
     _monitor: DvbMonitor | None = None
 
     def init_plugin(self, config: dict = None):
+        eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
+        self.__reset_runtime_defaults()
         if config:
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
@@ -66,6 +69,17 @@ class tvhhelper(_PluginBase):
             self._check_interval = max(30, self.__to_int(config.get("check_interval"), 60))
         self._monitor = DvbMonitor(self._expected_dvb_count)
         self.__update_config()
+
+    def __reset_runtime_defaults(self):
+        self._enabled = False
+        self._notify = True
+        self._tvh_url = "http://127.0.0.1:9981"
+        self._tvh_user = ""
+        self._tvh_pass = ""
+        self._public_base_url = "https://m3u.example.com"
+        self._dvb_path = "/dev/dvb"
+        self._expected_dvb_count = 1
+        self._check_interval = 60
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -101,6 +115,15 @@ class tvhhelper(_PluginBase):
                 "data": {"action": "tvh_menu"},
             },
         ]
+
+    @eventmanager.register(ChainEventType.PluginDataReset)
+    def handle_reset(self, event: Event = None):
+        data = getattr(event, "event_data", None)
+        plugin_id = getattr(data, "plugin_id", None)
+        reset_config = getattr(data, "reset_config", False)
+        if plugin_id != self.__class__.__name__ or not reset_config:
+            return
+        SystemConfigOper().delete(f"plugin.{self.__class__.__name__}")
 
     @eventmanager.register(EventType.PluginAction)
     def handle_command(self, event: Event = None):
