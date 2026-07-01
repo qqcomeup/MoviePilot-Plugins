@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins.v2" / "tvh
 import core
 from core import (
     DvbMonitor,
+    TimedValueCache,
     TvhUser,
     TvhSubscription,
     build_epg_url,
@@ -27,6 +28,7 @@ from core import (
     enrich_subscriptions_with_ip_locations,
     fetch_ip_location_from_ip_api,
     fetch_ip_location,
+    fetch_ip_location_cached,
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
     format_copyable_url,
@@ -522,6 +524,58 @@ def test_status_message_adds_normalized_china_isp_to_ip_line():
     assert "ISP: CNC Group CHINA169 Guangdong Province Network" in message
     assert normalize_isp_carrier("China Mobile communications corporation") == "中国移动"
     assert normalize_isp_carrier("Chinanet Guangdong Province Network") == "中国电信"
+
+
+def test_ip_location_cache_reuses_recent_lookup():
+    calls = []
+    cache = TimedValueCache(ttl_seconds=60, now=lambda: 100)
+
+    def resolver(ip):
+        calls.append(ip)
+        return "广东 中山", "CNC Group CHINA169 Guangdong Province Network"
+
+    assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache) == (
+        "广东 中山",
+        "CNC Group CHINA169 Guangdong Province Network",
+    )
+    assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache) == (
+        "广东 中山",
+        "CNC Group CHINA169 Guangdong Province Network",
+    )
+    assert calls == ["58.253.166.121"]
+
+
+def test_ip_location_cache_expires_after_ttl():
+    current_time = [100]
+    calls = []
+    cache = TimedValueCache(ttl_seconds=5, now=lambda: current_time[0])
+
+    def resolver(ip):
+        calls.append(ip)
+        return f"loc-{len(calls)}", "isp"
+
+    assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache)[0] == "loc-1"
+    current_time[0] = 106
+    assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache)[0] == "loc-2"
+    assert calls == ["58.253.166.121", "58.253.166.121"]
+
+
+def test_enrich_subscriptions_can_skip_external_ip_lookup():
+    calls = []
+
+    def resolver(ip):
+        calls.append(ip)
+        return "广东 中山", "CNC Group CHINA169 Guangdong Province Network"
+
+    enriched = enrich_subscriptions_with_ip_locations(
+        [TvhSubscription(subscription_id="1", username="zdx", channel="News", peer="58.253.166.121")],
+        resolver=resolver,
+        enabled=False,
+    )
+
+    assert calls == []
+    assert enriched[0].location is None
+    assert enriched[0].isp is None
 
 
 def test_status_message_omits_source_isp_without_source():

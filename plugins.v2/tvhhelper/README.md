@@ -18,7 +18,7 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 
 - `/tvh` 打开 TVH 助手菜单。
 - 查看 TVHeadend 状态、版本、DVB 输入设备和在线播放用户。
-- 在线用户展示频道、客户端、服务、错误数、输入/输出码率、IP 归属地和 ISP；国内常见 ISP 会在 IP 行补充中国移动/中国联通/中国电信等运营商简称。
+- 在线用户展示频道、客户端、服务、错误数、输入/输出码率、IP 归属地和 ISP；国内常见 ISP 会在 IP 行补充中国移动/中国联通/中国电信等运营商简称。IP 归属地结果带 TTL 缓存，并可在配置中关闭第三方查询。
 - 选择 TVH 用户后生成可复制的 M3U / XMLTV 链接。
 - 用户管理支持重置 Token、启用用户、禁用用户。
 - 关闭单个在线播放连接，或一键断开全部连接。
@@ -33,6 +33,7 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 - DVB 路径：默认 `/dev/dvb`。
 - 预期 DVB 数量：用于 DVB 掉线检测。
 - 检查间隔秒：DVB 定时检查间隔，最低 30 秒。
+- IP归属地查询：控制是否调用第三方接口补充公网 IP 归属地和 ISP，关闭后只展示 TVH 原始连接信息。
 
 ## 说明
 

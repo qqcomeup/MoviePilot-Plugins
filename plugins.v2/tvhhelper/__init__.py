@@ -12,6 +12,7 @@ from app.schemas.types import ChainEventType, EventType
 
 from .core import (
     DvbMonitor,
+    TimedValueCache,
     build_user_action_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
@@ -59,7 +60,10 @@ class tvhhelper(_PluginBase):
     _dvb_path = "/dev/dvb"
     _expected_dvb_count = 1
     _check_interval = 60
+    _ip_lookup_enabled = True
     _monitor: DvbMonitor | None = None
+    _ip_location_cache: TimedValueCache | None = None
+    _tvh_users_cache: TimedValueCache | None = None
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -74,7 +78,10 @@ class tvhhelper(_PluginBase):
             self._dvb_path = config.get("dvb_path") or self._dvb_path
             self._expected_dvb_count = self.__to_int(config.get("expected_dvb_count"), 1)
             self._check_interval = max(30, self.__to_int(config.get("check_interval"), 60))
+            self._ip_lookup_enabled = bool(config.get("ip_lookup_enabled", True))
         self._monitor = DvbMonitor(self._expected_dvb_count)
+        self._ip_location_cache = TimedValueCache(ttl_seconds=21600)
+        self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
         self.__update_config()
 
     def __reset_runtime_defaults(self):
@@ -87,6 +94,9 @@ class tvhhelper(_PluginBase):
         self._dvb_path = "/dev/dvb"
         self._expected_dvb_count = 1
         self._check_interval = 60
+        self._ip_lookup_enabled = True
+        self._ip_location_cache = None
+        self._tvh_users_cache = None
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -106,6 +116,7 @@ class tvhhelper(_PluginBase):
             "dvb_path": self._dvb_path,
             "expected_dvb_count": self._expected_dvb_count,
             "check_interval": self._check_interval,
+            "ip_lookup_enabled": self._ip_lookup_enabled,
         })
 
     def get_state(self) -> bool:
@@ -214,6 +225,7 @@ class tvhhelper(_PluginBase):
                 if not user:
                     raise ValueError(f"未找到 TVH 用户: {username}")
                 new_token = reset_tvh_user_token(self._tvh_url, self._tvh_user, self._tvh_pass, user)
+                self.__clear_tvh_users_cache()
                 updated_user = TvhUser(
                     username=user.username,
                     token=new_token,
@@ -237,6 +249,7 @@ class tvhhelper(_PluginBase):
                     raise ValueError(f"未找到 TVH 用户: {username}")
                 enabled = enabled_text == "1"
                 set_tvh_user_enabled(self._tvh_url, self._tvh_user, self._tvh_pass, user, enabled)
+                self.__clear_tvh_users_cache()
                 self.__show_manage_user(event, username, f"用户已{'启用' if enabled else '禁用'}")
             elif payload == "close_menu":
                 self.__show_close_menu(event)
@@ -357,7 +370,7 @@ class tvhhelper(_PluginBase):
                 self.__tvh_subscriptions(),
                 self.__tvh_connections(),
             )
-            subscriptions = enrich_subscriptions_with_ip_locations(subscriptions)
+            subscriptions = self.__enrich_ip_locations(subscriptions)
         return format_status_message(tvh_ok, version, inputs, self._expected_dvb_count, subscriptions)
 
     def __online_users_text(self, subscriptions) -> str:
@@ -402,7 +415,7 @@ class tvhhelper(_PluginBase):
                 buttons=build_secondary_nav_buttons(self.__class__.__name__),
             )
             return
-        connections = enrich_subscriptions_with_ip_locations(connections)
+        connections = self.__enrich_ip_locations(connections)
         text = self.__online_users_text(connections)
         if prefix:
             text = f"{prefix}\n\n{text}"
@@ -432,12 +445,34 @@ class tvhhelper(_PluginBase):
         return fetch_tvh_connections(self._tvh_url, self._tvh_user, self._tvh_pass)
 
     def __tvh_users(self) -> list[TvhUser]:
-        return fetch_tvh_users(
+        cache_key = f"{self._tvh_url}|{self._tvh_user}"
+        cached = self._tvh_users_cache.get(cache_key) if self._tvh_users_cache else None
+        if cached is not None:
+            return cached
+        users = fetch_tvh_users(
             self._tvh_url,
             self._tvh_user,
             self._tvh_pass,
             None,
         )
+        if self._tvh_users_cache:
+            self._tvh_users_cache.set(cache_key, users)
+        return users
+
+    def __clear_tvh_users_cache(self):
+        if self._tvh_users_cache:
+            self._tvh_users_cache.clear()
+
+    def __enrich_ip_locations(self, subscriptions):
+        try:
+            return enrich_subscriptions_with_ip_locations(
+                subscriptions,
+                cache=self._ip_location_cache,
+                enabled=self._ip_lookup_enabled,
+            )
+        except Exception as err:
+            logger.warning(f"TVH IP 归属地查询失败，已跳过: {err}")
+            return subscriptions
 
     def check_dvb(self):
         if not self._enabled or not self._notify:
@@ -514,6 +549,14 @@ class tvhhelper(_PluginBase):
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "notify", "label": "DVB掉线通知"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "ip_lookup_enabled", "label": "IP归属地查询"},
                                 }],
                             },
                             {
@@ -609,4 +652,5 @@ class tvhhelper(_PluginBase):
             "dvb_path": "/dev/dvb",
             "expected_dvb_count": 1,
             "check_interval": 60,
+            "ip_lookup_enabled": True,
         }

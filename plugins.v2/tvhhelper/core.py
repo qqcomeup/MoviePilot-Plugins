@@ -2,6 +2,7 @@ import json
 import ipaddress
 import secrets
 import string
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,6 +50,30 @@ class TvhSubscription:
 
 class TvhError(Exception):
     pass
+
+
+class TimedValueCache:
+    def __init__(self, ttl_seconds: int, now=None) -> None:
+        self.ttl_seconds = max(0, int(ttl_seconds))
+        self._now = now or time.time
+        self._values: dict[str, tuple[float, object]] = {}
+
+    def get(self, key: str):
+        item = self._values.get(key)
+        if not item:
+            return None
+        expires_at, value = item
+        if expires_at <= self._now():
+            self._values.pop(key, None)
+            return None
+        return value
+
+    def set(self, key: str, value):
+        self._values[key] = (self._now() + self.ttl_seconds, value)
+        return value
+
+    def clear(self):
+        self._values.clear()
 
 
 class DvbMonitor:
@@ -641,9 +666,13 @@ def merge_subscription_details(
 def enrich_subscriptions_with_ip_locations(
     subscriptions: list[TvhSubscription],
     resolver=None,
+    cache: TimedValueCache | None = None,
+    enabled: bool = True,
 ) -> list[TvhSubscription]:
+    if not enabled:
+        return subscriptions
     resolver = resolver or fetch_ip_location
-    cache: dict[str, tuple[str | None, str | None]] = {}
+    local_cache: dict[str, tuple[str | None, str | None]] = {}
     enriched: list[TvhSubscription] = []
     for subscription in subscriptions:
         ip = subscription.peer or subscription.hostname
@@ -652,13 +681,21 @@ def enrich_subscriptions_with_ip_locations(
         hostname_location = None
         hostname_isp = None
         if ip and _is_public_ip(ip):
-            if ip not in cache:
-                cache[ip] = resolver(ip)
-            location, isp = _split_location_result(cache[ip])
+            if cache:
+                location, isp = _split_location_result(fetch_ip_location_cached(ip, resolver=resolver, cache=cache))
+            else:
+                if ip not in local_cache:
+                    local_cache[ip] = resolver(ip)
+                location, isp = _split_location_result(local_cache[ip])
         if subscription.hostname and _is_public_ip(subscription.hostname):
-            if subscription.hostname not in cache:
-                cache[subscription.hostname] = resolver(subscription.hostname)
-            hostname_location, hostname_isp = _split_location_result(cache[subscription.hostname])
+            if cache:
+                hostname_location, hostname_isp = _split_location_result(
+                    fetch_ip_location_cached(subscription.hostname, resolver=resolver, cache=cache)
+                )
+            else:
+                if subscription.hostname not in local_cache:
+                    local_cache[subscription.hostname] = resolver(subscription.hostname)
+                hostname_location, hostname_isp = _split_location_result(local_cache[subscription.hostname])
         enriched.append(TvhSubscription(
             subscription_id=subscription.subscription_id,
             username=subscription.username,
@@ -691,6 +728,19 @@ def fetch_ip_location(ip: str, timeout: int = 2) -> tuple[str | None, str | None
     fallback = fetch_ip_location_from_ip_api(ip, timeout) or fetch_ip_location_from_ipapi(ip, timeout)
     fallback_location, isp = _split_location_result(fallback)
     return location or fallback_location, isp
+
+
+def fetch_ip_location_cached(
+    ip: str,
+    resolver=None,
+    cache: TimedValueCache | None = None,
+) -> tuple[str | None, str | None]:
+    resolver = resolver or fetch_ip_location
+    cache = cache or TimedValueCache(ttl_seconds=21600)
+    cached = cache.get(ip)
+    if cached is not None:
+        return _split_location_result(cached)
+    return _split_location_result(cache.set(ip, resolver(ip)))
 
 
 def fetch_ip_location_from_pconline(ip: str, timeout: int = 2) -> str | None:
