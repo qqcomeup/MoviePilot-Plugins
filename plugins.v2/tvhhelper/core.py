@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -789,7 +790,7 @@ def fetch_ip_location_from_ip_api(ip: str, timeout: int = 2) -> tuple[str | None
         "lang": "zh-CN",
         "fields": "status,country,regionName,city,isp,org,query",
     })
-    url = f"http://ip-api.com/json/{urllib.parse.quote(ip)}?{query}"
+    url = f"https://ip-api.com/json/{urllib.parse.quote(ip)}?{query}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -965,6 +966,27 @@ def fetch_tvh_inputs(base_url: str, username: str, password: str) -> list[str]:
     except TvhError:
         return []
     return parse_tvh_inputs(payload)
+
+
+def fetch_tvh_status_bundle(
+    status_fetcher,
+    inputs_fetcher,
+    subscriptions_fetcher,
+    connections_fetcher,
+) -> tuple[bool, str | None, list[str], list[TvhSubscription]]:
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        status_future = executor.submit(status_fetcher)
+        inputs_future = executor.submit(inputs_fetcher)
+        subscriptions_future = executor.submit(subscriptions_fetcher)
+        connections_future = executor.submit(connections_fetcher)
+
+        tvh_ok, version = status_future.result()
+        inputs = inputs_future.result()
+        subscriptions = merge_subscription_details(
+            subscriptions_future.result(),
+            connections_future.result(),
+        )
+    return tvh_ok, version, inputs, subscriptions
 
 
 def fetch_tvh_subscriptions(base_url: str, username: str, password: str) -> list[TvhSubscription]:

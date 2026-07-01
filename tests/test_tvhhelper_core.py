@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins.v2" / "tvhhelper"))
@@ -31,6 +32,7 @@ from core import (
     fetch_ip_location_cached,
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
+    fetch_tvh_status_bundle,
     format_copyable_url,
     format_user_links_message,
     format_user_message,
@@ -670,7 +672,10 @@ def test_ip_location_parsers_return_geo_only(monkeypatch):
         def read(self):
             return json.dumps(self.payload).encode("utf-8")
 
+    urls = []
+
     def fake_urlopen(url, timeout):
+        urls.append(url)
         if "pconline" in url:
             return Response({
                 "pro": "广东省",
@@ -702,6 +707,47 @@ def test_ip_location_parsers_return_geo_only(monkeypatch):
     )
     assert fetch_ip_location_from_pconline("223.73.229.155") == "广东 佛山"
     assert fetch_ip_location("223.73.229.155") == ("广东 佛山", "Zouter Limited")
+    assert any(url.startswith("https://ip-api.com/json/") for url in urls)
+
+
+def test_tvh_status_bundle_fetches_independent_status_parts_concurrently():
+    calls = []
+
+    def status_fetcher():
+        time.sleep(0.08)
+        calls.append("status")
+        return True, "4.3"
+
+    def inputs_fetcher():
+        time.sleep(0.08)
+        calls.append("inputs")
+        return ["adapter0"]
+
+    def subscriptions_fetcher():
+        time.sleep(0.08)
+        calls.append("subscriptions")
+        return [TvhSubscription(subscription_id="1", username="zdx", channel="News")]
+
+    def connections_fetcher():
+        time.sleep(0.08)
+        calls.append("connections")
+        return [TvhSubscription(subscription_id="1", username="zdx", channel="News", peer="58.253.166.121")]
+
+    start = time.perf_counter()
+    tvh_ok, version, inputs, subscriptions = fetch_tvh_status_bundle(
+        status_fetcher,
+        inputs_fetcher,
+        subscriptions_fetcher,
+        connections_fetcher,
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.22
+    assert set(calls) == {"status", "inputs", "subscriptions", "connections"}
+    assert tvh_ok is True
+    assert version == "4.3"
+    assert inputs == ["adapter0"]
+    assert subscriptions[0].peer == "58.253.166.121"
 
 
 def test_subscription_details_merge_connection_ip_and_client():

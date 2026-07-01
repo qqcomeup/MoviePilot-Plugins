@@ -16,6 +16,7 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 
 ## 功能
 
+- TVH 状态页会并发读取 serverinfo、inputs、subscriptions、connections，降低单次状态查询等待时间。
 - `/tvh` 打开 TVH 助手菜单。
 - 查看 TVHeadend 状态、版本、DVB 输入设备和在线播放用户。
 - 在线用户展示频道、客户端、服务、错误数、输入/输出码率、IP 归属地和 ISP；国内常见 ISP 会在 IP 行补充中国移动/中国联通/中国电信等运营商简称。IP 归属地结果带 TTL 缓存，并可在配置中关闭第三方查询。

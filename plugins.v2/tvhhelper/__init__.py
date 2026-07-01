@@ -26,6 +26,7 @@ from .core import (
     fetch_tvh_connections,
     fetch_tvh_inputs,
     fetch_tvh_status,
+    fetch_tvh_status_bundle,
     fetch_tvh_subscriptions,
     fetch_tvh_users,
     format_user_links_message,
@@ -44,7 +45,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.25"
+    plugin_version = "0.1.28"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -363,14 +364,17 @@ class tvhhelper(_PluginBase):
             return False
 
     def __status_text(self, subscriptions=None) -> str:
-        tvh_ok, version = fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass)
-        inputs = self.__tvh_inputs()
         if subscriptions is None:
-            subscriptions = merge_subscription_details(
-                self.__tvh_subscriptions(),
-                self.__tvh_connections(),
+            tvh_ok, version, inputs, subscriptions = fetch_tvh_status_bundle(
+                lambda: fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass),
+                self.__tvh_inputs,
+                self.__tvh_subscriptions,
+                self.__tvh_connections,
             )
             subscriptions = self.__enrich_ip_locations(subscriptions)
+        else:
+            tvh_ok, version = fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass)
+            inputs = self.__tvh_inputs()
         return format_status_message(tvh_ok, version, inputs, self._expected_dvb_count, subscriptions)
 
     def __online_users_text(self, subscriptions) -> str:
