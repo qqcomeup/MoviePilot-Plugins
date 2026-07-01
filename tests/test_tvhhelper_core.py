@@ -11,6 +11,7 @@ from core import (
     TimedValueCache,
     TvhUser,
     TvhSubscription,
+    TvhServerStatus,
     build_epg_url,
     build_long_epg_url,
     build_long_m3u_url,
@@ -18,6 +19,7 @@ from core import (
     build_user_confirm_buttons,
     build_main_buttons,
     build_idnode_save_body,
+    build_restart_confirm_buttons,
     decode_callback_value,
     encode_callback_value,
     build_user_action_buttons,
@@ -51,6 +53,7 @@ from core import (
     parse_tvh_users,
     tokens_from_passwd_payload,
     scan_dvb_adapters,
+    restart_tvh_server,
     set_tvh_user_enabled,
 )
 
@@ -203,7 +206,8 @@ def test_user_message_contains_short_urls():
 def test_main_buttons_use_plugin_callbacks():
     assert build_main_buttons("tvhhelper") == [
         [
-            {"text": "状态", "callback_data": "[PLUGIN]tvhhelper|status"},
+            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|status"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
         ],
         [
             {"text": "用户链接", "callback_data": "[PLUGIN]tvhhelper|users"},
@@ -211,9 +215,32 @@ def test_main_buttons_use_plugin_callbacks():
         ],
         [
             {"text": "关闭用户", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
+            {"text": "重启TVH", "callback_data": "[PLUGIN]tvhhelper|confirm_restart"},
+        ],
+    ]
+
+
+def test_restart_confirm_buttons_require_second_click():
+    assert build_restart_confirm_buttons("tvhhelper") == [
+        [{"text": "确认重启TVH", "callback_data": "[PLUGIN]tvhhelper|restart_tvh"}],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
         ],
     ]
+
+
+def test_restart_tvh_server_calls_tvh_restart_api(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data):
+        calls.append((base_url, path, username, password, data))
+        return {}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    assert restart_tvh_server("http://tvh", "admin", "pass") is True
+    assert calls == [("http://tvh", "/api/server/restart", "admin", "pass", {})]
 
 
 def test_user_select_buttons_are_two_per_row():
@@ -467,8 +494,10 @@ def test_status_message_includes_online_users():
     )
 
     assert message == (
-        "TVH: OK | DVB: 1/3\n"
+        "```text\n"
         "版本: 4.3\n"
+        "TVH: OK | DVB: 1/3\n"
+        "```\n"
         "\n"
         "在线: 1\n"
         "```text\n"
@@ -478,6 +507,35 @@ def test_status_message_includes_online_users():
         "服务: HDIC HD2312\n"
         "错误: 5 | 输入/输出: 0.01/0.01 Mb/s\n"
         "```"
+    )
+
+
+def test_main_status_button_is_refresh():
+    assert build_main_buttons("tvhhelper")[0][0]["text"] == "刷新"
+    assert build_main_buttons("tvhhelper")[0][1]["text"] == "关闭"
+
+
+def test_status_summary_is_copyable_code_block():
+    message = format_status_message(
+        True,
+        "4.3-2707~g576b01895",
+        ["HDIC HD2312 #0 : DVB-T #0", "HDIC HD2312 #1 : DVB-T #0", "HDIC HD2312 #2 : DVB-T #0"],
+        3,
+        [],
+        start_time="2026-06-15 11:34:39",
+        uptime_seconds=90061,
+    )
+
+    assert message.startswith(
+        "```text\n"
+        "版本: 4.3-2707~g576b01895\n"
+        "TVH: OK | DVB: 3/3\n"
+        "启动于: 2026-06-15 11:34:39\n"
+        "运行时间: 1天 01:01:01\n"
+        "```\n"
+        "\n"
+        "在线: 0\n"
+        "无"
     )
 
 
@@ -615,8 +673,8 @@ def test_status_message_wraps_each_online_user_in_own_code_block():
         ],
     )
 
-    assert message.count("```text") == 2
-    assert message.count("```") == 4
+    assert message.count("```text") == 3
+    assert message.count("```") == 6
     assert "```\n\n```text\nFlora / 無綫新聞台" in message
 
 
@@ -716,7 +774,7 @@ def test_tvh_status_bundle_fetches_independent_status_parts_concurrently():
     def status_fetcher():
         time.sleep(0.08)
         calls.append("status")
-        return True, "4.3"
+        return TvhServerStatus(True, "4.3", "2026-07-01 12:00:00", 3661)
 
     def inputs_fetcher():
         time.sleep(0.08)
@@ -734,7 +792,7 @@ def test_tvh_status_bundle_fetches_independent_status_parts_concurrently():
         return [TvhSubscription(subscription_id="1", username="zdx", channel="News", peer="58.253.166.121")]
 
     start = time.perf_counter()
-    tvh_ok, version, inputs, subscriptions = fetch_tvh_status_bundle(
+    status, inputs, subscriptions = fetch_tvh_status_bundle(
         status_fetcher,
         inputs_fetcher,
         subscriptions_fetcher,
@@ -744,10 +802,27 @@ def test_tvh_status_bundle_fetches_independent_status_parts_concurrently():
 
     assert elapsed < 0.22
     assert set(calls) == {"status", "inputs", "subscriptions", "connections"}
-    assert tvh_ok is True
-    assert version == "4.3"
+    assert status.ok is True
+    assert status.version == "4.3"
+    assert status.start_time == "2026-07-01 12:00:00"
+    assert status.uptime_seconds == 3661
     assert inputs == ["adapter0"]
     assert subscriptions[0].peer == "58.253.166.121"
+
+
+def test_status_message_can_show_tvh_start_time_and_uptime():
+    message = format_status_message(
+        True,
+        "4.3",
+        ["adapter0"],
+        1,
+        [],
+        start_time="2026-07-01 12:00:00",
+        uptime_seconds=90061,
+    )
+
+    assert "启动于: 2026-07-01 12:00:00" in message
+    assert "运行时间: 1天 01:01:01" in message
 
 
 def test_subscription_details_merge_connection_ip_and_client():

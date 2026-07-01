@@ -49,6 +49,14 @@ class TvhSubscription:
     hostname_isp: str | None = None
 
 
+@dataclass(frozen=True)
+class TvhServerStatus:
+    ok: bool
+    version: str | None = None
+    start_time: str | None = None
+    uptime_seconds: int | None = None
+
+
 class TvhError(Exception):
     pass
 
@@ -143,7 +151,8 @@ def decode_callback_value(value: str) -> str:
 def build_main_buttons(plugin_id: str) -> list[list[dict]]:
     return [
         [
-            {"text": "状态", "callback_data": plugin_callback(plugin_id, "status")},
+            {"text": "刷新", "callback_data": plugin_callback(plugin_id, "status")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
         [
             {"text": "用户链接", "callback_data": plugin_callback(plugin_id, "users")},
@@ -151,7 +160,7 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
         ],
         [
             {"text": "关闭用户", "callback_data": plugin_callback(plugin_id, "close_menu")},
-            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+            {"text": "重启TVH", "callback_data": plugin_callback(plugin_id, "confirm_restart")},
         ],
     ]
 
@@ -208,6 +217,16 @@ def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabl
         [{"text": confirm_text, "callback_data": plugin_callback(plugin_id, confirm_payload)}],
         [
             {"text": "返回", "callback_data": plugin_callback(plugin_id, f"manage_user|{encoded_username}")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_restart_confirm_buttons(plugin_id: str) -> list[list[dict]]:
+    return [
+        [{"text": "确认重启TVH", "callback_data": plugin_callback(plugin_id, "restart_tvh")}],
+        [
+            {"text": "返回", "callback_data": plugin_callback(plugin_id, "main_menu")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -497,6 +516,8 @@ def format_status_message(
     inputs: list[str],
     expected_dvb_count: int,
     subscriptions: list[TvhSubscription] | None = None,
+    start_time: str | None = None,
+    uptime_seconds: int | None = None,
 ) -> str:
     status = "OK" if tvh_ok else "失败"
     subscriptions = subscriptions or []
@@ -507,13 +528,21 @@ def format_status_message(
         )
     else:
         subscription_lines = "无"
-    return (
-        f"TVH: {status} | DVB: {len(inputs)}/{expected_dvb_count}\n"
-        f"版本: {version or '未知'}\n"
-        f"\n"
-        f"在线: {len(subscriptions)}\n"
-        f"{subscription_lines}"
-    )
+    summary_lines = [
+        f"版本: {version or '未知'}",
+        f"TVH: {status} | DVB: {len(inputs)}/{expected_dvb_count}",
+    ]
+    if start_time:
+        summary_lines.append(f"启动于: {start_time}")
+    if uptime_seconds is not None:
+        summary_lines.append(f"运行时间: {_format_duration(uptime_seconds)}")
+    lines = [
+        f"```text\n{chr(10).join(summary_lines)}\n```",
+        "",
+        f"在线: {len(subscriptions)}",
+        subscription_lines,
+    ]
+    return "\n".join(lines)
 
 
 def format_subscription_status_line(subscription: TvhSubscription) -> str:
@@ -615,6 +644,19 @@ def _format_timestamp(value: str | int | float | None) -> str | None:
         return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
     except (OSError, OverflowError, TypeError, ValueError):
         return str(value)
+
+
+def _format_duration(seconds: int | float | str | None) -> str:
+    try:
+        total = max(0, int(float(seconds or 0)))
+    except (TypeError, ValueError):
+        return str(seconds)
+    days, remainder = divmod(total, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days}天 {hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def merge_subscription_details(
@@ -944,6 +986,11 @@ def set_tvh_user_enabled(
     return save_tvh_idnodes(base_url, username, password, nodes)
 
 
+def restart_tvh_server(base_url: str, username: str, password: str) -> bool:
+    post_tvh_form(base_url, "/api/server/restart", username, password, {})
+    return True
+
+
 def normalize_base_url(base_url: str) -> str:
     base = (base_url or "").strip().rstrip("/")
     if base and "://" not in base:
@@ -951,13 +998,24 @@ def normalize_base_url(base_url: str) -> str:
     return base
 
 
-def fetch_tvh_status(base_url: str, username: str, password: str) -> tuple[bool, str | None]:
+def fetch_tvh_status(base_url: str, username: str, password: str) -> TvhServerStatus:
     try:
         payload = fetch_tvh_json(base_url, "/api/serverinfo", username, password)
     except TvhError:
-        return False, None
+        return TvhServerStatus(ok=False)
     version = payload.get("sw_version") or payload.get("version")
-    return True, str(version) if version else None
+    start_time = _format_timestamp(payload.get("start_time") or payload.get("started"))
+    uptime = payload.get("uptime")
+    try:
+        uptime_seconds = int(uptime) if uptime is not None else None
+    except (TypeError, ValueError):
+        uptime_seconds = None
+    return TvhServerStatus(
+        ok=True,
+        version=str(version) if version else None,
+        start_time=start_time,
+        uptime_seconds=uptime_seconds,
+    )
 
 
 def fetch_tvh_inputs(base_url: str, username: str, password: str) -> list[str]:
@@ -973,20 +1031,20 @@ def fetch_tvh_status_bundle(
     inputs_fetcher,
     subscriptions_fetcher,
     connections_fetcher,
-) -> tuple[bool, str | None, list[str], list[TvhSubscription]]:
+) -> tuple[TvhServerStatus, list[str], list[TvhSubscription]]:
     with ThreadPoolExecutor(max_workers=4) as executor:
         status_future = executor.submit(status_fetcher)
         inputs_future = executor.submit(inputs_fetcher)
         subscriptions_future = executor.submit(subscriptions_fetcher)
         connections_future = executor.submit(connections_fetcher)
 
-        tvh_ok, version = status_future.result()
+        status = status_future.result()
         inputs = inputs_future.result()
         subscriptions = merge_subscription_details(
             subscriptions_future.result(),
             connections_future.result(),
         )
-    return tvh_ok, version, inputs, subscriptions
+    return status, inputs, subscriptions
 
 
 def fetch_tvh_subscriptions(base_url: str, username: str, password: str) -> list[TvhSubscription]:

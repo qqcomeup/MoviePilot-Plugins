@@ -1,3 +1,4 @@
+import importlib
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -10,12 +11,17 @@ from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
 from app.schemas.types import ChainEventType, EventType
 
+from . import core as _tvh_core
+
+importlib.reload(_tvh_core)
+
 from .core import (
     DvbMonitor,
     TimedValueCache,
     build_user_action_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
+    build_restart_confirm_buttons,
     build_secondary_nav_buttons,
     build_subscription_close_buttons,
     build_user_manage_buttons,
@@ -35,6 +41,7 @@ from .core import (
     find_user,
     merge_subscription_details,
     reset_tvh_user_token,
+    restart_tvh_server,
     set_tvh_user_enabled,
     token_for_user,
     TvhUser,
@@ -157,7 +164,12 @@ class tvhhelper(_PluginBase):
 
         try:
             if action == "tvh_menu":
-                self.__reply(event, "TVH功能菜单", "请选择功能：", buttons=build_main_buttons(self.__class__.__name__))
+                self.__reply_copy(
+                    event,
+                    "TVH状态",
+                    self.__status_text(),
+                    buttons=build_main_buttons(self.__class__.__name__),
+                )
                 return
         except Exception as err:
             logger.error(f"TVH助手命令执行失败: {err}", exc_info=True)
@@ -180,10 +192,30 @@ class tvhhelper(_PluginBase):
                     event,
                     "TVH状态",
                     self.__status_text(),
-                    buttons=build_secondary_nav_buttons(self.__class__.__name__),
+                    buttons=build_main_buttons(self.__class__.__name__),
                 )
             elif payload == "main_menu":
-                self.__edit_or_reply(event, "TVH功能菜单", "请选择功能：", buttons=build_main_buttons(self.__class__.__name__))
+                self.__edit_or_reply_copy(
+                    event,
+                    "TVH状态",
+                    self.__status_text(),
+                    buttons=build_main_buttons(self.__class__.__name__),
+                )
+            elif payload == "confirm_restart":
+                self.__edit_or_reply(
+                    event,
+                    "确认重启TVH",
+                    "确认重启 TVHeadend？\n\n当前播放会中断，TVH 恢复后可重新进入 /tvh 查看状态。",
+                    buttons=build_restart_confirm_buttons(self.__class__.__name__),
+                )
+            elif payload == "restart_tvh":
+                restart_tvh_server(self._tvh_url, self._tvh_user, self._tvh_pass)
+                self.__edit_or_reply(
+                    event,
+                    "TVH重启",
+                    "已请求 TVHeadend 重启。\n\n如果短时间内状态读取失败，请等待 TVH 启动完成后再试。",
+                    buttons=build_secondary_nav_buttons(self.__class__.__name__),
+                )
             elif payload == "dismiss":
                 if not self.__delete_original(event):
                     self.__edit_or_reply(event, "TVH菜单已关闭", "")
@@ -364,14 +396,22 @@ class tvhhelper(_PluginBase):
             return False
 
     def __status_text(self) -> str:
-        tvh_ok, version, inputs, subscriptions = fetch_tvh_status_bundle(
+        status, inputs, subscriptions = fetch_tvh_status_bundle(
             lambda: fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass),
             self.__tvh_inputs,
             self.__tvh_subscriptions,
             self.__tvh_connections,
         )
         subscriptions = self.__enrich_ip_locations(subscriptions)
-        return format_status_message(tvh_ok, version, inputs, self._expected_dvb_count, subscriptions)
+        return format_status_message(
+            status.ok,
+            status.version,
+            inputs,
+            self._expected_dvb_count,
+            subscriptions,
+            start_time=status.start_time,
+            uptime_seconds=status.uptime_seconds,
+        )
 
     def __online_users_text(self, subscriptions) -> str:
         return "\n".join(format_status_message(True, None, [], 0, subscriptions).splitlines()[3:])
