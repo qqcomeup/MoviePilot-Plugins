@@ -160,6 +160,9 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
         ],
         [
             {"text": "关闭用户", "callback_data": plugin_callback(plugin_id, "close_menu")},
+            {"text": "播放通知", "callback_data": plugin_callback(plugin_id, "play_notify_users")},
+        ],
+        [
             {"text": "重启TVH", "callback_data": plugin_callback(plugin_id, "confirm_restart")},
         ],
     ]
@@ -184,11 +187,21 @@ def build_user_manage_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
     return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
 
 
-def build_user_action_buttons(plugin_id: str, user: TvhUser) -> list[list[dict]]:
+def build_user_action_buttons(
+    plugin_id: str,
+    user: TvhUser,
+    play_notify_enabled: bool | None = None,
+) -> list[list[dict]]:
     username = encode_callback_value(user.username)
     buttons = [
         [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"confirm_reset_token|{username}")}],
     ]
+    if play_notify_enabled is not None:
+        target_enabled = "0" if play_notify_enabled else "1"
+        toggle_text = "关闭播放通知" if play_notify_enabled else "开启播放通知"
+        buttons.append([
+            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"toggle_play_notify_user|{target_enabled}|{username}")},
+        ])
     if user.enabled is not None:
         target_enabled = "0" if user.enabled else "1"
         toggle_text = "禁用用户" if target_enabled == "0" else "启用用户"
@@ -201,6 +214,26 @@ def build_user_action_buttons(plugin_id: str, user: TvhUser) -> list[list[dict]]
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
+
+
+def build_play_notify_user_buttons(
+    plugin_id: str,
+    users: list[TvhUser],
+    enabled_users: dict[str, bool],
+) -> list[list[dict]]:
+    buttons = []
+    for user in users:
+        enabled = bool(enabled_users.get(user.username))
+        target_enabled = "0" if enabled else "1"
+        label = "已开启" if enabled else "已关闭"
+        buttons.append({
+            "text": f"{user.username} {label}",
+            "callback_data": plugin_callback(
+                plugin_id,
+                f"toggle_play_notify_menu|{target_enabled}|{encode_callback_value(user.username)}",
+            ),
+        })
+    return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
 
 
 def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabled: bool | None = None) -> list[list[dict]]:
@@ -580,6 +613,332 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
             if item
         ))
     return "\n".join(details)
+
+
+def playback_subscription_key(subscription: TvhSubscription) -> str:
+    if subscription.subscription_id:
+        return str(subscription.subscription_id)
+    return "|".join([
+        subscription.username or "",
+        subscription.channel or "",
+        subscription.peer or subscription.hostname or "",
+        subscription.service or "",
+    ])
+
+
+def playback_notification_key(subscription: TvhSubscription) -> str:
+    return "|".join([
+        subscription.username or "",
+        subscription.peer or subscription.hostname or "",
+        subscription.user_agent or subscription.client or "",
+        subscription.started or "",
+        subscription.channel or "",
+        subscription.service or "",
+        subscription.profile or "",
+    ])
+
+
+def is_real_playback_subscription(subscription: TvhSubscription) -> bool:
+    channel = (subscription.channel or "").strip()
+    has_playback_detail = any([
+        subscription.service,
+        subscription.profile,
+        subscription.started,
+        subscription.state,
+        subscription.errors,
+        subscription.input_kbps,
+        subscription.output_kbps,
+    ])
+    if has_playback_detail:
+        return True
+    if not channel or channel in {"未知地址", "未知频道"}:
+        return False
+    if _is_ip_literal(channel):
+        return False
+    if subscription.peer and channel == subscription.peer:
+        return False
+    return True
+
+
+def _is_ip_literal(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        ipaddress.ip_address(str(value).strip())
+        return True
+    except ValueError:
+        return False
+
+
+def detect_playback_events(
+    previous: dict[str, TvhSubscription],
+    current: dict[str, TvhSubscription],
+    enabled_users: dict[str, bool],
+) -> list[tuple[str, TvhSubscription]]:
+    previous_items = _real_playback_items(previous)
+    current_items = _real_playback_items(current)
+    events: list[tuple[str, TvhSubscription]] = []
+    matched_previous: set[str] = set()
+    matched_current: set[str] = set()
+
+    for previous_key, previous_subscription in previous_items.items():
+        if not previous_subscription.subscription_id:
+            continue
+        for current_key, current_subscription in current_items.items():
+            if current_key in matched_current:
+                continue
+            if previous_subscription.subscription_id != current_subscription.subscription_id:
+                continue
+            matched_previous.add(previous_key)
+            matched_current.add(current_key)
+            if (
+                enabled_users.get(current_subscription.username)
+                and _playback_content_signature(previous_subscription) != _playback_content_signature(current_subscription)
+            ):
+                events.append(("stop", previous_subscription))
+                events.append(("start", current_subscription))
+            break
+
+    previous = _playback_notification_map(
+        subscription
+        for key, subscription in previous_items.items()
+        if key not in matched_previous
+    )
+    current = _playback_notification_map(
+        subscription
+        for key, subscription in current_items.items()
+        if key not in matched_current
+    )
+    for key, subscription in current.items():
+        if key not in previous and enabled_users.get(subscription.username):
+            events.append(("start", subscription))
+        elif key in previous and enabled_users.get(subscription.username):
+            previous_subscription = previous[key]
+            if _playback_content_signature(previous_subscription) != _playback_content_signature(subscription):
+                events.append(("stop", previous_subscription))
+                events.append(("start", subscription))
+    for key, subscription in previous.items():
+        if key not in current and enabled_users.get(subscription.username):
+            events.append(("stop", subscription))
+    return events
+
+
+def _real_playback_items(subscriptions: dict[str, TvhSubscription]) -> dict[str, TvhSubscription]:
+    return {
+        key: subscription
+        for key, subscription in subscriptions.items()
+        if is_real_playback_subscription(subscription)
+    }
+
+
+def _playback_notification_map(subscriptions: Iterable[TvhSubscription]) -> dict[str, TvhSubscription]:
+    return {
+        playback_notification_key(subscription): subscription
+        for subscription in subscriptions
+        if is_real_playback_subscription(subscription)
+    }
+
+
+def _playback_content_signature(subscription: TvhSubscription) -> tuple[str, str, str | None, str | None]:
+    return (
+        subscription.username,
+        subscription.channel,
+        subscription.service,
+        subscription.profile,
+    )
+
+
+def normalize_enabled_user_map(value) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(username): True
+        for username, enabled in value.items()
+        if username and bool(enabled)
+    }
+
+
+def resolve_play_notify_settings(
+    current_enabled: bool,
+    current_users: dict[str, bool],
+    persisted_config,
+) -> tuple[bool, dict[str, bool]]:
+    if not isinstance(persisted_config, dict):
+        return current_enabled, normalize_enabled_user_map(current_users)
+    enabled = bool(persisted_config.get("play_notify", current_enabled))
+    users = normalize_enabled_user_map(
+        persisted_config.get("play_notify_users", current_users)
+    )
+    return enabled, users
+
+
+def format_playback_notification(
+    event: str,
+    subscription: TvhSubscription,
+    event_time: datetime | str | None = None,
+) -> tuple[str, str]:
+    action = "开始播放" if event == "start" else "停止播放"
+    event_dt = _coerce_datetime(event_time) or datetime.now()
+    event_text = _format_datetime_text(event_dt)
+    lines = format_subscription_status_line(subscription).splitlines()
+    started_text = subscription.started or "未知"
+    lines.append(f"开始: {started_text}")
+    if event == "stop":
+        lines.append(f"停止: {event_text}")
+    duration = _format_play_duration(subscription.started, event_dt)
+    if duration:
+        lines.append(f"时长: {duration}")
+    return f"TVH{action}", f"```text\n{chr(10).join(lines)}\n```"
+
+
+def is_playback_switch_pair(
+    first: tuple[str, TvhSubscription],
+    second: tuple[str, TvhSubscription],
+) -> bool:
+    first_event, first_subscription = first
+    second_event, second_subscription = second
+    return (
+        first_event == "stop"
+        and second_event == "start"
+        and first_subscription.username == second_subscription.username
+        and _playback_content_signature(first_subscription) != _playback_content_signature(second_subscription)
+    )
+
+
+def plan_playback_notifications(
+    events: list[tuple[str, TvhSubscription]],
+    previous: dict[str, TvhSubscription],
+    current: dict[str, TvhSubscription],
+    pending_starts: dict[str, tuple[float, TvhSubscription]] | None = None,
+    now: float = 0,
+    grace_seconds: int = 30,
+) -> tuple[list[tuple], dict[str, tuple[float, TvhSubscription]]]:
+    notifications: list[tuple] = []
+    pending = dict(pending_starts or {})
+    index = 0
+    while index < len(events):
+        event_name, subscription = events[index]
+        if index + 1 < len(events) and is_playback_switch_pair(events[index], events[index + 1]):
+            notifications.append(("switch", subscription, events[index + 1][1]))
+            pending.pop(subscription.username, None)
+            index += 2
+            continue
+        if event_name == "start":
+            later_stop_index = _find_later_stop_for_start(events, index, subscription)
+            if later_stop_index is not None:
+                notifications.append(("switch", events[later_stop_index][1], subscription))
+                pending.pop(subscription.username, None)
+                events.pop(later_stop_index)
+                index += 1
+                continue
+        if event_name == "start" and (
+            _has_other_active_stream(subscription, previous)
+            or _has_other_active_stream(subscription, current)
+        ):
+            pending[subscription.username] = (now, subscription)
+            index += 1
+            continue
+        if event_name == "stop":
+            pending_item = pending.pop(subscription.username, None)
+            if pending_item and _subscription_exists(pending_item[1], current):
+                notifications.append(("switch", subscription, pending_item[1]))
+            else:
+                notifications.append(("stop", subscription))
+            index += 1
+            continue
+        notifications.append((event_name, subscription))
+        index += 1
+
+    for username, (created_at, subscription) in list(pending.items()):
+        if now - created_at >= grace_seconds:
+            pending.pop(username, None)
+            if _subscription_exists(subscription, current):
+                notifications.append(("start", subscription))
+    return notifications, pending
+
+
+def _subscription_exists(subscription: TvhSubscription, subscriptions: dict[str, TvhSubscription]) -> bool:
+    notification_key = playback_notification_key(subscription)
+    legacy_key = playback_subscription_key(subscription)
+    return (
+        notification_key in subscriptions
+        or legacy_key in subscriptions
+        or any(playback_notification_key(item) == notification_key for item in subscriptions.values())
+    )
+
+
+def _find_later_stop_for_start(
+    events: list[tuple[str, TvhSubscription]],
+    start_index: int,
+    start_subscription: TvhSubscription,
+) -> int | None:
+    for index in range(start_index + 1, len(events)):
+        event_name, subscription = events[index]
+        if (
+            event_name == "stop"
+            and subscription.username == start_subscription.username
+            and _playback_content_signature(subscription) != _playback_content_signature(start_subscription)
+        ):
+            return index
+    return None
+
+
+def _has_other_active_stream(subscription: TvhSubscription, subscriptions: dict[str, TvhSubscription]) -> bool:
+    key = playback_notification_key(subscription)
+    return any(
+        subscription_key != key
+        and active_subscription.username == subscription.username
+        and _playback_content_signature(active_subscription) != _playback_content_signature(subscription)
+        for subscription_key, active_subscription in _playback_notification_map(subscriptions.values()).items()
+    )
+
+
+def format_playback_switch_notification(
+    previous: TvhSubscription,
+    current: TvhSubscription,
+    event_time: datetime | str | None = None,
+) -> tuple[str, str]:
+    _, stop_text = format_playback_notification("stop", previous, event_time=event_time)
+    _, start_text = format_playback_notification("start", current, event_time=event_time)
+    return "TVH切换频道", f"停止播放\n{stop_text}\n\n开始播放\n{start_text}"
+
+
+def _coerce_datetime(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        return _parse_datetime(value)
+    return None
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_datetime_text(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_play_duration(started: str | None, event_time: datetime) -> str | None:
+    started_dt = _parse_datetime(started)
+    if not started_dt:
+        return None
+    return _format_duration(max(0, int((event_time - started_dt).total_seconds())))
 
 
 def _endpoint_meta(location: str | None, isp: str | None) -> str | None:
@@ -996,6 +1355,14 @@ def normalize_base_url(base_url: str) -> str:
     if base and "://" not in base:
         base = f"https://{base}"
     return base
+
+
+def normalize_interval(value, default: int, minimum: int) -> int:
+    try:
+        interval = int(value)
+    except (TypeError, ValueError):
+        interval = int(default)
+    return max(int(minimum), interval)
 
 
 def fetch_tvh_status(base_url: str, username: str, password: str) -> TvhServerStatus:

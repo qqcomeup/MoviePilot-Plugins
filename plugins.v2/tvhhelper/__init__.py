@@ -1,4 +1,4 @@
-import importlib
+import time
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -11,13 +11,10 @@ from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
 from app.schemas.types import ChainEventType, EventType
 
-from . import core as _tvh_core
-
-importlib.reload(_tvh_core)
-
 from .core import (
     DvbMonitor,
     TimedValueCache,
+    build_play_notify_user_buttons,
     build_user_action_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
@@ -35,11 +32,19 @@ from .core import (
     fetch_tvh_status_bundle,
     fetch_tvh_subscriptions,
     fetch_tvh_users,
+    format_playback_notification,
+    format_playback_switch_notification,
     format_user_links_message,
     format_dvb_message,
     format_status_message,
     find_user,
+    is_real_playback_subscription,
     merge_subscription_details,
+    normalize_interval,
+    playback_notification_key,
+    detect_playback_events,
+    plan_playback_notifications,
+    resolve_play_notify_settings,
     reset_tvh_user_token,
     restart_tvh_server,
     set_tvh_user_enabled,
@@ -52,7 +57,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.30"
+    plugin_version = "0.1.41"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -68,7 +73,12 @@ class tvhhelper(_PluginBase):
     _dvb_path = "/dev/dvb"
     _expected_dvb_count = 1
     _check_interval = 60
+    _play_notify_interval = 10
     _ip_lookup_enabled = True
+    _play_notify = True
+    _play_notify_users: dict[str, bool] = {}
+    _play_notify_snapshot: dict[str, Any] | None = None
+    _play_notify_pending_starts: dict[str, tuple[float, Any]] = {}
     _monitor: DvbMonitor | None = None
     _ip_location_cache: TimedValueCache | None = None
     _tvh_users_cache: TimedValueCache | None = None
@@ -85,11 +95,18 @@ class tvhhelper(_PluginBase):
             self._public_base_url = (config.get("public_base_url") or self._public_base_url).rstrip("/")
             self._dvb_path = config.get("dvb_path") or self._dvb_path
             self._expected_dvb_count = self.__to_int(config.get("expected_dvb_count"), 1)
-            self._check_interval = max(30, self.__to_int(config.get("check_interval"), 60))
+            self._check_interval = normalize_interval(config.get("check_interval"), 60, 30)
+            self._play_notify_interval = normalize_interval(config.get("play_notify_interval"), 10, 5)
             self._ip_lookup_enabled = bool(config.get("ip_lookup_enabled", True))
+            self._play_notify, self._play_notify_users = resolve_play_notify_settings(
+                self._play_notify,
+                self._play_notify_users,
+                config,
+            )
         self._monitor = DvbMonitor(self._expected_dvb_count)
         self._ip_location_cache = TimedValueCache(ttl_seconds=21600)
         self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
+        self._play_notify_snapshot = None
         self.__update_config()
 
     def __reset_runtime_defaults(self):
@@ -102,7 +119,12 @@ class tvhhelper(_PluginBase):
         self._dvb_path = "/dev/dvb"
         self._expected_dvb_count = 1
         self._check_interval = 60
+        self._play_notify_interval = 10
         self._ip_lookup_enabled = True
+        self._play_notify = True
+        self._play_notify_users = {}
+        self._play_notify_snapshot = None
+        self._play_notify_pending_starts = {}
         self._ip_location_cache = None
         self._tvh_users_cache = None
 
@@ -124,7 +146,10 @@ class tvhhelper(_PluginBase):
             "dvb_path": self._dvb_path,
             "expected_dvb_count": self._expected_dvb_count,
             "check_interval": self._check_interval,
+            "play_notify_interval": self._play_notify_interval,
             "ip_lookup_enabled": self._ip_lookup_enabled,
+            "play_notify": self._play_notify,
+            "play_notify_users": self._play_notify_users,
         })
 
     def get_state(self) -> bool:
@@ -232,6 +257,20 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("manage_user|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
                 self.__show_manage_user(event, username)
+            elif payload == "play_notify_users":
+                self.__show_play_notify_users(event)
+            elif payload.startswith("toggle_play_notify_menu|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = decode_callback_value(encoded_username)
+                enabled = enabled_text == "1"
+                self.__set_play_notify_user(username, enabled)
+                self.__show_play_notify_users(event, f"{username} 播放通知已{'开启' if enabled else '关闭'}")
+            elif payload.startswith("toggle_play_notify_user|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = decode_callback_value(encoded_username)
+                enabled = enabled_text == "1"
+                self.__set_play_notify_user(username, enabled)
+                self.__show_manage_user(event, username, f"播放通知已{'开启' if enabled else '关闭'}")
             elif payload.startswith("confirm_reset_token|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
                 self.__edit_or_reply(
@@ -271,7 +310,11 @@ class tvhhelper(_PluginBase):
                     event,
                     f"TVH用户 {username}",
                     "Token 已重置\n\n" + format_user_links_message(self._public_base_url, updated_user),
-                    buttons=build_user_action_buttons(self.__class__.__name__, updated_user),
+                    buttons=build_user_action_buttons(
+                        self.__class__.__name__,
+                        updated_user,
+                        self.__is_play_notify_user_enabled(updated_user.username),
+                    ),
                 )
             elif payload.startswith("toggle_user|"):
                 _, enabled_text, encoded_username = payload.split("|", 2)
@@ -439,8 +482,41 @@ class tvhhelper(_PluginBase):
             event,
             f"TVH用户 {username}",
             text,
-            buttons=build_user_action_buttons(self.__class__.__name__, user),
+            buttons=build_user_action_buttons(
+                self.__class__.__name__,
+                user,
+                self.__is_play_notify_user_enabled(user.username),
+            ),
         )
+
+    def __show_play_notify_users(self, event: Event, prefix: str | None = None):
+        users = self.__tvh_users()
+        text = "请选择要开启/关闭播放通知的 TVH 用户。"
+        if not self._play_notify:
+            text = "播放通知总开关未启用，请先在插件设置中开启。\n\n" + text
+        if prefix:
+            text = f"{prefix}\n\n{text}"
+        self.__edit_or_reply(
+            event,
+            "TVH播放通知",
+            text,
+            buttons=build_play_notify_user_buttons(
+                self.__class__.__name__,
+                users,
+                self._play_notify_users,
+            ),
+        )
+
+    def __is_play_notify_user_enabled(self, username: str) -> bool:
+        return bool(self._play_notify_users.get(username))
+
+    def __set_play_notify_user(self, username: str, enabled: bool):
+        if enabled:
+            self._play_notify_users[username] = True
+        else:
+            self._play_notify_users.pop(username, None)
+        self._play_notify_snapshot = None
+        self.__update_config()
 
     def __show_close_menu(self, event: Event, prefix: str | None = None):
         connections = self.__tvh_online_subscriptions()
@@ -538,16 +614,106 @@ class tvhhelper(_PluginBase):
                 text=format_dvb_message(inputs, self._expected_dvb_count),
             )
 
+    def check_playback(self):
+        self.__sync_play_notify_config()
+        if not self._enabled or not self._play_notify:
+            return
+        if not any(self._play_notify_users.values()):
+            self._play_notify_snapshot = None
+            self._play_notify_pending_starts = {}
+            return
+        try:
+            subscriptions = self.__enrich_ip_locations(self.__tvh_online_subscriptions())
+            subscriptions = [
+                subscription
+                for subscription in subscriptions
+                if is_real_playback_subscription(subscription)
+            ]
+            current = {
+                playback_notification_key(subscription): subscription
+                for subscription in subscriptions
+            }
+            previous = self._play_notify_snapshot or {}
+            events = detect_playback_events(previous, current, self._play_notify_users)
+            notifications, self._play_notify_pending_starts = plan_playback_notifications(
+                events,
+                previous,
+                current,
+                self._play_notify_pending_starts,
+                now=time.time(),
+                grace_seconds=max(20, self._play_notify_interval * 2),
+            )
+            self._play_notify_snapshot = current
+        except Exception as err:
+            logger.error(f"TVH 播放状态读取失败: {err}", exc_info=True)
+            return
+
+        index = 0
+        while index < len(notifications):
+            notification = notifications[index]
+            event_name, subscription = notification[0], notification[1]
+            if event_name == "switch":
+                next_subscription = notification[2]
+                title, text = format_playback_switch_notification(subscription, next_subscription)
+                logger.info(
+                    f"{title}: {subscription.username} / {subscription.channel} -> {next_subscription.channel}"
+                )
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title=title,
+                    text=text,
+                    parse_mode="Markdown",
+                )
+                index += 1
+                continue
+            title, text = format_playback_notification(event_name, subscription)
+            logger.info(f"{title}: {subscription.username} / {subscription.channel}")
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=title,
+                text=text,
+                parse_mode="Markdown",
+            )
+            index += 1
+
+    def __sync_play_notify_config(self):
+        try:
+            config = SystemConfigOper().get(f"plugin.{self.__class__.__name__}")
+        except Exception as err:
+            logger.debug(f"TVH播放通知配置同步失败: {err}")
+            return
+        play_notify, play_notify_users = resolve_play_notify_settings(
+            self._play_notify,
+            self._play_notify_users,
+            config,
+        )
+        if play_notify != self._play_notify or play_notify_users != self._play_notify_users:
+            self._play_notify_snapshot = None
+            self._play_notify_pending_starts = {}
+        self._play_notify = play_notify
+        self._play_notify_users = play_notify_users
+
     def get_service(self) -> List[Dict[str, Any]]:
-        if not self._enabled or not self._notify:
+        if not self._enabled:
             return []
-        return [{
-            "id": "tvhhelper_dvb_monitor",
-            "name": "TVH DVB监控",
-            "trigger": IntervalTrigger(seconds=self._check_interval, timezone=settings.TZ),
-            "func": self.check_dvb,
-            "kwargs": {},
-        }]
+        services = []
+        if self._notify:
+            services.append({
+                "id": "tvhhelper_dvb_monitor",
+                "name": "TVH DVB监控",
+                "trigger": IntervalTrigger(seconds=self._check_interval, timezone=settings.TZ),
+                "func": self.check_dvb,
+                "kwargs": {},
+            })
+        if self._play_notify:
+            services.append({
+                "id": "tvhhelper_playback_monitor",
+                "name": "TVH播放通知",
+                "trigger": IntervalTrigger(seconds=self._play_notify_interval, timezone=settings.TZ),
+                "func": self.check_playback,
+                "kwargs": {},
+            })
+        return services
 
     def get_api(self) -> List[Dict[str, Any]]:
         return []
@@ -597,6 +763,14 @@ class tvhhelper(_PluginBase):
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "ip_lookup_enabled", "label": "IP归属地查询"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "play_notify", "label": "播放通知"},
                                 }],
                             },
                             {
@@ -670,6 +844,14 @@ class tvhhelper(_PluginBase):
                                     "props": {"model": "check_interval", "label": "检查间隔秒", "type": "number"},
                                 }],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "play_notify_interval", "label": "播放通知间隔秒", "type": "number"},
+                                }],
+                            },
                         ],
                     },
                     {
@@ -692,5 +874,8 @@ class tvhhelper(_PluginBase):
             "dvb_path": "/dev/dvb",
             "expected_dvb_count": 1,
             "check_interval": 60,
+            "play_notify_interval": 10,
             "ip_lookup_enabled": True,
+            "play_notify": True,
+            "play_notify_users": {},
         }

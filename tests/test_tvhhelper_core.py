@@ -16,6 +16,7 @@ from core import (
     build_long_epg_url,
     build_long_m3u_url,
     build_m3u_url,
+    build_play_notify_user_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
     build_idnode_save_body,
@@ -35,12 +36,20 @@ from core import (
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
     fetch_tvh_status_bundle,
+    detect_playback_events,
+    format_playback_notification,
+    format_playback_switch_notification,
+    is_real_playback_subscription,
+    is_playback_switch_pair,
+    resolve_play_notify_settings,
     format_copyable_url,
     format_user_links_message,
     format_user_message,
     format_dvb_message,
     format_status_message,
     merge_subscription_details,
+    normalize_interval,
+    plan_playback_notifications,
     normalize_base_url,
     normalize_isp_carrier,
     generate_auth_token,
@@ -51,6 +60,7 @@ from core import (
     parse_tvh_connections,
     parse_tvh_subscriptions,
     parse_tvh_users,
+    playback_subscription_key,
     tokens_from_passwd_payload,
     scan_dvb_adapters,
     restart_tvh_server,
@@ -70,6 +80,12 @@ def test_short_urls_are_built_with_a_parameter():
 def test_base_url_without_scheme_is_normalized_to_https():
     assert normalize_base_url("m3u.example.com/") == "https://m3u.example.com"
     assert normalize_base_url("https://m3u.example.com/") == "https://m3u.example.com"
+
+
+def test_normalize_interval_uses_default_and_minimum():
+    assert normalize_interval("bad", default=15, minimum=5) == 15
+    assert normalize_interval(3, default=15, minimum=5) == 5
+    assert normalize_interval("10", default=15, minimum=5) == 10
 
 
 def test_long_tvh_urls_are_built_with_auth_token():
@@ -215,6 +231,9 @@ def test_main_buttons_use_plugin_callbacks():
         ],
         [
             {"text": "关闭用户", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
+            {"text": "播放通知", "callback_data": "[PLUGIN]tvhhelper|play_notify_users"},
+        ],
+        [
             {"text": "重启TVH", "callback_data": "[PLUGIN]tvhhelper|confirm_restart"},
         ],
     ]
@@ -304,6 +323,42 @@ def test_user_action_buttons_reset_token_and_toggle_user():
     ]
 
 
+def test_user_action_buttons_can_toggle_playback_notifications():
+    assert build_user_action_buttons(
+        "tvhhelper",
+        TvhUser(username="test", enabled=True),
+        play_notify_enabled=True,
+    )[:3] == [
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|test"}],
+        [{"text": "关闭播放通知", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_user|0|test"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|test"}],
+    ]
+    assert build_user_action_buttons(
+        "tvhhelper",
+        TvhUser(username="test", enabled=True),
+        play_notify_enabled=False,
+    )[1] == [
+        {"text": "开启播放通知", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_user|1|test"}
+    ]
+
+
+def test_play_notify_user_buttons_toggle_each_user():
+    assert build_play_notify_user_buttons(
+        "tvhhelper",
+        [TvhUser(username="ck"), TvhUser(username="test")],
+        {"ck": True},
+    ) == [
+        [
+            {"text": "ck 已开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|0|ck"},
+            {"text": "test 已关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|1|test"},
+        ],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
 def test_user_action_buttons_encode_usernames_and_confirm_sensitive_actions():
     encoded = encode_callback_value("a|b")
     assert encoded == "a%7Cb"
@@ -369,6 +424,269 @@ def test_set_tvh_user_enabled_saves_access_and_passwd_nodes(monkeypatch):
             {"uuid": "passwd-1", "enabled": False},
         ],
     )]
+
+
+def test_playback_events_are_detected_for_enabled_users_only():
+    previous = {
+        "1": TvhSubscription(subscription_id="1", username="ck", channel="翡翠台"),
+        "2": TvhSubscription(subscription_id="2", username="test", channel="明珠台"),
+    }
+    current = {
+        "2": previous["2"],
+        "3": TvhSubscription(subscription_id="3", username="ck", channel="TVB Plus"),
+        "4": TvhSubscription(subscription_id="4", username="test", channel="ViuTV"),
+    }
+
+    events = detect_playback_events(previous, current, {"ck": True, "test": False})
+
+    assert events == [
+        ("start", current["3"]),
+        ("stop", previous["1"]),
+    ]
+
+
+def test_first_playback_poll_can_emit_current_enabled_streams():
+    current = {
+        "3": TvhSubscription(subscription_id="3", username="ck", channel="翡翠台"),
+        "4": TvhSubscription(subscription_id="4", username="test", channel="ViuTV"),
+    }
+
+    events = detect_playback_events({}, current, {"ck": True, "test": False})
+
+    assert events == [("start", current["3"])]
+
+
+def test_playback_channel_change_emits_stop_then_start_for_same_connection():
+    previous = {
+        "3": TvhSubscription(
+            subscription_id="3",
+            username="ck",
+            channel="翡翠台",
+            service="HDIC HD2312 #1 : DVB-T #0/HKDTMB/602MHz/Jade",
+        ),
+    }
+    current = {
+        "3": TvhSubscription(
+            subscription_id="3",
+            username="ck",
+            channel="TVB Plus",
+            service="HDIC HD2312 #1 : DVB-T #0/HKDTMB/586MHz/TVB Plus",
+        ),
+    }
+
+    events = detect_playback_events(previous, current, {"ck": True})
+
+    assert events == [
+        ("stop", previous["3"]),
+        ("start", current["3"]),
+    ]
+    assert is_playback_switch_pair(events[0], events[1]) is True
+
+
+def test_playback_switch_notification_combines_stop_and_start_blocks():
+    previous = TvhSubscription(
+        subscription_id="3",
+        username="ck",
+        channel="翡翠台",
+        peer="151.243.229.106",
+        service="HDIC HD2312 #1 : DVB-T #0/HKDTMB/602MHz/Jade",
+        started="2026-07-01 23:30:00",
+    )
+    current = TvhSubscription(
+        subscription_id="3",
+        username="ck",
+        channel="TVB Plus",
+        peer="151.243.229.106",
+        service="HDIC HD2312 #1 : DVB-T #0/HKDTMB/586MHz/TVB Plus",
+        started="2026-07-01 23:45:10",
+    )
+
+    title, text = format_playback_switch_notification(previous, current, event_time="2026-07-01 23:45:10")
+
+    assert title == "TVH切换频道"
+    assert text.startswith("停止播放\n```text\n")
+    assert "\n\n开始播放\n```text\n" in text
+    assert "ck / 翡翠台" in text
+    assert "停止: 2026-07-01 23:45:10" in text
+    assert "ck / TVB Plus" in text
+    assert "开始: 2026-07-01 23:45:10" in text
+
+
+def test_playback_notifications_delay_new_channel_until_old_channel_stops():
+    old_channel = TvhSubscription(subscription_id="old", username="ck", channel="TVB Plus")
+    new_channel = TvhSubscription(subscription_id="new", username="ck", channel="翡翠台")
+    previous = {"old": old_channel}
+    current = {"old": old_channel, "new": new_channel}
+
+    events = detect_playback_events(previous, current, {"ck": True})
+    notifications, pending = plan_playback_notifications(
+        events,
+        previous,
+        current,
+        pending_starts={},
+        now=100,
+        grace_seconds=30,
+    )
+
+    assert notifications == []
+    assert pending == {"ck": (100, new_channel)}
+
+    next_current = {"new": new_channel}
+    stop_events = detect_playback_events(current, next_current, {"ck": True})
+    notifications, pending = plan_playback_notifications(
+        stop_events,
+        current,
+        next_current,
+        pending_starts=pending,
+        now=110,
+        grace_seconds=30,
+    )
+
+    assert notifications == [("switch", old_channel, new_channel)]
+    assert pending == {}
+
+
+def test_playback_events_ignore_connection_only_rows():
+    connection_only = TvhSubscription(
+        subscription_id="142",
+        username="ck",
+        channel="151.243.229.106",
+        peer="151.243.229.106",
+        client="HTTP",
+    )
+
+    assert is_real_playback_subscription(connection_only) is False
+    assert detect_playback_events({}, {"142": connection_only}, {"ck": True}) == []
+
+
+def test_playback_planner_combines_start_before_stop_as_switch():
+    old_channel = TvhSubscription(subscription_id="old", username="ck", channel="翡翠台")
+    new_channel = TvhSubscription(subscription_id="new", username="ck", channel="TVB Plus")
+
+    notifications, pending = plan_playback_notifications(
+        [("start", new_channel), ("stop", old_channel)],
+        previous={},
+        current={"new": new_channel},
+        pending_starts={},
+        now=100,
+        grace_seconds=30,
+    )
+
+    assert notifications == [("switch", old_channel, new_channel)]
+    assert pending == {}
+
+
+def test_playback_events_ignore_tvh_id_churn_for_same_stream():
+    previous_stream = TvhSubscription(
+        subscription_id="100",
+        username="mxy",
+        channel="翡翠台",
+        peer="223.73.229.155",
+        user_agent="TVHeadend/openwrt",
+        service="HDIC HD2312 #2 : DVB-T #0/HKDTMB/602MHz/Jade",
+        profile="pass",
+        state="Running",
+        started="2026-07-02 01:09:55",
+    )
+    current_stream = TvhSubscription(
+        subscription_id="101",
+        username="mxy",
+        channel="翡翠台",
+        peer="223.73.229.155",
+        user_agent="TVHeadend/openwrt",
+        service="HDIC HD2312 #2 : DVB-T #0/HKDTMB/602MHz/Jade",
+        profile="pass",
+        state="Running",
+        started="2026-07-02 01:09:55",
+    )
+
+    assert detect_playback_events({"100": previous_stream}, {"101": current_stream}, {"mxy": True}) == []
+
+
+def test_playback_planner_combines_stop_before_start_with_different_ids():
+    old_channel = TvhSubscription(subscription_id="100", username="mxy", channel="翡翠台")
+    new_channel = TvhSubscription(subscription_id="101", username="mxy", channel="TVB Plus")
+
+    notifications, pending = plan_playback_notifications(
+        [("stop", old_channel), ("start", new_channel)],
+        previous={"100": old_channel},
+        current={"101": new_channel},
+        pending_starts={},
+        now=100,
+        grace_seconds=30,
+    )
+
+    assert notifications == [("switch", old_channel, new_channel)]
+    assert pending == {}
+
+
+def test_playback_notification_formats_user_channel_and_client():
+    subscription = TvhSubscription(
+        subscription_id="3",
+        username="ck",
+        channel="翡翠台",
+        peer="151.243.229.106",
+        service="HDIC HD2312 #2 : DVB-T #0/HKDTMB/602MHz/Jade",
+        profile="pass",
+        state="Running",
+        user_agent="AptvPlayer/1.5.4",
+        started="2026-07-01 23:30:00",
+        input_kbps="1250000",
+        output_kbps="1250000",
+    )
+
+    title, text = format_playback_notification("start", subscription, event_time="2026-07-01 23:32:05")
+
+    assert title == "TVH开始播放"
+    assert text.startswith("```text\n")
+    assert text.endswith("\n```")
+    assert "ck / 翡翠台" in text
+    assert "IP: 151.243.229.106" in text
+    assert "客户端: AptvPlayer/1.5.4 | pass | Running" in text
+    assert "服务: HDIC HD2312 #2 : DVB-T #0 / HKDTMB / 602MHz / Jade" in text
+    assert "开始: 2026-07-01 23:30:00" in text
+    assert "时长: 00:02:05" in text
+    assert "输入/输出: 1.25/1.25 Mb/s" in text
+    assert playback_subscription_key(subscription) == "3"
+
+
+def test_playback_stop_notification_includes_stop_time_and_total_duration():
+    subscription = TvhSubscription(
+        subscription_id="3",
+        username="mxy",
+        channel="翡翠台",
+        peer="223.73.229.155",
+        location="广东 佛山",
+        isp="China Mobile Communications Group Co., Ltd.",
+        profile="pass",
+        state="Running",
+        user_agent="NanoTV/1.0",
+        started="2026-07-01 23:30:00",
+    )
+
+    title, text = format_playback_notification("stop", subscription, event_time="2026-07-01 23:45:10")
+
+    assert title == "TVH停止播放"
+    assert text.startswith("```text\n")
+    assert "mxy / 翡翠台" in text
+    assert "IP: 223.73.229.155 (广东 佛山 / 中国移动)" in text
+    assert "开始: 2026-07-01 23:30:00" in text
+    assert "停止: 2026-07-01 23:45:10" in text
+    assert "时长: 00:15:10" in text
+
+
+def test_play_notify_settings_use_persisted_config_over_runtime_state():
+    enabled, users = resolve_play_notify_settings(
+        current_enabled=True,
+        current_users={},
+        persisted_config={
+            "play_notify": True,
+            "play_notify_users": {"ck": True, "mxy": True, "disabled": False},
+        },
+    )
+
+    assert enabled is True
+    assert users == {"ck": True, "mxy": True}
 
 
 def test_secondary_nav_buttons_use_plugin_callbacks():
