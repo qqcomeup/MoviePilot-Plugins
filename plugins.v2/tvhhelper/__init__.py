@@ -60,7 +60,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.42"
+    plugin_version = "0.1.43"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -930,7 +930,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN。",
                         },
                     },
                 ],
