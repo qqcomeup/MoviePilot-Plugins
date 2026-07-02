@@ -1,8 +1,10 @@
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import Body, Header
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app import schemas
 from app.core.config import settings
 from app.core.event import eventmanager, Event
 from app.db.systemconfig_oper import SystemConfigOper
@@ -34,6 +36,7 @@ from .core import (
     fetch_tvh_users,
     format_playback_notification,
     format_playback_switch_notification,
+    format_tvh_webhook_message,
     format_user_links_message,
     format_dvb_message,
     format_status_message,
@@ -55,9 +58,9 @@ from .core import (
 
 class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
-    plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
+    plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.41"
+    plugin_version = "0.1.42"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -66,6 +69,8 @@ class tvhhelper(_PluginBase):
 
     _enabled = False
     _notify = True
+    _webhook_notify = True
+    _webhook_secret = ""
     _tvh_url = "http://127.0.0.1:9981"
     _tvh_user = ""
     _tvh_pass = ""
@@ -89,6 +94,8 @@ class tvhhelper(_PluginBase):
         if config:
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
+            self._webhook_notify = bool(config.get("webhook_notify", True))
+            self._webhook_secret = config.get("webhook_secret") or ""
             self._tvh_url = (config.get("tvh_url") or self._tvh_url).rstrip("/")
             self._tvh_user = config.get("tvh_user") or ""
             self._tvh_pass = config.get("tvh_pass") or ""
@@ -112,6 +119,8 @@ class tvhhelper(_PluginBase):
     def __reset_runtime_defaults(self):
         self._enabled = False
         self._notify = True
+        self._webhook_notify = True
+        self._webhook_secret = ""
         self._tvh_url = "http://127.0.0.1:9981"
         self._tvh_user = ""
         self._tvh_pass = ""
@@ -139,6 +148,8 @@ class tvhhelper(_PluginBase):
         self.update_config({
             "enabled": self._enabled,
             "notify": self._notify,
+            "webhook_notify": self._webhook_notify,
+            "webhook_secret": self._webhook_secret,
             "tvh_url": self._tvh_url,
             "tvh_user": self._tvh_user,
             "tvh_pass": self._tvh_pass,
@@ -716,7 +727,41 @@ class tvhhelper(_PluginBase):
         return services
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return []
+        return [
+            {
+                "path": "/webhook",
+                "endpoint": self.receive_webhook,
+                "methods": ["POST"],
+                "summary": "接收TVHeadend Webhook通知",
+            }
+        ]
+
+    def receive_webhook(
+        self,
+        payload: Optional[Dict[str, Any]] = Body(default=None),
+        x_tvh_token: Optional[str] = Header(default=None),
+        apikey: str = "",
+    ):
+        if not self._enabled:
+            return schemas.Response(success=False, message="TVH助手未启用")
+        if not isinstance(payload, dict):
+            return schemas.Response(success=False, message="Webhook数据无效")
+
+        expected_token = self._webhook_secret or settings.API_TOKEN
+        provided_token = x_tvh_token or payload.get("token") or apikey
+        if expected_token and provided_token != expected_token:
+            return schemas.Response(success=False, message="Webhook密钥错误")
+
+        title, text = format_tvh_webhook_message(payload)
+        logger.info(f"收到TVH Webhook: {payload.get('event')}")
+        if self._webhook_notify:
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=title,
+                text=text,
+                parse_mode="Markdown",
+            )
+        return schemas.Response(success=True, message="Webhook已接收")
 
     def get_page(self) -> List[dict]:
         return [
@@ -771,6 +816,14 @@ class tvhhelper(_PluginBase):
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "play_notify", "label": "播放通知"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_notify", "label": "Webhook通知"},
                                 }],
                             },
                             {
@@ -855,11 +908,29 @@ class tvhhelper(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "webhook_secret",
+                                        "label": "Webhook Secret",
+                                        "type": "password",
+                                        "placeholder": "留空则使用MoviePilot API_TOKEN",
+                                    },
+                                }],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。DVB状态直接读取TVH接口，用户链接支持短链和TVH原始长链接。",
+                            "text": "命令: /tvh 打开功能菜单。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN。",
                         },
                     },
                 ],
@@ -867,6 +938,8 @@ class tvhhelper(_PluginBase):
         ], {
             "enabled": False,
             "notify": True,
+            "webhook_notify": True,
+            "webhook_secret": "",
             "tvh_url": "http://127.0.0.1:9981",
             "tvh_user": "",
             "tvh_pass": "",

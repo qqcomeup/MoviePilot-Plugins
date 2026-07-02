@@ -112,14 +112,15 @@
   },
   "tvhhelper": {
     "name": "TVH Helper",
-    "description": "Control TVHeadend from MoviePilot bot: status, DVB adapters, user M3U and EPG URLs.",
+    "description": "Control TVHeadend from MoviePilot bot: status, playback notifications, Webhook, DVB adapters and user links.",
     "labels": "TVH,Tool,Bot",
-    "version": "0.1.41",
+    "version": "0.1.42",
     "release": true,
     "icon": "mediaplay.png",
     "author": "qqcomeup",
     "level": 2,
     "history": {
+      "v0.1.42": "新增 TVHeadend Webhook 接收接口，支持测试、播放和 DVR 录制事件通知。",
       "v0.1.41": "修复 TVH 临时连接 ID 变化导致同一播放重复开始/停止的问题，并支持不同 ID 的停止/开始合并为切台通知。",
       "v0.1.40": "修复 TVH 播放通知误把连接行当成播放的问题，并增强切台开始/停止事件乱序时的合并处理。",
       "v0.1.39": "优化切台通知合并逻辑，新频道先出现、旧频道稍后停止时会暂存开始事件并合并为一条切换通知。",

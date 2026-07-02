@@ -615,6 +615,64 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
     return "\n".join(details)
 
 
+TVH_WEBHOOK_EVENT_TITLES = {
+    "system.webhooktest": "TVH Webhook测试",
+    "playback.start": "TVH开始播放",
+    "playback.stop": "TVH停止播放",
+    "dvr.start": "TVH开始录制",
+    "dvr.complete": "TVH录制完成",
+    "dvr.error": "TVH录制异常",
+}
+
+
+def format_tvh_webhook_message(payload: dict) -> tuple[str, str]:
+    event = str(payload.get("event") or "tvh.event")
+    title = TVH_WEBHOOK_EVENT_TITLES.get(event, f"TVH通知 {event}")
+    server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
+    lines = [
+        f"事件: {event}",
+        f"时间: {_format_timestamp(payload.get('timestamp')) or '未知'}",
+    ]
+    if server.get("name"):
+        lines.append(f"服务器: {server.get('name')}")
+    if payload.get("user"):
+        lines.append(f"用户: {payload.get('user')}")
+    if payload.get("ip"):
+        lines.append(f"IP: {payload.get('ip')}")
+    if payload.get("client"):
+        lines.append(f"客户端: {payload.get('client')}")
+    if payload.get("channel"):
+        lines.append(f"频道: {payload.get('channel')}")
+    if payload.get("title"):
+        lines.append(f"标题: {payload.get('title')}")
+    if payload.get("service"):
+        lines.append(f"服务: {_short_service_name(str(payload.get('service')))}")
+    if payload.get("profile"):
+        lines.append(f"配置: {payload.get('profile')}")
+    if payload.get("subscription_id") is not None:
+        lines.append(f"订阅ID: {payload.get('subscription_id')}")
+    if payload.get("dvr_uuid"):
+        lines.append(f"录制ID: {payload.get('dvr_uuid')}")
+    if payload.get("sched_state"):
+        lines.append(f"排程状态: {payload.get('sched_state')}")
+    if payload.get("recording_state"):
+        lines.append(f"录制状态: {payload.get('recording_state')}")
+    if payload.get("filename"):
+        lines.append(f"文件: {payload.get('filename')}")
+    error_text = payload.get("last_error_text")
+    if error_text and (event == "dvr.error" or str(error_text).upper() != "OK"):
+        lines.append(f"错误: {error_text}")
+    rate_line = _format_rate_pair(
+        _string_or_none(payload.get("input_kbps")),
+        _string_or_none(payload.get("output_kbps")),
+    )
+    if rate_line:
+        lines.append(f"输入/输出: {rate_line}")
+    if payload.get("message"):
+        lines.append(str(payload.get("message")))
+    return title, f"```text\n{chr(10).join(lines)}\n```"
+
+
 def playback_subscription_key(subscription: TvhSubscription) -> str:
     if subscription.subscription_id:
         return str(subscription.subscription_id)

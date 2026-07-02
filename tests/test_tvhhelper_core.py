@@ -39,6 +39,7 @@ from core import (
     detect_playback_events,
     format_playback_notification,
     format_playback_switch_notification,
+    format_tvh_webhook_message,
     is_real_playback_subscription,
     is_playback_switch_pair,
     resolve_play_notify_settings,
@@ -673,6 +674,61 @@ def test_playback_stop_notification_includes_stop_time_and_total_duration():
     assert "开始: 2026-07-01 23:30:00" in text
     assert "停止: 2026-07-01 23:45:10" in text
     assert "时长: 00:15:10" in text
+
+
+def test_tvh_webhook_message_formats_test_event():
+    title, text = format_tvh_webhook_message({
+        "event": "system.webhooktest",
+        "timestamp": 1782819002,
+        "server": {"name": "Living Room TVH"},
+        "message": "Webhook test message from Tvheadend",
+    })
+
+    assert title == "TVH Webhook测试"
+    assert "事件: system.webhooktest" in text
+    assert "服务器: Living Room TVH" in text
+    assert "Webhook test message from Tvheadend" in text
+
+
+def test_tvh_webhook_message_formats_playback_event():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "server": {"name": "Living Room TVH"},
+        "user": "ck",
+        "ip": "151.243.229.106",
+        "client": "VLC",
+        "channel": "News",
+        "title": "HTTP",
+        "service": "Adapter / Service",
+        "subscription_id": 12,
+        "input_kbps": 1000000,
+        "output_kbps": 2000000,
+    })
+
+    assert title == "TVH开始播放"
+    assert "用户: ck" in text
+    assert "频道: News" in text
+    assert "输入/输出: 1/2 Mb/s" in text
+
+
+def test_tvh_webhook_message_formats_dvr_error_event():
+    title, text = format_tvh_webhook_message({
+        "event": "dvr.error",
+        "title": "Movie",
+        "channel": "Cinema",
+        "dvr_uuid": "abc",
+        "sched_state": "MISSEDTM",
+        "recording_state": "ERROR",
+        "last_error_text": "No input source available",
+        "filename": "/recordings/movie.ts",
+    })
+
+    assert title == "TVH录制异常"
+    assert "录制ID: abc" in text
+    assert "排程状态: MISSEDTM" in text
+    assert "录制状态: ERROR" in text
+    assert "错误: No input source available" in text
 
 
 def test_play_notify_settings_use_persisted_config_over_runtime_state():
