@@ -655,6 +655,7 @@ def _format_tvh_playback_webhook(
     source = _format_webhook_source(payload.get("ip"), ip_location, ip_isp)
     program_window = _format_webhook_program_window(payload)
     program_duration = _format_webhook_program_duration(payload)
+    program_progress = _format_webhook_program_progress(payload)
     program_content = _format_webhook_program_content(payload)
     rate_line = _format_rate_pair(
         _string_or_none(payload.get("input_kbps")),
@@ -665,6 +666,7 @@ def _format_tvh_playback_webhook(
         f"节目: {payload.get('program_title')}" if payload.get("program_title") else None,
         f"节目时间: {program_window}" if program_window else None,
         f"节目时长: {program_duration}" if program_duration else None,
+        f"节目进度: {program_progress}" if program_progress else None,
         f"节目内容: {program_content}" if program_content else None,
         f"用户: {payload.get('user')}" if payload.get("user") else None,
         f"来源: {source}" if source else None,
@@ -701,6 +703,22 @@ def _format_webhook_program_duration(payload: dict) -> str | None:
         return None
     minutes = max(1, int(round(seconds / 60)))
     return f"{minutes} 分钟"
+
+
+def _format_webhook_program_progress(payload: dict) -> str | None:
+    start = _coerce_datetime(payload.get("program_start"))
+    stop = _coerce_datetime(payload.get("program_stop"))
+    current = _coerce_datetime(payload.get("timestamp"))
+    if not start or not stop or not current:
+        return None
+    total_seconds = int((stop - start).total_seconds())
+    if total_seconds <= 0:
+        return None
+    elapsed_seconds = min(max(0, int((current - start).total_seconds())), total_seconds)
+    elapsed_minutes = int(elapsed_seconds / 60)
+    total_minutes = max(1, int(round(total_seconds / 60)))
+    percent = int(round(elapsed_seconds * 100 / total_seconds))
+    return f"已播 {elapsed_minutes}/{total_minutes} 分钟 ({percent}%)"
 
 
 def _format_webhook_program_content(payload: dict) -> str | None:

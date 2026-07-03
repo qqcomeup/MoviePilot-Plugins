@@ -736,6 +736,7 @@ def test_tvh_webhook_message_formats_program_metadata():
     assert "节目: 交易現場[粵]" in text
     assert "节目时间: 2026-06-30 19:25:00 - 2026-06-30 19:55:00" in text
     assert "节目时长: 30 分钟" in text
+    assert "节目进度: 已播 5/30 分钟 (17%)" in text
 
 
 def test_tvh_webhook_message_formats_program_content_and_duration():
@@ -758,6 +759,21 @@ def test_tvh_webhook_message_formats_program_content_and_duration():
     assert "节目: 交易現場[粵]" in text
     assert "节目时长: 65 分钟" in text
     assert "节目内容: 張遮設局找出栽贓之人" in text
+
+
+def test_tvh_webhook_message_clamps_program_progress():
+    _, text = format_tvh_webhook_message({
+        "event": "playback.stop",
+        "timestamp": 1782822900,
+        "started": 1782822840,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782822600,
+    })
+
+    assert "节目时长: 65 分钟" in text
+    assert "节目进度: 已播 65/65 分钟 (100%)" in text
 
 
 def test_tvh_webhook_message_formats_playback_stop_duration():
