@@ -809,6 +809,30 @@ def test_enrich_tvh_webhook_program_uses_cache(monkeypatch):
     assert len(calls) == 1
 
 
+def test_enrich_tvh_webhook_program_overrides_program_fields(monkeypatch):
+    def fake_fetch(*args, **kwargs):
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+            "program_start": 1782818700,
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+        "channel_icon": "https://example.com/payload-logo.png",
+        "program_title": "Inside the Stock Exchange[Can]",
+        "program_start": 1782818400,
+    }
+
+    enriched = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret")
+
+    assert enriched["program_title"] == "交易現場[粵]"
+    assert enriched["program_start"] == 1782818700
+    assert enriched["channel_icon"] == "https://example.com/payload-logo.png"
+
+
 def test_select_tvh_webhook_image_prefers_channel_icon():
     image = select_tvh_webhook_image({
         "channel_icon": "imagecache/12",

@@ -1480,8 +1480,6 @@ def enrich_tvh_webhook_program(
     event = str(payload.get("event") or "")
     if not event.startswith("playback."):
         return payload
-    if payload.get("program_title") and payload.get("channel_icon"):
-        return payload
     channel = _string_or_none(payload.get("channel"))
     channel_uuid = _string_or_none(payload.get("channel_uuid"))
     if not channel and not channel_uuid:
@@ -1505,7 +1503,9 @@ def enrich_tvh_webhook_program(
         return payload
     enriched = dict(payload)
     for key, value in metadata.items():
-        if value is not None and value != "" and not enriched.get(key):
+        if value is None or value == "":
+            continue
+        if key.startswith("program_") or not enriched.get(key):
             enriched[key] = value
     return enriched
 
