@@ -175,6 +175,56 @@ def test_receive_webhook_enriches_ip_location(monkeypatch):
     assert "当前时长: 00:01:05" in plugin.messages[0]["text"]
 
 
+def test_local_ip_lookup_prefers_ip2region_for_china_ip(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "lookup_ip_location_from_ip2region",
+        lambda ip, xdb_path=None: ("中国 广东省 佛山市", "中国移动"),
+    )
+    monkeypatch.setattr(
+        module,
+        "lookup_ip_location_from_mmdb",
+        lambda ip, country_db=None, asn_db=None: ("中国", "China Mobile Communications Group Co., Ltd."),
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "ipdb_enabled": True,
+        "ipdb_auto_update": False,
+    })
+
+    assert plugin._tvhhelper__lookup_local_ip("223.73.229.155") == (
+        "中国 广东省 佛山市",
+        "中国移动",
+    )
+
+
+def test_local_ip_lookup_uses_mmdb_for_non_china_ip(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "lookup_ip_location_from_ip2region",
+        lambda ip, xdb_path=None: ("Iran Tehran", None),
+    )
+    monkeypatch.setattr(
+        module,
+        "lookup_ip_location_from_mmdb",
+        lambda ip, country_db=None, asn_db=None: ("香港", "Zouter Limited"),
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "ipdb_enabled": True,
+        "ipdb_auto_update": False,
+    })
+
+    assert plugin._tvhhelper__lookup_local_ip("151.243.229.106") == (
+        "香港",
+        "Zouter Limited",
+    )
+
+
 def test_receive_webhook_enriches_program_and_image(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(

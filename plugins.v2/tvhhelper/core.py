@@ -16,6 +16,7 @@ from typing import Iterable
 
 DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
 DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb"
+DEFAULT_IP2REGION_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
 LEGACY_IPDB_COUNTRY_URLS = {
     "https://github.com/sapics/ip-location-db/releases/download/latest/dbip-country.mmdb",
 }
@@ -24,6 +25,7 @@ LEGACY_IPDB_ASN_URLS = {
 }
 IPDB_COUNTRY_FILENAME = "country.mmdb"
 IPDB_ASN_FILENAME = "asn.mmdb"
+IP2REGION_FILENAME = "ip2region_v4.xdb"
 IPDB_STATUS_FILENAME = "status.json"
 COUNTRY_CODE_NAMES = {
     "CN": "China",
@@ -1423,6 +1425,7 @@ def ensure_ip_location_db(
     directory: str | Path,
     country_url: str = DEFAULT_IPDB_COUNTRY_URL,
     asn_url: str = DEFAULT_IPDB_ASN_URL,
+    ip2region_url: str = DEFAULT_IP2REGION_URL,
     max_age_hours: int = 24,
     proxy: str | None = None,
     now=None,
@@ -1433,6 +1436,7 @@ def ensure_ip_location_db(
     now_value = float((now or time.time)())
     country_path = root / IPDB_COUNTRY_FILENAME
     asn_path = root / IPDB_ASN_FILENAME
+    ip2region_path = root / IP2REGION_FILENAME
     status_path = root / IPDB_STATUS_FILENAME
     max_age_seconds = max(1, int(max_age_hours or 24)) * 3600
     status = _read_ipdb_status(status_path)
@@ -1440,10 +1444,12 @@ def ensure_ip_location_db(
     urls_unchanged = (
         status.get("country_url") == country_url
         and status.get("asn_url") == asn_url
+        and status.get("ip2region_url") == ip2region_url
     )
     if (
         country_path.exists()
         and asn_path.exists()
+        and ip2region_path.exists()
         and updated_at
         and urls_unchanged
         and now_value - updated_at < max_age_seconds
@@ -1458,7 +1464,11 @@ def ensure_ip_location_db(
 
     downloaded = []
     errors = []
-    for url, target in ((country_url, country_path), (asn_url, asn_path)):
+    for url, target in (
+        (country_url, country_path),
+        (asn_url, asn_path),
+        (ip2region_url, ip2region_path),
+    ):
         if not url:
             errors.append(f"{target.name}: 未配置下载地址")
             continue
@@ -1467,14 +1477,16 @@ def ensure_ip_location_db(
             downloaded.append(target.name)
         except Exception as err:
             errors.append(f"{target.name}: {err}")
-    success = country_path.exists() and asn_path.exists()
+    success = country_path.exists() and asn_path.exists() and ip2region_path.exists()
     if success:
         _write_ipdb_status(status_path, {
             "updated_at": now_value,
             "country_url": country_url,
             "asn_url": asn_url,
+            "ip2region_url": ip2region_url,
             "country_size": country_path.stat().st_size,
             "asn_size": asn_path.stat().st_size,
+            "ip2region_size": ip2region_path.stat().st_size,
         })
     return {
         "success": success,
@@ -1501,6 +1513,47 @@ def lookup_ip_location_from_mmdb(
     location = _lookup_mmdb_record(country_db, ip, maxminddb_module, _extract_mmdb_location)
     isp = _lookup_mmdb_record(asn_db, ip, maxminddb_module, _extract_mmdb_isp)
     return location, isp
+
+
+def lookup_ip_location_from_ip2region(
+    ip: str,
+    xdb_path: str | Path | None = None,
+    ip2region_module=None,
+) -> tuple[str | None, str | None]:
+    if not xdb_path or not _is_public_ip(str(ip)):
+        return None, None
+    path = Path(xdb_path)
+    if not path.exists():
+        return None, None
+    try:
+        searcher_module, util_module = _resolve_ip2region_modules(ip2region_module)
+        header = util_module.load_header_from_file(str(path))
+        version = util_module.version_from_header(header)
+        searcher = searcher_module.new_with_file_only(version, str(path))
+        try:
+            region = searcher.search(str(ip))
+        finally:
+            searcher.close()
+    except Exception:
+        return None, None
+    return parse_ip2region_result(region)
+
+
+def parse_ip2region_result(region: str | None) -> tuple[str | None, str | None]:
+    if not region:
+        return None, None
+    parts = [part.strip() for part in str(region).split("|")]
+    if len(parts) < 4:
+        return None, None
+    country, province, city, isp = (parts + ["", "", "", ""])[:4]
+    location_parts = [
+        _normalize_ip2region_part(country),
+        _normalize_ip2region_part(province),
+        _normalize_ip2region_part(city),
+    ]
+    location = " ".join(dict.fromkeys(part for part in location_parts if part)) or None
+    isp_text = _normalize_ip2region_isp(isp)
+    return location, isp_text
 
 
 def fetch_ip_location_cached(
@@ -1638,6 +1691,13 @@ def _import_maxminddb():
         return None
 
 
+def _resolve_ip2region_modules(ip2region_module=None):
+    if ip2region_module:
+        return ip2region_module.searcher, ip2region_module.util
+    from ip2region import searcher, util  # type: ignore
+    return searcher, util
+
+
 def _lookup_mmdb_record(path: str | Path | None, ip: str, maxminddb_module, extractor):
     if not path:
         return None
@@ -1737,6 +1797,26 @@ def _to_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_ip2region_part(value) -> str | None:
+    text = _string_or_none(value)
+    if not text or text == "0":
+        return None
+    return text
+
+
+def _normalize_ip2region_isp(value) -> str | None:
+    text = _normalize_ip2region_part(value)
+    if not text:
+        return None
+    carrier_map = {
+        "移动": "中国移动",
+        "联通": "中国联通",
+        "电信": "中国电信",
+        "教育网": "教育网",
+    }
+    return carrier_map.get(text, text)
 
 
 def _split_location_result(result) -> tuple[str | None, str | None]:

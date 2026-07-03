@@ -1,1 +1,2 @@
 maxminddb>=2.6.0
+py-ip2region>=3.0.4

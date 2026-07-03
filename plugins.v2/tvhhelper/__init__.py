@@ -34,6 +34,7 @@ from .core import (
     enrich_subscriptions_with_ip_locations,
     DEFAULT_IPDB_ASN_URL,
     DEFAULT_IPDB_COUNTRY_URL,
+    DEFAULT_IP2REGION_URL,
     LEGACY_IPDB_ASN_URLS,
     LEGACY_IPDB_COUNTRY_URLS,
     fetch_ip_location,
@@ -54,6 +55,7 @@ from .core import (
     find_user,
     is_real_playback_subscription,
     lookup_ip_location_from_mmdb,
+    lookup_ip_location_from_ip2region,
     merge_subscription_details,
     normalize_interval,
     playback_notification_key,
@@ -74,7 +76,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.54"
+    plugin_version = "0.1.55"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -104,6 +106,7 @@ class tvhhelper(_PluginBase):
     _ipdb_dir = ""
     _ipdb_country_url = DEFAULT_IPDB_COUNTRY_URL
     _ipdb_asn_url = DEFAULT_IPDB_ASN_URL
+    _ip2region_url = DEFAULT_IP2REGION_URL
     _play_notify = True
     _play_notify_users: dict[str, bool] = {}
     _play_notify_snapshot: dict[str, Any] | None = None
@@ -149,6 +152,7 @@ class tvhhelper(_PluginBase):
                 DEFAULT_IPDB_ASN_URL,
                 LEGACY_IPDB_ASN_URLS,
             )
+            self._ip2region_url = config.get("ip2region_url") or DEFAULT_IP2REGION_URL
             self._play_notify, self._play_notify_users = resolve_play_notify_settings(
                 self._play_notify,
                 self._play_notify_users,
@@ -188,6 +192,7 @@ class tvhhelper(_PluginBase):
         self._ipdb_dir = self.__default_ipdb_dir()
         self._ipdb_country_url = DEFAULT_IPDB_COUNTRY_URL
         self._ipdb_asn_url = DEFAULT_IPDB_ASN_URL
+        self._ip2region_url = DEFAULT_IP2REGION_URL
         self._play_notify = True
         self._play_notify_users = {}
         self._play_notify_snapshot = None
@@ -230,6 +235,7 @@ class tvhhelper(_PluginBase):
             "ipdb_dir": self._ipdb_dir,
             "ipdb_country_url": self._ipdb_country_url,
             "ipdb_asn_url": self._ipdb_asn_url,
+            "ip2region_url": self._ip2region_url,
             "play_notify": self._play_notify,
             "play_notify_users": self._play_notify_users,
         })
@@ -962,16 +968,30 @@ class tvhhelper(_PluginBase):
         text = str(location).strip()
         return len(text) <= 3 and text.isupper()
 
+    @staticmethod
+    def __is_china_ip_location(location: str | None) -> bool:
+        if not location:
+            return False
+        text = str(location).strip()
+        return text == "中国" or text.startswith("中国 ")
+
     def __lookup_local_ip(self, ip: str) -> tuple[str | None, str | None]:
         if not self._ipdb_enabled:
             return None, None
         try:
             root = Path(self._ipdb_dir or self.__default_ipdb_dir())
-            return lookup_ip_location_from_mmdb(
+            region_result = lookup_ip_location_from_ip2region(
+                ip,
+                xdb_path=root / "ip2region_v4.xdb",
+            )
+            mmdb_result = lookup_ip_location_from_mmdb(
                 ip,
                 country_db=root / "country.mmdb",
                 asn_db=root / "asn.mmdb",
             )
+            if self.__is_china_ip_location(region_result[0]):
+                return self.__merge_ip_lookup_result(region_result, mmdb_result)
+            return self.__merge_ip_lookup_result(mmdb_result, region_result)
         except Exception as err:
             logger.debug(f"TVH 本地IP库查询失败: {ip} - {err}")
             return None, None
@@ -987,6 +1007,7 @@ class tvhhelper(_PluginBase):
                 self._ipdb_dir or self.__default_ipdb_dir(),
                 country_url=self._ipdb_country_url or DEFAULT_IPDB_COUNTRY_URL,
                 asn_url=self._ipdb_asn_url or DEFAULT_IPDB_ASN_URL,
+                ip2region_url=self._ip2region_url or DEFAULT_IP2REGION_URL,
                 max_age_hours=max(1, self._ipdb_update_interval_hours),
                 proxy=getattr(settings, "PROXY_HOST", "") or getattr(settings, "GITHUB_PROXY", ""),
             )
@@ -1468,6 +1489,14 @@ class tvhhelper(_PluginBase):
                                     "props": {"model": "ipdb_asn_url", "label": "ASN组织库下载地址"},
                                 }],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "ip2region_url", "label": "国内省市库下载地址"},
+                                }],
+                            },
                         ],
                     },
                     {
@@ -1534,6 +1563,7 @@ class tvhhelper(_PluginBase):
             "ipdb_dir": self.__default_ipdb_dir(),
             "ipdb_country_url": DEFAULT_IPDB_COUNTRY_URL,
             "ipdb_asn_url": DEFAULT_IPDB_ASN_URL,
+            "ip2region_url": DEFAULT_IP2REGION_URL,
             "play_notify": True,
             "play_notify_users": {},
         }

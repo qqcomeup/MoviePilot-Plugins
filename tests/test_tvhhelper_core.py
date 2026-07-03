@@ -54,6 +54,7 @@ from core import (
     merge_subscription_details,
     normalize_interval,
     lookup_ip_location_from_mmdb,
+    parse_ip2region_result,
     plan_playback_notifications,
     normalize_base_url,
     normalize_isp_carrier,
@@ -1301,6 +1302,13 @@ def test_lookup_ip_location_from_mmdb_uses_country_code_name(tmp_path):
     ) == ("Hong Kong", None)
 
 
+def test_parse_ip2region_result_returns_china_city_and_carrier():
+    assert parse_ip2region_result("中国|广东省|佛山市|移动|CN") == (
+        "中国 广东省 佛山市",
+        "中国移动",
+    )
+
+
 def test_ensure_ip_location_db_downloads_and_skips_fresh_files(tmp_path):
     calls = []
 
@@ -1347,9 +1355,10 @@ def test_ensure_ip_location_db_downloads_and_skips_fresh_files(tmp_path):
     assert first["updated"] is True
     assert second["success"] is True
     assert second["updated"] is False
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert (tmp_path / "country.mmdb").exists()
     assert (tmp_path / "asn.mmdb").exists()
+    assert (tmp_path / "ip2region_v4.xdb").exists()
 
 
 def test_ensure_ip_location_db_refreshes_when_urls_change(tmp_path):
@@ -1398,8 +1407,10 @@ def test_ensure_ip_location_db_refreshes_when_urls_change(tmp_path):
     assert calls == [
         "https://example.test/old-country.mmdb",
         "https://example.test/old-asn.mmdb",
+        "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb",
         "https://example.test/new-country.mmdb",
         "https://example.test/new-asn.mmdb",
+        "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb",
     ]
 
 
@@ -1446,6 +1457,7 @@ def test_ensure_ip_location_db_passes_proxy_to_downloader(tmp_path, monkeypatch)
 
     assert result["success"] is True
     assert proxies == [
+        {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
         {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
         {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
     ]
