@@ -17,7 +17,7 @@ from app.plugins import _PluginBase
 from app.schemas import NotificationType
 from app.schemas.types import EventType
 
-class Cd2AssistantAI(_PluginBase):
+class cd2assistantai(_PluginBase):
     # 插件名称
     plugin_name = "CloudDrive2助手AI"
     # 插件描述
@@ -25,7 +25,7 @@ class Cd2AssistantAI(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "2.0.7"
+    plugin_version = "2.0.8"
     # 插件作者
     plugin_author = "thsrite, qqcomeup"
     # 作者主页
