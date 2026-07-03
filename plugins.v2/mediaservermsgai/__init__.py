@@ -40,7 +40,7 @@ class mediaservermsgai(_PluginBase):
     plugin_name = "媒体库服务器通知AI版"
     plugin_desc = "基于Emby识别结果+TMDB元数据+微信清爽版(全消息类型+剧集聚合)"
     plugin_icon = "mediaplay.png"
-    plugin_version = "1.8.0"
+    plugin_version = "1.8.3"
     plugin_author = "jxxghp"
     author_url = "https://github.com/jxxghp"
     plugin_config_prefix = "mediaservermsgai_"
@@ -434,7 +434,7 @@ class mediaservermsgai(_PluginBase):
         
         # 尝试获取图片
         tmdb_id = self._extract_tmdb_id(event_info)
-        image_url = event_info.image_url
+        image_url = self._get_emby_episode_image_url(event_info) or event_info.image_url
         if not image_url and tmdb_id:
             mtype = MediaType.MOVIE if event_info.item_type == "MOV" else MediaType.TV
             image_url = self._get_tmdb_image(event_info, mtype)
@@ -470,7 +470,7 @@ class mediaservermsgai(_PluginBase):
         
         message_texts = []
         message_title = ""
-        image_url = event_info.image_url
+        image_url = self._get_emby_episode_image_url(event_info) or event_info.image_url
         
         # 3. 音频单曲特殊处理
         if event_info.item_type == "AUD":
@@ -702,7 +702,7 @@ class mediaservermsgai(_PluginBase):
             message_texts.append("\n━━━━━━━━━━━━━━━━━━\n") 
             message_texts.append(f"📖 剧情简介\n{overview}")
 
-        image_url = first_info.image_url
+        image_url = self._get_emby_episode_image_url(first_info) or first_info.image_url
         if not image_url and tmdb_id:
             image_url = self._get_tmdb_image(first_info, MediaType.TV)
         if not image_url:
@@ -818,6 +818,88 @@ class mediaservermsgai(_PluginBase):
                 return f"{base_url}/emby/Items/{item_id}/Images/Primary?maxHeight=450&maxWidth=450&tag={primary_tag}&quality=90"
         except: pass
         return None
+
+    def _get_emby_episode_image_url(self, event_info: WebhookEventInfo) -> Optional[str]:
+        """优先使用 Emby/Jellyfin 单集自身截图，不使用父级剧集封面。"""
+        if not event_info or not event_info.json_object:
+            return None
+        item_data = event_info.json_object.get('Item', {}) if isinstance(event_info.json_object, dict) else {}
+        item_type = item_data.get('Type')
+        has_episode_number = (
+            getattr(event_info, "season_id", None) is not None
+            and getattr(event_info, "episode_id", None) is not None
+        )
+        if item_type and item_type != 'Episode':
+            return None
+        if item_type != 'Episode' and not has_episode_number:
+            return None
+        base_url = self._get_mediaserver_base_url(event_info.server_name)
+        if not base_url:
+            return None
+        api_key = self._get_mediaserver_api_key(event_info.server_name)
+        item_id = item_data.get('Id') or event_info.item_id
+        image_tags = item_data.get('ImageTags') or {}
+        for image_type in ("Primary", "Thumb"):
+            tag = image_tags.get(image_type)
+            if item_id and tag:
+                return self._build_emby_image_url(base_url, item_id, image_type, tag, api_key=api_key)
+        backdrop_tags = item_data.get('BackdropImageTags') or image_tags.get('Backdrop')
+        if isinstance(backdrop_tags, list) and backdrop_tags and item_id:
+            return self._build_emby_image_url(base_url, item_id, "Backdrop", backdrop_tags[0], index=0, api_key=api_key)
+        if isinstance(backdrop_tags, str) and backdrop_tags and item_id:
+            return self._build_emby_image_url(base_url, item_id, "Backdrop", backdrop_tags, index=0, api_key=api_key)
+        return None
+
+    def _get_mediaserver_base_url(self, server_name: str) -> Optional[str]:
+        try:
+            service = self.service_info(server_name)
+            if not service:
+                return None
+            if service.instance:
+                play_url = service.instance.get_play_url("dummy")
+                if play_url:
+                    parsed = urllib.parse.urlparse(play_url)
+                    if parsed.scheme and parsed.netloc:
+                        return f"{parsed.scheme}://{parsed.netloc}"
+            config = getattr(getattr(service, "config", None), "config", {}) or {}
+            host = config.get("host")
+            if host:
+                return str(host).rstrip("/")
+        except Exception:
+            return None
+        return None
+
+    def _get_mediaserver_api_key(self, server_name: str) -> Optional[str]:
+        try:
+            service = self.service_info(server_name)
+            config = getattr(getattr(service, "config", None), "config", {}) if service else {}
+            api_key = (config or {}).get("apikey")
+            return str(api_key) if api_key else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _build_emby_image_url(
+        base_url: str,
+        item_id: str,
+        image_type: str,
+        tag: str,
+        index: Optional[int] = None,
+        api_key: Optional[str] = None,
+    ) -> str:
+        path = f"{base_url.rstrip('/')}/emby/Items/{urllib.parse.quote(str(item_id))}/Images/{image_type}"
+        if index is not None:
+            path = f"{path}/{index}"
+        query_params = {
+            "maxHeight": 450,
+            "maxWidth": 800,
+            "tag": str(tag),
+            "quality": 90,
+        }
+        if api_key:
+            query_params["api_key"] = api_key
+        query = urllib.parse.urlencode(query_params)
+        return f"{path}?{query}"
 
     def _get_tmdb_image(self, event_info: WebhookEventInfo, mtype: MediaType) -> Optional[str]:
         key = f"{event_info.tmdb_id}_{event_info.season_id}_{event_info.episode_id}"
