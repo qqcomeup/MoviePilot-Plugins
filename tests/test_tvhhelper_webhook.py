@@ -1,5 +1,8 @@
+import hashlib
+import hmac
 import importlib
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -140,3 +143,82 @@ def test_receive_webhook_uses_api_token_when_secret_empty(monkeypatch):
 
     assert response.success is True
     assert plugin.messages == []
+
+
+def test_receive_webhook_accepts_hmac_signature(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_secret": "secret",
+        "webhook_hmac_secret": "hmac-secret",
+    })
+    payload = {
+        "event": "system.webhooktest",
+        "event_id": "webhook-test",
+        "timestamp": int(time.time()),
+    }
+    signature_input = f"{payload['event']}.{payload['event_id']}.{payload['timestamp']}"
+    signature = "sha256=" + hmac.new(
+        b"hmac-secret",
+        signature_input.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    response = plugin.receive_webhook(
+        payload=payload,
+        x_tvh_token="secret",
+        x_tvh_signature=signature,
+        x_tvh_signature_input=signature_input,
+    )
+
+    assert response.success is True
+    assert response.message == "Webhook已接收"
+
+
+def test_receive_webhook_rejects_bad_hmac_signature(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_secret": "secret",
+        "webhook_hmac_secret": "hmac-secret",
+    })
+    payload = {
+        "event": "system.webhooktest",
+        "event_id": "webhook-test",
+        "timestamp": int(time.time()),
+    }
+
+    response = plugin.receive_webhook(
+        payload=payload,
+        x_tvh_token="secret",
+        x_tvh_signature="sha256=bad",
+        x_tvh_signature_input=f"{payload['event']}.{payload['event_id']}.{payload['timestamp']}",
+    )
+
+    assert response.success is False
+    assert response.message == "Webhook签名错误"
+
+
+def test_receive_webhook_ignores_duplicate_event_id(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+    })
+    payload = {
+        "event": "system.webhooktest",
+        "event_id": "same-event",
+        "timestamp": int(time.time()),
+    }
+
+    first = plugin.receive_webhook(payload=dict(payload), x_tvh_token="secret")
+    second = plugin.receive_webhook(payload=dict(payload), x_tvh_token="secret")
+
+    assert first.success is True
+    assert second.success is True
+    assert second.message == "Webhook重复事件已忽略"
+    assert len(plugin.messages) == 1

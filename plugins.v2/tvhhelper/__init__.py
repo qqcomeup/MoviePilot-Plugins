@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -60,7 +62,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.43"
+    plugin_version = "0.1.44"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -71,6 +73,8 @@ class tvhhelper(_PluginBase):
     _notify = True
     _webhook_notify = True
     _webhook_secret = ""
+    _webhook_hmac_secret = ""
+    _webhook_seen_events: TimedValueCache | None = None
     _tvh_url = "http://127.0.0.1:9981"
     _tvh_user = ""
     _tvh_pass = ""
@@ -96,6 +100,7 @@ class tvhhelper(_PluginBase):
             self._notify = bool(config.get("notify", True))
             self._webhook_notify = bool(config.get("webhook_notify", True))
             self._webhook_secret = config.get("webhook_secret") or ""
+            self._webhook_hmac_secret = config.get("webhook_hmac_secret") or ""
             self._tvh_url = (config.get("tvh_url") or self._tvh_url).rstrip("/")
             self._tvh_user = config.get("tvh_user") or ""
             self._tvh_pass = config.get("tvh_pass") or ""
@@ -113,6 +118,7 @@ class tvhhelper(_PluginBase):
         self._monitor = DvbMonitor(self._expected_dvb_count)
         self._ip_location_cache = TimedValueCache(ttl_seconds=21600)
         self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
+        self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
         self._play_notify_snapshot = None
         self.__update_config()
 
@@ -121,6 +127,7 @@ class tvhhelper(_PluginBase):
         self._notify = True
         self._webhook_notify = True
         self._webhook_secret = ""
+        self._webhook_hmac_secret = ""
         self._tvh_url = "http://127.0.0.1:9981"
         self._tvh_user = ""
         self._tvh_pass = ""
@@ -134,6 +141,7 @@ class tvhhelper(_PluginBase):
         self._play_notify_users = {}
         self._play_notify_snapshot = None
         self._play_notify_pending_starts = {}
+        self._webhook_seen_events = None
         self._ip_location_cache = None
         self._tvh_users_cache = None
 
@@ -150,6 +158,7 @@ class tvhhelper(_PluginBase):
             "notify": self._notify,
             "webhook_notify": self._webhook_notify,
             "webhook_secret": self._webhook_secret,
+            "webhook_hmac_secret": self._webhook_hmac_secret,
             "tvh_url": self._tvh_url,
             "tvh_user": self._tvh_user,
             "tvh_pass": self._tvh_pass,
@@ -740,6 +749,8 @@ class tvhhelper(_PluginBase):
         self,
         payload: Optional[Dict[str, Any]] = Body(default=None),
         x_tvh_token: Optional[str] = Header(default=None),
+        x_tvh_signature: Optional[str] = Header(default=None),
+        x_tvh_signature_input: Optional[str] = Header(default=None),
         apikey: str = "",
     ):
         if not self._enabled:
@@ -752,6 +763,21 @@ class tvhhelper(_PluginBase):
         if expected_token and provided_token != expected_token:
             return schemas.Response(success=False, message="Webhook密钥错误")
 
+        signature_error = self.__verify_webhook_signature(
+            payload,
+            x_tvh_signature,
+            x_tvh_signature_input,
+        )
+        if signature_error:
+            return schemas.Response(success=False, message=signature_error)
+
+        event_id = str(payload.get("event_id") or "")
+        if event_id and self._webhook_seen_events:
+            if self._webhook_seen_events.get(event_id):
+                logger.info(f"忽略重复TVH Webhook: {payload.get('event')} {event_id}")
+                return schemas.Response(success=True, message="Webhook重复事件已忽略")
+            self._webhook_seen_events.set(event_id, True)
+
         title, text = format_tvh_webhook_message(payload)
         logger.info(f"收到TVH Webhook: {payload.get('event')}")
         if self._webhook_notify:
@@ -762,6 +788,38 @@ class tvhhelper(_PluginBase):
                 parse_mode="Markdown",
             )
         return schemas.Response(success=True, message="Webhook已接收")
+
+    def __verify_webhook_signature(
+        self,
+        payload: Dict[str, Any],
+        signature: Optional[str],
+        signature_input: Optional[str],
+    ) -> str | None:
+        if not self._webhook_hmac_secret:
+            return None
+        event = str(payload.get("event") or "")
+        event_id = str(payload.get("event_id") or "")
+        timestamp = str(payload.get("timestamp") or "")
+        expected_input = f"{event}.{event_id}.{timestamp}"
+        if not signature or not signature_input:
+            return "Webhook签名缺失"
+        if signature_input != expected_input:
+            return "Webhook签名输入错误"
+        try:
+            timestamp_value = int(timestamp)
+        except (TypeError, ValueError):
+            return "Webhook时间戳无效"
+        if abs(int(time.time()) - timestamp_value) > 300:
+            return "Webhook时间戳过期"
+        expected = hmac.new(
+            self._webhook_hmac_secret.encode("utf-8"),
+            signature_input.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        provided = signature.removeprefix("sha256=")
+        if not hmac.compare_digest(provided, expected):
+            return "Webhook签名错误"
+        return None
 
     def get_page(self) -> List[dict]:
         return [
@@ -912,7 +970,7 @@ class tvhhelper(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12},
+                                "props": {"cols": 12, "md": 6},
                                 "content": [{
                                     "component": "VTextField",
                                     "props": {
@@ -923,6 +981,19 @@ class tvhhelper(_PluginBase):
                                     },
                                 }],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "webhook_hmac_secret",
+                                        "label": "Webhook HMAC Secret",
+                                        "type": "password",
+                                        "placeholder": "留空则不校验HMAC签名",
+                                    },
+                                }],
+                            },
                         ],
                     },
                     {
@@ -930,7 +1001,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN；HMAC Secret留空时不校验签名。",
                         },
                     },
                 ],
@@ -940,6 +1011,7 @@ class tvhhelper(_PluginBase):
             "notify": True,
             "webhook_notify": True,
             "webhook_secret": "",
+            "webhook_hmac_secret": "",
             "tvh_url": "http://127.0.0.1:9981",
             "tvh_user": "",
             "tvh_pass": "",

@@ -622,6 +622,8 @@ TVH_WEBHOOK_EVENT_TITLES = {
     "dvr.start": "TVH开始录制",
     "dvr.complete": "TVH录制完成",
     "dvr.error": "TVH录制异常",
+    "dvb.error": "TVH DVB异常",
+    "service.error": "TVH服务异常",
 }
 
 
@@ -647,6 +649,16 @@ def format_tvh_webhook_message(payload: dict) -> tuple[str, str]:
         lines.append(f"标题: {payload.get('title')}")
     if payload.get("service"):
         lines.append(f"服务: {_short_service_name(str(payload.get('service')))}")
+    if payload.get("adapter"):
+        lines.append(f"适配器: {payload.get('adapter')}")
+    if payload.get("input"):
+        lines.append(f"输入: {payload.get('input')}")
+    if payload.get("mux"):
+        lines.append(f"频点: {payload.get('mux')}")
+    if payload.get("status_text"):
+        lines.append(f"状态: {payload.get('status_text')}")
+    if payload.get("status_flags") is not None:
+        lines.append(f"状态码: {payload.get('status_flags')}")
     if payload.get("profile"):
         lines.append(f"配置: {payload.get('profile')}")
     if payload.get("subscription_id") is not None:
