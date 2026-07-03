@@ -627,9 +627,106 @@ TVH_WEBHOOK_EVENT_TITLES = {
 }
 
 
-def format_tvh_webhook_message(payload: dict) -> tuple[str, str]:
+def format_tvh_webhook_message(
+    payload: dict,
+    ip_location: str | None = None,
+    ip_isp: str | None = None,
+) -> tuple[str, str]:
     event = str(payload.get("event") or "tvh.event")
     title = TVH_WEBHOOK_EVENT_TITLES.get(event, f"TVH通知 {event}")
+    if event.startswith("playback."):
+        return title, _format_tvh_playback_webhook(payload, ip_location, ip_isp)
+    if event.startswith("dvr."):
+        return title, _format_tvh_dvr_webhook(payload)
+    if event in ("dvb.error", "service.error"):
+        return title, _format_tvh_error_webhook(payload)
+    return title, _format_tvh_generic_webhook(payload)
+
+
+def _format_tvh_playback_webhook(
+    payload: dict,
+    ip_location: str | None = None,
+    ip_isp: str | None = None,
+) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    started_time = _format_timestamp(payload.get("started")) or _string_or_none(payload.get("started"))
+    duration = _format_webhook_play_duration(payload.get("started"), payload.get("timestamp"))
+    source = _format_webhook_source(payload.get("ip"), ip_location, ip_isp)
+    rate_line = _format_rate_pair(
+        _string_or_none(payload.get("input_kbps")),
+        _string_or_none(payload.get("output_kbps")),
+    )
+    main_lines = _compact_lines([
+        f"频道: {payload.get('channel')}" if payload.get("channel") else None,
+        f"用户: {payload.get('user')}" if payload.get("user") else None,
+        f"来源: {source}" if source else None,
+        f"客户端: {payload.get('client')}" if payload.get("client") else None,
+        f"开始: {started_time}" if started_time else None,
+        f"停止: {event_time}" if event == "playback.stop" else None,
+        f"当前时长: {duration}" if event == "playback.start" and duration else None,
+        f"播放时长: {duration}" if event == "playback.stop" and duration else None,
+    ])
+    tech_lines = _compact_lines([
+        f"服务: {_short_service_name(str(payload.get('service')))}" if payload.get("service") else None,
+        f"订阅ID: {payload.get('subscription_id')}" if payload.get("subscription_id") is not None else None,
+        f"输入/输出: {rate_line}" if rate_line else None,
+        f"事件: {event}",
+    ])
+    return _format_tvh_sections(main_lines, [("技术信息", tech_lines)])
+
+
+def _format_tvh_dvr_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    error_text = payload.get("last_error_text")
+    result = payload.get("recording_state") or payload.get("sched_state")
+    if event == "dvr.error" and error_text:
+        result = error_text
+    main_lines = _compact_lines([
+        f"节目: {payload.get('title')}" if payload.get("title") else None,
+        f"频道: {payload.get('channel')}" if payload.get("channel") else None,
+        f"用户: {payload.get('user')}" if payload.get("user") else None,
+        f"结果: {result}" if result else None,
+        f"时间: {event_time}",
+    ])
+    file_lines = _compact_lines([
+        str(payload.get("filename")) if payload.get("filename") else None,
+    ])
+    tech_lines = _compact_lines([
+        f"录制ID: {payload.get('dvr_uuid')}" if payload.get("dvr_uuid") else None,
+        f"排程状态: {payload.get('sched_state')}" if payload.get("sched_state") else None,
+        f"录制状态: {payload.get('recording_state')}" if payload.get("recording_state") else None,
+        f"错误: {error_text}" if error_text and (event == "dvr.error" or str(error_text).upper() != "OK") else None,
+        f"事件: {event}",
+    ])
+    sections = []
+    if file_lines:
+        sections.append(("文件", file_lines))
+    sections.append(("技术信息", tech_lines))
+    return _format_tvh_sections(main_lines, sections)
+
+
+def _format_tvh_error_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    main_lines = _compact_lines([
+        f"服务: {_short_service_name(str(payload.get('service')))}" if payload.get("service") else None,
+        f"输入: {payload.get('input')}" if payload.get("input") else None,
+        f"频点: {payload.get('mux')}" if payload.get("mux") else None,
+        f"适配器: {payload.get('adapter')}" if payload.get("adapter") else None,
+        f"状态: {payload.get('status_text')}" if payload.get("status_text") else None,
+        f"时间: {event_time}",
+    ])
+    tech_lines = _compact_lines([
+        f"状态码: {payload.get('status_flags')}" if payload.get("status_flags") is not None else None,
+        f"事件: {event}",
+    ])
+    return _format_tvh_sections(main_lines, [("技术信息", tech_lines)])
+
+
+def _format_tvh_generic_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "tvh.event")
     server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
     lines = [
         f"事件: {event}",
@@ -682,7 +779,43 @@ def format_tvh_webhook_message(payload: dict) -> tuple[str, str]:
         lines.append(f"输入/输出: {rate_line}")
     if payload.get("message"):
         lines.append(str(payload.get("message")))
-    return title, f"```text\n{chr(10).join(lines)}\n```"
+    return f"```text\n{chr(10).join(lines)}\n```"
+
+
+def _format_tvh_sections(
+    main_lines: list[str],
+    sections: list[tuple[str, list[str]]],
+) -> str:
+    lines = list(main_lines)
+    for header, values in sections:
+        if not values:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(header)
+        lines.extend(values)
+    return f"```text\n{chr(10).join(lines)}\n```"
+
+
+def _compact_lines(values: Iterable[str | None]) -> list[str]:
+    return [str(value) for value in values if value]
+
+
+def _format_webhook_source(ip, location: str | None, isp: str | None) -> str | None:
+    if not ip:
+        return None
+    carrier = normalize_isp_carrier(isp) or (str(isp).strip() if isp else None)
+    parts = [part for part in [location, carrier] if part]
+    meta = " / ".join(dict.fromkeys(parts)) if parts else None
+    return f"{ip} ({meta})" if meta else str(ip)
+
+
+def _format_webhook_play_duration(started, timestamp) -> str | None:
+    started_dt = _coerce_datetime(started)
+    event_dt = _coerce_datetime(timestamp)
+    if not started_dt or not event_dt:
+        return None
+    return _format_duration(max(0, int((event_dt - started_dt).total_seconds())))
 
 
 def playback_subscription_key(subscription: TvhSubscription) -> str:

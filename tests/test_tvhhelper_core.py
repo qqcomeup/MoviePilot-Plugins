@@ -694,6 +694,7 @@ def test_tvh_webhook_message_formats_playback_event():
     title, text = format_tvh_webhook_message({
         "event": "playback.start",
         "timestamp": 1782819002,
+        "started": 1782818942,
         "server": {"name": "Living Room TVH"},
         "user": "ck",
         "ip": "151.243.229.106",
@@ -704,12 +705,33 @@ def test_tvh_webhook_message_formats_playback_event():
         "subscription_id": 12,
         "input_kbps": 1000000,
         "output_kbps": 2000000,
-    })
+    }, ip_location="香港 葵青区", ip_isp="Zouter Limited")
 
     assert title == "TVH开始播放"
-    assert "用户: ck" in text
     assert "频道: News" in text
+    assert "用户: ck" in text
+    assert "来源: 151.243.229.106 (香港 葵青区 / Zouter Limited)" in text
+    assert "开始: 2026-06-30 19:29:02" in text
+    assert "当前时长: 00:01:00" in text
+    assert "技术信息" in text
     assert "输入/输出: 1/2 Mb/s" in text
+
+
+def test_tvh_webhook_message_formats_playback_stop_duration():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.stop",
+        "timestamp": 1782819902,
+        "started": 1782819002,
+        "user": "mxy",
+        "ip": "223.73.229.155",
+        "channel": "翡翠台",
+        "client": "Aptv",
+    }, ip_location="广东 佛山", ip_isp="China Mobile Communications Group Co., Ltd.")
+
+    assert title == "TVH停止播放"
+    assert "来源: 223.73.229.155 (广东 佛山 / 中国移动)" in text
+    assert "停止: 2026-06-30 19:45:02" in text
+    assert "播放时长: 00:15:00" in text
 
 
 def test_tvh_webhook_message_formats_dvr_error_event():

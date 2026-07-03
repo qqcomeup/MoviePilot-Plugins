@@ -30,6 +30,7 @@ from .core import (
     cancel_tvh_subscription,
     decode_callback_value,
     enrich_subscriptions_with_ip_locations,
+    fetch_ip_location_cached,
     fetch_tvh_connections,
     fetch_tvh_inputs,
     fetch_tvh_status,
@@ -62,7 +63,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.44"
+    plugin_version = "0.1.45"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -779,7 +780,12 @@ class tvhhelper(_PluginBase):
                 return schemas.Response(success=True, message="Webhook重复事件已忽略")
             self._webhook_seen_events.set(event_id, True)
 
-        title, text = format_tvh_webhook_message(payload)
+        ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
+        title, text = format_tvh_webhook_message(
+            payload,
+            ip_location=ip_location,
+            ip_isp=ip_isp,
+        )
         logger.info(f"收到TVH Webhook: {payload.get('event')}")
         if self._webhook_notify:
             self.post_message(
@@ -789,6 +795,18 @@ class tvhhelper(_PluginBase):
                 parse_mode="Markdown",
             )
         return schemas.Response(success=True, message="Webhook已接收")
+
+    def __lookup_webhook_ip(self, ip: Any) -> tuple[str | None, str | None]:
+        if not self._ip_lookup_enabled or not ip or not self._ip_location_cache:
+            return None, None
+        try:
+            return fetch_ip_location_cached(
+                str(ip),
+                cache=self._ip_location_cache,
+            )
+        except Exception as err:
+            logger.debug(f"TVH Webhook IP归属地查询失败: {ip} - {err}")
+            return None, None
 
     def __verify_webhook_signature(
         self,

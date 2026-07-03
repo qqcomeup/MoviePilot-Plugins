@@ -112,6 +112,40 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
     assert "频道: News" in plugin.messages[0]["text"]
 
 
+def test_receive_webhook_enriches_ip_location(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_ip_location_cached",
+        lambda ip, cache=None, resolver=None: ("香港 葵青区", "Zouter Limited"),
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "ip_lookup_enabled": True,
+    })
+    now = int(time.time())
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "timestamp": now,
+            "started": now - 65,
+            "user": "ck",
+            "ip": "151.243.229.106",
+            "channel": "News",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert len(plugin.messages) == 1
+    assert "来源: 151.243.229.106 (香港 葵青区 / Zouter Limited)" in plugin.messages[0]["text"]
+    assert "当前时长: 00:01:05" in plugin.messages[0]["text"]
+
+
 def test_receive_webhook_rejects_bad_secret(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()
