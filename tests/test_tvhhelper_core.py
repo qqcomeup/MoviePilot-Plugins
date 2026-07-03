@@ -35,6 +35,8 @@ from core import (
     fetch_ip_location_cached,
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
+    enrich_tvh_webhook_program,
+    fetch_tvh_channel_program,
     fetch_tvh_status_bundle,
     detect_playback_events,
     format_playback_notification,
@@ -66,6 +68,7 @@ from core import (
     scan_dvb_adapters,
     restart_tvh_server,
     set_tvh_user_enabled,
+    select_tvh_webhook_image,
 )
 
 
@@ -717,6 +720,23 @@ def test_tvh_webhook_message_formats_playback_event():
     assert "输入/输出: 1/2 Mb/s" in text
 
 
+def test_tvh_webhook_message_formats_program_metadata():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782820500,
+    })
+
+    assert title == "TVH开始播放"
+    assert "频道: 翡翠台" in text
+    assert "节目: 交易現場[粵]" in text
+    assert "节目时间: 2026-06-30 19:25:00 - 2026-06-30 19:55:00" in text
+
+
 def test_tvh_webhook_message_formats_playback_stop_duration():
     title, text = format_tvh_webhook_message({
         "event": "playback.stop",
@@ -732,6 +752,70 @@ def test_tvh_webhook_message_formats_playback_stop_duration():
     assert "来源: 223.73.229.155 (广东 佛山 / 中国移动)" in text
     assert "停止: 2026-06-30 19:45:02" in text
     assert "播放时长: 00:15:00" in text
+
+
+def test_fetch_tvh_channel_program_matches_epg_entry(monkeypatch):
+    def fake_fetch(base_url, path, username, password, timeout=10):
+        assert path.startswith("/api/epg/events/grid?")
+        return {
+            "entries": [{
+                "channelName": "翡翠台",
+                "channelUuid": "channel-uuid",
+                "channelIcon": "imagecache/12",
+                "eventId": 100,
+                "title": "交易現場[粵]",
+                "summary": "財經資訊",
+                "start": 1782818700,
+                "stop": 1782820500,
+            }]
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    metadata = fetch_tvh_channel_program(
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        channel_name="翡翠台",
+    )
+
+    assert metadata["channel_icon"] == "https://m3u.example.com/imagecache/12"
+    assert metadata["program_title"] == "交易現場[粵]"
+    assert metadata["program_start"] == 1782818700
+
+
+def test_enrich_tvh_webhook_program_uses_cache(monkeypatch):
+    calls = []
+
+    def fake_fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    cache = TimedValueCache(ttl_seconds=60)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+    }
+
+    first = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret", cache=cache)
+    second = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret", cache=cache)
+
+    assert first["program_title"] == "交易現場[粵]"
+    assert second["channel_icon"] == "https://example.com/logo.png"
+    assert len(calls) == 1
+
+
+def test_select_tvh_webhook_image_prefers_channel_icon():
+    image = select_tvh_webhook_image({
+        "channel_icon": "imagecache/12",
+        "program_image": "https://example.com/program.jpg",
+    }, base_url="https://m3u.example.com/")
+
+    assert image == "https://m3u.example.com/imagecache/12"
 
 
 def test_tvh_webhook_message_formats_dvr_error_event():

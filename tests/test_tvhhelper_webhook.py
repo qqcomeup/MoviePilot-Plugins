@@ -146,6 +146,75 @@ def test_receive_webhook_enriches_ip_location(monkeypatch):
     assert "当前时长: 00:01:05" in plugin.messages[0]["text"]
 
 
+def test_receive_webhook_enriches_program_and_image(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "enrich_tvh_webhook_program",
+        lambda payload, *args, **kwargs: {
+            **payload,
+            "program_title": "交易現場[粵]",
+            "channel_icon": "https://example.com/tvb1.png",
+        },
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "webhook_program_enrich": True,
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "channel": "翡翠台",
+            "user": "ck",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert len(plugin.messages) == 1
+    assert "节目: 交易現場[粵]" in plugin.messages[0]["text"]
+    assert plugin.messages[0]["image"] == "https://example.com/tvb1.png"
+
+
+def test_receive_webhook_uses_payload_image_without_enrichment(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    called = False
+
+    def fake_enrich(*args, **kwargs):
+        nonlocal called
+        called = True
+        return args[0]
+
+    monkeypatch.setattr(module, "enrich_tvh_webhook_program", fake_enrich)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "webhook_program_enrich": False,
+        "tvh_url": "https://m3u.example.com",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "channel": "翡翠台",
+            "program_title": "新聞提要",
+            "channel_icon": "imagecache/12",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert called is False
+    assert "节目: 新聞提要" in plugin.messages[0]["text"]
+    assert plugin.messages[0]["image"] == "https://m3u.example.com/imagecache/12"
+
+
 def test_receive_webhook_rejects_bad_secret(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()

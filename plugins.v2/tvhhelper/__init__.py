@@ -49,10 +49,12 @@ from .core import (
     normalize_interval,
     playback_notification_key,
     detect_playback_events,
+    enrich_tvh_webhook_program,
     plan_playback_notifications,
     resolve_play_notify_settings,
     reset_tvh_user_token,
     restart_tvh_server,
+    select_tvh_webhook_image,
     set_tvh_user_enabled,
     token_for_user,
     TvhUser,
@@ -63,7 +65,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.45"
+    plugin_version = "0.1.46"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -73,6 +75,7 @@ class tvhhelper(_PluginBase):
     _enabled = False
     _notify = True
     _webhook_notify = True
+    _webhook_program_enrich = True
     _webhook_secret = ""
     _webhook_hmac_secret = ""
     _webhook_seen_events: TimedValueCache | None = None
@@ -92,6 +95,7 @@ class tvhhelper(_PluginBase):
     _monitor: DvbMonitor | None = None
     _ip_location_cache: TimedValueCache | None = None
     _tvh_users_cache: TimedValueCache | None = None
+    _webhook_program_cache: TimedValueCache | None = None
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -100,6 +104,7 @@ class tvhhelper(_PluginBase):
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
             self._webhook_notify = bool(config.get("webhook_notify", True))
+            self._webhook_program_enrich = bool(config.get("webhook_program_enrich", True))
             self._webhook_secret = config.get("webhook_secret") or ""
             self._webhook_hmac_secret = config.get("webhook_hmac_secret") or ""
             self._tvh_url = (config.get("tvh_url") or self._tvh_url).rstrip("/")
@@ -120,6 +125,7 @@ class tvhhelper(_PluginBase):
         self._ip_location_cache = TimedValueCache(ttl_seconds=21600)
         self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
         self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
+        self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._play_notify_snapshot = None
         self.__update_config()
 
@@ -127,6 +133,7 @@ class tvhhelper(_PluginBase):
         self._enabled = False
         self._notify = True
         self._webhook_notify = True
+        self._webhook_program_enrich = True
         self._webhook_secret = ""
         self._webhook_hmac_secret = ""
         self._tvh_url = "http://127.0.0.1:9981"
@@ -145,6 +152,7 @@ class tvhhelper(_PluginBase):
         self._webhook_seen_events = None
         self._ip_location_cache = None
         self._tvh_users_cache = None
+        self._webhook_program_cache = None
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -158,6 +166,7 @@ class tvhhelper(_PluginBase):
             "enabled": self._enabled,
             "notify": self._notify,
             "webhook_notify": self._webhook_notify,
+            "webhook_program_enrich": self._webhook_program_enrich,
             "webhook_secret": self._webhook_secret,
             "webhook_hmac_secret": self._webhook_hmac_secret,
             "tvh_url": self._tvh_url,
@@ -780,21 +789,42 @@ class tvhhelper(_PluginBase):
                 return schemas.Response(success=True, message="Webhook重复事件已忽略")
             self._webhook_seen_events.set(event_id, True)
 
+        payload = self.__enrich_webhook_program(payload)
         ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
         title, text = format_tvh_webhook_message(
             payload,
             ip_location=ip_location,
             ip_isp=ip_isp,
         )
+        image = select_tvh_webhook_image(payload, self._tvh_url)
         logger.info(f"收到TVH Webhook: {payload.get('event')}")
         if self._webhook_notify:
-            self.post_message(
-                mtype=NotificationType.Plugin,
-                title=title,
-                text=text,
-                parse_mode="Markdown",
-            )
+            message = {
+                "mtype": NotificationType.Plugin,
+                "title": title,
+                "text": text,
+                "parse_mode": "Markdown",
+            }
+            if image:
+                message["image"] = image
+            self.post_message(**message)
         return schemas.Response(success=True, message="Webhook已接收")
+
+    def __enrich_webhook_program(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._webhook_program_enrich:
+            return payload
+        try:
+            return enrich_tvh_webhook_program(
+                payload,
+                self._tvh_url,
+                self._tvh_user,
+                self._tvh_pass,
+                cache=self._webhook_program_cache,
+                timeout=2,
+            )
+        except Exception as err:
+            logger.debug(f"TVH Webhook节目/LOGO补全失败: {err}")
+            return payload
 
     def __lookup_webhook_ip(self, ip: Any) -> tuple[str | None, str | None]:
         if not self._ip_lookup_enabled or not ip or not self._ip_location_cache:
@@ -901,6 +931,14 @@ class tvhhelper(_PluginBase):
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "webhook_notify", "label": "Webhook通知"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_program_enrich", "label": "Webhook节目/LOGO补全"},
                                 }],
                             },
                             {
@@ -1020,7 +1058,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook，Secret留空时使用MoviePilot API_TOKEN；HMAC Secret留空时不校验签名。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook；节目/LOGO补全会在新版TVH未直接提供字段时查询TVH API。",
                         },
                     },
                 ],
@@ -1029,6 +1067,7 @@ class tvhhelper(_PluginBase):
             "enabled": False,
             "notify": True,
             "webhook_notify": True,
+            "webhook_program_enrich": True,
             "webhook_secret": "",
             "webhook_hmac_secret": "",
             "tvh_url": "http://127.0.0.1:9981",

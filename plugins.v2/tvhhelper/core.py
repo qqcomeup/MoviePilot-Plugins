@@ -659,6 +659,8 @@ def _format_tvh_playback_webhook(
     )
     main_lines = _compact_lines([
         f"频道: {payload.get('channel')}" if payload.get("channel") else None,
+        f"节目: {payload.get('program_title')}" if payload.get("program_title") else None,
+        f"节目时间: {_format_webhook_program_window(payload)}" if _format_webhook_program_window(payload) else None,
         f"用户: {payload.get('user')}" if payload.get("user") else None,
         f"来源: {source}" if source else None,
         f"客户端: {payload.get('client')}" if payload.get("client") else None,
@@ -674,6 +676,14 @@ def _format_tvh_playback_webhook(
         f"事件: {event}",
     ])
     return _format_tvh_sections(main_lines, [("技术信息", tech_lines)])
+
+
+def _format_webhook_program_window(payload: dict) -> str | None:
+    start = _format_timestamp(payload.get("program_start"))
+    stop = _format_timestamp(payload.get("program_stop"))
+    if start and stop:
+        return f"{start} - {stop}"
+    return start or stop
 
 
 def _format_tvh_dvr_webhook(payload: dict) -> str:
@@ -1457,6 +1467,164 @@ def fetch_tvh_json(base_url: str, path: str, username: str, password: str, timeo
     url = f"{normalize_base_url(base_url)}{path}"
     request = urllib.request.Request(url)
     return _open_tvh_json(request, url, username, password, timeout)
+
+
+def enrich_tvh_webhook_program(
+    payload: dict,
+    base_url: str,
+    username: str,
+    password: str,
+    cache: TimedValueCache | None = None,
+    timeout: int = 2,
+) -> dict:
+    event = str(payload.get("event") or "")
+    if not event.startswith("playback."):
+        return payload
+    if payload.get("program_title") and payload.get("channel_icon"):
+        return payload
+    channel = _string_or_none(payload.get("channel"))
+    channel_uuid = _string_or_none(payload.get("channel_uuid"))
+    if not channel and not channel_uuid:
+        return payload
+
+    cache_key = "|".join([channel_uuid or "", channel or ""])
+    metadata = cache.get(cache_key) if cache else None
+    if metadata is None:
+        metadata = fetch_tvh_channel_program(
+            base_url,
+            username,
+            password,
+            channel_name=channel,
+            channel_uuid=channel_uuid,
+            timeout=timeout,
+        )
+        if cache:
+            cache.set(cache_key, metadata)
+
+    if not metadata:
+        return payload
+    enriched = dict(payload)
+    for key, value in metadata.items():
+        if value is not None and value != "" and not enriched.get(key):
+            enriched[key] = value
+    return enriched
+
+
+def fetch_tvh_channel_program(
+    base_url: str,
+    username: str,
+    password: str,
+    channel_name: str | None = None,
+    channel_uuid: str | None = None,
+    timeout: int = 2,
+) -> dict:
+    query = urllib.parse.urlencode({"mode": "now", "limit": 999})
+    epg_payload = fetch_tvh_json(
+        base_url,
+        f"/api/epg/events/grid?{query}",
+        username,
+        password,
+        timeout=timeout,
+    )
+    for entry in epg_payload.get("entries", []):
+        if _tvh_channel_entry_matches(entry, channel_name, channel_uuid):
+            return _tvh_program_metadata_from_epg_entry(base_url, entry)
+
+    metadata = _fetch_tvh_channel_metadata(
+        base_url,
+        username,
+        password,
+        channel_name=channel_name,
+        channel_uuid=channel_uuid,
+        timeout=timeout,
+    )
+    return metadata or {}
+
+
+def select_tvh_webhook_image(payload: dict, base_url: str | None = None) -> str | None:
+    return _normalize_tvh_image_url(
+        base_url,
+        payload.get("channel_icon") or payload.get("program_image"),
+    )
+
+
+def _fetch_tvh_channel_metadata(
+    base_url: str,
+    username: str,
+    password: str,
+    channel_name: str | None = None,
+    channel_uuid: str | None = None,
+    timeout: int = 2,
+) -> dict:
+    channel_payload = fetch_tvh_json(
+        base_url,
+        "/api/channel/grid?limit=999",
+        username,
+        password,
+        timeout=timeout,
+    )
+    for entry in channel_payload.get("entries", []):
+        if _tvh_channel_entry_matches(entry, channel_name, channel_uuid):
+            return _tvh_channel_metadata_from_channel_entry(base_url, entry)
+    return {}
+
+
+def _tvh_program_metadata_from_epg_entry(base_url: str, entry: dict) -> dict:
+    metadata = {
+        "channel": _string_or_none(entry.get("channelName")),
+        "channel_uuid": _string_or_none(entry.get("channelUuid")),
+        "channel_icon": _normalize_tvh_image_url(base_url, entry.get("channelIcon")),
+        "program_event_id": entry.get("eventId"),
+        "program_title": _string_or_none(entry.get("title")),
+        "program_subtitle": _string_or_none(entry.get("subtitle")),
+        "program_summary": _string_or_none(entry.get("summary")),
+        "program_description": _string_or_none(entry.get("description")),
+        "program_start": entry.get("start"),
+        "program_stop": entry.get("stop"),
+        "program_image": _normalize_tvh_image_url(base_url, entry.get("image")),
+    }
+    return {key: value for key, value in metadata.items() if value is not None and value != ""}
+
+
+def _tvh_channel_metadata_from_channel_entry(base_url: str, entry: dict) -> dict:
+    icon = (
+        entry.get("icon_public_url")
+        or entry.get("icon")
+        or entry.get("channelIcon")
+    )
+    metadata = {
+        "channel": _string_or_none(entry.get("name") or entry.get("channelName")),
+        "channel_uuid": _string_or_none(entry.get("uuid") or entry.get("channelUuid")),
+        "channel_icon": _normalize_tvh_image_url(base_url, icon),
+    }
+    return {key: value for key, value in metadata.items() if value is not None and value != ""}
+
+
+def _tvh_channel_entry_matches(
+    entry: dict,
+    channel_name: str | None,
+    channel_uuid: str | None,
+) -> bool:
+    entry_uuid = _string_or_none(entry.get("channelUuid") or entry.get("uuid"))
+    if channel_uuid and entry_uuid and channel_uuid == entry_uuid:
+        return True
+    entry_name = _string_or_none(entry.get("channelName") or entry.get("name"))
+    return bool(channel_name and entry_name and _normalize_match_text(channel_name) == _normalize_match_text(entry_name))
+
+
+def _normalize_match_text(value: str) -> str:
+    return str(value).strip().casefold()
+
+
+def _normalize_tvh_image_url(base_url: str | None, image) -> str | None:
+    value = _string_or_none(image)
+    if not value:
+        return None
+    if "://" in value or value.startswith("data:"):
+        return value
+    if not base_url:
+        return value
+    return f"{normalize_base_url(base_url)}/{value.lstrip('/')}"
 
 
 def post_tvh_form(
