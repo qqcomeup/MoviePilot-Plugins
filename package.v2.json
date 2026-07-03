@@ -20,12 +20,13 @@
     "name": "CloudDrive2助手AI",
     "description": "监控 CloudDrive2 上传任务，检测异常并发送通知，使用独立插件ID避免与原版冲突。",
     "labels": "CloudDrive2,通知,工具",
-    "version": "2.0.8",
+    "version": "2.0.9",
     "release": true,
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "thsrite, qqcomeup",
     "level": 2,
     "history": {
+      "v2.0.9": "配置页明确 AI 版 HomePage/API 对接地址为 /api/v1/plugin/cd2assistantai/homepage，避免继续使用原版 Cd2Assistant 路径。",
       "v2.0.8": "修复插件类名与安装ID不一致导致安装后无法立即加载的问题。",
       "v2.0.7": "改为独立插件ID cd2assistantai，并使用独立配置前缀 cd2assistantai_，避免与原版 cd2assistant 冲突。",
       "v2.0.6": "同步原版 CloudDrive2 助手逻辑。"

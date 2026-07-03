@@ -25,7 +25,7 @@ class cd2assistantai(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "2.0.8"
+    plugin_version = "2.0.9"
     # 插件作者
     plugin_author = "thsrite, qqcomeup"
     # 作者主页
@@ -839,12 +839,33 @@ class cd2assistantai(_PluginBase):
                                         'component': 'VAlert',
                                         'props': {
                                             'type': 'success',
+                                            'variant': 'tonal',
+                                            'text': 'AI版插件ID为 cd2assistantai，HomePage/API对接地址请使用 /api/v1/plugin/cd2assistantai/homepage?apikey=你的APIKEY；不要使用原版 /api/v1/plugin/Cd2Assistant/homepage。'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
                                             'variant': 'tonal'
                                         },
                                         'content': [
                                             {
                                                 'component': 'span',
-                                                'text': 'HomePage配置教程请参考：'
+                                                'text': 'HomePage配置方式可参考原版教程，但插件ID和接口路径需替换为 cd2assistantai：'
                                             },
                                             {
                                                 'component': 'a',
