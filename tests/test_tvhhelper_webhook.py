@@ -205,9 +205,10 @@ def test_receive_webhook_records_playback_history(monkeypatch):
     page = plugin.get_page()
 
     assert response.success is True
-    assert page[0]["component"] == "VTextarea"
-    text = page[0]["props"]["modelValue"]
-    assert "最近用户播放记录" not in text
+    assert page[0]["component"] == "VCard"
+    text = str(page)
+    assert "VTable" in text
+    assert "VChip" in text
     assert "翡翠台" in text
     assert "交易現場[粵]" in text
     assert "ck" in text

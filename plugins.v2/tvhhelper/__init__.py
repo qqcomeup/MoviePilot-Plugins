@@ -65,7 +65,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.50"
+    plugin_version = "0.1.51"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -1000,31 +1000,127 @@ class tvhhelper(_PluginBase):
             ]
         return [
             {
-                "component": "VTextarea",
+                "component": "VCard",
                 "props": {
-                    "modelValue": self.__format_playback_history_text(),
-                    "label": "最近用户播放记录",
-                    "rows": 18,
-                    "readonly": True,
-                    "auto-grow": True,
+                    "variant": "flat",
+                    "class": "rounded border",
                 },
-            }
+                "content": [
+                    {
+                        "component": "VCardText",
+                        "content": [
+                            {
+                                "component": "div",
+                                "props": {
+                                    "class": "d-flex align-center mb-6",
+                                },
+                                "content": [
+                                    {
+                                        "component": "VIcon",
+                                        "props": {
+                                            "class": "mr-3",
+                                            "color": "primary",
+                                        },
+                                        "text": "mdi-play-box-multiple-outline",
+                                    },
+                                    {
+                                        "component": "span",
+                                        "props": {
+                                            "class": "text-h5 font-weight-bold",
+                                        },
+                                        "text": "TVH 最近播放记录",
+                                    },
+                                ],
+                            },
+                            self.__build_playback_history_table(),
+                        ],
+                    },
+                ],
+            },
         ]
 
-    def __format_playback_history_text(self) -> str:
-        lines = ["时间 | 事件 | 用户 | 频道 | 节目 | 来源 | 客户端 | 时长"]
-        for item in self._playback_history:
-            lines.append(" | ".join([
-                str(item.get("time") or ""),
-                str(item.get("event") or ""),
-                str(item.get("user") or ""),
-                str(item.get("channel") or ""),
-                str(item.get("program") or ""),
-                str(item.get("source") or ""),
-                str(item.get("client") or ""),
-                str(item.get("duration") or ""),
-            ]))
-        return "\n".join(lines)
+    def __build_playback_history_table(self) -> dict:
+        headers = ["时间", "状态", "用户", "频道", "节目", "来源", "客户端", "时长"]
+        return {
+            "component": "VTable",
+            "props": {
+                "density": "comfortable",
+                "hover": True,
+                "class": "text-no-wrap",
+            },
+            "content": [
+                {
+                    "component": "thead",
+                    "content": [{
+                        "component": "tr",
+                        "content": [
+                            {
+                                "component": "th",
+                                "props": {"class": "text-left font-weight-bold"},
+                                "text": header,
+                            }
+                            for header in headers
+                        ],
+                    }],
+                },
+                {
+                    "component": "tbody",
+                    "content": [
+                        self.__build_playback_history_row(item)
+                        for item in self._playback_history
+                    ],
+                },
+            ],
+        }
+
+    def __build_playback_history_row(self, item: dict[str, Any]) -> dict:
+        return {
+            "component": "tr",
+            "content": [
+                self.__history_cell(item.get("time")),
+                {
+                    "component": "td",
+                    "content": [self.__history_status_chip(str(item.get("event") or ""))],
+                },
+                self.__history_cell(item.get("user"), "font-weight-medium"),
+                self.__history_cell(item.get("channel"), "font-weight-medium"),
+                self.__history_cell(item.get("program")),
+                self.__history_cell(item.get("source")),
+                self.__history_cell(item.get("client")),
+                self.__history_cell(item.get("duration"), "font-weight-medium"),
+            ],
+        }
+
+    @staticmethod
+    def __history_cell(value: Any, css_class: str | None = None) -> dict:
+        props = {"class": css_class} if css_class else {}
+        return {
+            "component": "td",
+            "props": props,
+            "text": str(value or "-"),
+        }
+
+    @staticmethod
+    def __history_status_chip(event: str) -> dict:
+        colors = {
+            "开始": "success",
+            "停止": "info",
+            "切台": "warning",
+        }
+        labels = {
+            "开始": "开始播放",
+            "停止": "停止播放",
+            "切台": "切换频道",
+        }
+        return {
+            "component": "VChip",
+            "props": {
+                "color": colors.get(event, "default"),
+                "variant": "outlined",
+                "size": "small",
+            },
+            "text": labels.get(event, event or "未知"),
+        }
 
     def stop_service(self):
         pass
