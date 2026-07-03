@@ -735,6 +735,29 @@ def test_tvh_webhook_message_formats_program_metadata():
     assert "频道: 翡翠台" in text
     assert "节目: 交易現場[粵]" in text
     assert "节目时间: 2026-06-30 19:25:00 - 2026-06-30 19:55:00" in text
+    assert "节目时长: 30 分钟" in text
+
+
+def test_tvh_webhook_message_formats_program_content_and_duration():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782822600,
+        "program_summary": (
+            "張遮設局找出栽贓之人,太后突然改變態度,只因認出那是薛姝的人。"
+            "雪寧從芷衣處得知薛姝見過沈玠的手帕,便明白自己被陷害的原因。"
+            "燕牧拜謝謝危救命之恩,言語間提及與外甥定非的過往,二人都未明說,但心意已通曉。"
+        ),
+    })
+
+    assert title == "TVH开始播放"
+    assert "节目: 交易現場[粵]" in text
+    assert "节目时长: 65 分钟" in text
+    assert "节目内容: 張遮設局找出栽贓之人" in text
 
 
 def test_tvh_webhook_message_formats_playback_stop_duration():

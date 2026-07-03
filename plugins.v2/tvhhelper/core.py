@@ -653,6 +653,9 @@ def _format_tvh_playback_webhook(
     started_time = _format_timestamp(payload.get("started")) or _string_or_none(payload.get("started"))
     duration = _format_webhook_play_duration(payload.get("started"), payload.get("timestamp"))
     source = _format_webhook_source(payload.get("ip"), ip_location, ip_isp)
+    program_window = _format_webhook_program_window(payload)
+    program_duration = _format_webhook_program_duration(payload)
+    program_content = _format_webhook_program_content(payload)
     rate_line = _format_rate_pair(
         _string_or_none(payload.get("input_kbps")),
         _string_or_none(payload.get("output_kbps")),
@@ -660,7 +663,9 @@ def _format_tvh_playback_webhook(
     main_lines = _compact_lines([
         f"频道: {payload.get('channel')}" if payload.get("channel") else None,
         f"节目: {payload.get('program_title')}" if payload.get("program_title") else None,
-        f"节目时间: {_format_webhook_program_window(payload)}" if _format_webhook_program_window(payload) else None,
+        f"节目时间: {program_window}" if program_window else None,
+        f"节目时长: {program_duration}" if program_duration else None,
+        f"节目内容: {program_content}" if program_content else None,
         f"用户: {payload.get('user')}" if payload.get("user") else None,
         f"来源: {source}" if source else None,
         f"客户端: {payload.get('client')}" if payload.get("client") else None,
@@ -684,6 +689,26 @@ def _format_webhook_program_window(payload: dict) -> str | None:
     if start and stop:
         return f"{start} - {stop}"
     return start or stop
+
+
+def _format_webhook_program_duration(payload: dict) -> str | None:
+    start = _coerce_datetime(payload.get("program_start"))
+    stop = _coerce_datetime(payload.get("program_stop"))
+    if not start or not stop:
+        return None
+    seconds = max(0, int((stop - start).total_seconds()))
+    if seconds <= 0:
+        return None
+    minutes = max(1, int(round(seconds / 60)))
+    return f"{minutes} 分钟"
+
+
+def _format_webhook_program_content(payload: dict) -> str | None:
+    for key in ("program_summary", "program_description"):
+        value = _string_or_none(payload.get(key))
+        if value:
+            return " ".join(value.split())
+    return None
 
 
 def _format_tvh_dvr_webhook(payload: dict) -> str:
