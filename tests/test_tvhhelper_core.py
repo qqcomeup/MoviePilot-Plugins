@@ -30,6 +30,7 @@ from core import (
     build_user_manage_buttons,
     build_user_select_buttons,
     enrich_subscriptions_with_ip_locations,
+    ensure_ip_location_db,
     fetch_ip_location_from_ip_api,
     fetch_ip_location,
     fetch_ip_location_cached,
@@ -52,6 +53,7 @@ from core import (
     format_status_message,
     merge_subscription_details,
     normalize_interval,
+    lookup_ip_location_from_mmdb,
     plan_playback_notifications,
     normalize_base_url,
     normalize_isp_carrier,
@@ -761,6 +763,24 @@ def test_tvh_webhook_message_formats_program_content_and_duration():
     assert "节目内容: 張遮設局找出栽贓之人" in text
 
 
+def test_tvh_webhook_message_separates_program_content_from_user():
+    _, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "user": "ck",
+        "ip": "151.243.229.106",
+        "channel": "翡翠台",
+        "program_title": "周星馳電影金句大賽",
+        "program_summary": "片中的綠葉與女角往往令人印象深刻,KOL都對星爺的神來之筆嘆為觀止。",
+    }, ip_location="Hong Kong", ip_isp="Zouter Limited")
+
+    assert (
+        "节目内容: 片中的綠葉與女角往往令人印象深刻,KOL都對星爺的神來之筆嘆為觀止。\n\n"
+        "用户: ck"
+    ) in text
+
+
 def test_tvh_webhook_message_clamps_program_progress():
     _, text = format_tvh_webhook_message({
         "event": "playback.stop",
@@ -1198,6 +1218,237 @@ def test_ip_location_cache_expires_after_ttl():
     current_time[0] = 106
     assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache)[0] == "loc-2"
     assert calls == ["58.253.166.121", "58.253.166.121"]
+
+
+def test_ip_location_cache_does_not_store_empty_result():
+    calls = []
+    cache = TimedValueCache(ttl_seconds=60, now=lambda: 100)
+
+    def resolver(ip):
+        calls.append(ip)
+        if len(calls) == 1:
+            return None, None
+        return "Hong Kong", "Zouter Limited"
+
+    assert fetch_ip_location_cached("151.243.229.106", resolver=resolver, cache=cache) == (None, None)
+    assert fetch_ip_location_cached("151.243.229.106", resolver=resolver, cache=cache) == (
+        "Hong Kong",
+        "Zouter Limited",
+    )
+    assert calls == ["151.243.229.106", "151.243.229.106"]
+
+
+def test_lookup_ip_location_from_mmdb_extracts_location_and_asn(tmp_path):
+    country_db = tmp_path / "country.mmdb"
+    asn_db = tmp_path / "asn.mmdb"
+    country_db.write_text("country")
+    asn_db.write_text("asn")
+
+    class Reader:
+        def __init__(self, path):
+            self.path = path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, ip):
+            if self.path.endswith("country.mmdb"):
+                return {
+                    "country": {"names": {"zh-CN": "中国香港", "en": "Hong Kong"}},
+                    "city": {"names": {"en": "Kwai Chung"}},
+                }
+            return {"autonomous_system_organization": "Zouter Limited"}
+
+    class MaxMindDB:
+        @staticmethod
+        def open_database(path):
+            return Reader(path)
+
+    assert lookup_ip_location_from_mmdb(
+        "151.243.229.106",
+        country_db=country_db,
+        asn_db=asn_db,
+        maxminddb_module=MaxMindDB,
+    ) == ("中国香港 Kwai Chung", "Zouter Limited")
+
+
+def test_lookup_ip_location_from_mmdb_uses_country_code_name(tmp_path):
+    country_db = tmp_path / "country.mmdb"
+    country_db.write_text("country")
+
+    class Reader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, ip):
+            return {"country_code": "HK"}
+
+    class MaxMindDB:
+        @staticmethod
+        def open_database(path):
+            return Reader()
+
+    assert lookup_ip_location_from_mmdb(
+        "151.243.229.106",
+        country_db=country_db,
+        maxminddb_module=MaxMindDB,
+    ) == ("Hong Kong", None)
+
+
+def test_ensure_ip_location_db_downloads_and_skips_fresh_files(tmp_path):
+    calls = []
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            if self.offset >= len(self.content):
+                return b""
+            chunk = self.content[self.offset:self.offset + max(1, size)]
+            self.offset += len(chunk)
+            return chunk
+
+    def opener(url, timeout=60):
+        calls.append((url, timeout))
+        return Response(f"db:{url}".encode("utf-8"))
+
+    first = ensure_ip_location_db(
+        tmp_path,
+        country_url="https://example.test/country.mmdb",
+        asn_url="https://example.test/asn.mmdb",
+        max_age_hours=24,
+        now=lambda: 1000,
+        opener=opener,
+    )
+    second = ensure_ip_location_db(
+        tmp_path,
+        country_url="https://example.test/country.mmdb",
+        asn_url="https://example.test/asn.mmdb",
+        max_age_hours=24,
+        now=lambda: 1100,
+        opener=opener,
+    )
+
+    assert first["success"] is True
+    assert first["updated"] is True
+    assert second["success"] is True
+    assert second["updated"] is False
+    assert len(calls) == 2
+    assert (tmp_path / "country.mmdb").exists()
+    assert (tmp_path / "asn.mmdb").exists()
+
+
+def test_ensure_ip_location_db_refreshes_when_urls_change(tmp_path):
+    calls = []
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            if self.offset >= len(self.content):
+                return b""
+            chunk = self.content[self.offset:self.offset + max(1, size)]
+            self.offset += len(chunk)
+            return chunk
+
+    def opener(url, timeout=60):
+        calls.append(url)
+        return Response(url.encode("utf-8"))
+
+    ensure_ip_location_db(
+        tmp_path,
+        country_url="https://example.test/old-country.mmdb",
+        asn_url="https://example.test/old-asn.mmdb",
+        max_age_hours=24,
+        now=lambda: 1000,
+        opener=opener,
+    )
+    result = ensure_ip_location_db(
+        tmp_path,
+        country_url="https://example.test/new-country.mmdb",
+        asn_url="https://example.test/new-asn.mmdb",
+        max_age_hours=24,
+        now=lambda: 1100,
+        opener=opener,
+    )
+
+    assert result["updated"] is True
+    assert calls == [
+        "https://example.test/old-country.mmdb",
+        "https://example.test/old-asn.mmdb",
+        "https://example.test/new-country.mmdb",
+        "https://example.test/new-asn.mmdb",
+    ]
+
+
+def test_ensure_ip_location_db_passes_proxy_to_downloader(tmp_path, monkeypatch):
+    proxies = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size=-1):
+            if getattr(self, "done", False):
+                return b""
+            self.done = True
+            return b"mmdb"
+
+    class Opener:
+        def __init__(self, proxy):
+            self.proxy = proxy
+
+        def open(self, url, timeout=60):
+            return Response()
+
+    def proxy_handler(proxy):
+        proxies.append(proxy)
+        return proxy
+
+    def build_opener(proxy):
+        return Opener(proxy)
+
+    monkeypatch.setattr(core.urllib.request, "ProxyHandler", proxy_handler)
+    monkeypatch.setattr(core.urllib.request, "build_opener", build_opener)
+
+    result = ensure_ip_location_db(
+        tmp_path,
+        country_url="https://example.test/country.mmdb",
+        asn_url="https://example.test/asn.mmdb",
+        proxy="http://127.0.0.1:7890",
+        now=lambda: 1000,
+    )
+
+    assert result["success"] is True
+    assert proxies == [
+        {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+        {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+    ]
 
 
 def test_enrich_subscriptions_can_skip_external_ip_lookup():

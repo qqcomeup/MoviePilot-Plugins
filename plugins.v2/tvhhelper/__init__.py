@@ -1,6 +1,8 @@
 import hashlib
 import hmac
+import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Body, Header
@@ -30,6 +32,11 @@ from .core import (
     cancel_tvh_subscription,
     decode_callback_value,
     enrich_subscriptions_with_ip_locations,
+    DEFAULT_IPDB_ASN_URL,
+    DEFAULT_IPDB_COUNTRY_URL,
+    LEGACY_IPDB_ASN_URLS,
+    LEGACY_IPDB_COUNTRY_URLS,
+    fetch_ip_location,
     fetch_ip_location_cached,
     fetch_tvh_connections,
     fetch_tvh_inputs,
@@ -43,8 +50,10 @@ from .core import (
     format_user_links_message,
     format_dvb_message,
     format_status_message,
+    ensure_ip_location_db,
     find_user,
     is_real_playback_subscription,
+    lookup_ip_location_from_mmdb,
     merge_subscription_details,
     normalize_interval,
     playback_notification_key,
@@ -65,7 +74,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.53"
+    plugin_version = "0.1.54"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -89,6 +98,12 @@ class tvhhelper(_PluginBase):
     _check_interval = 60
     _play_notify_interval = 10
     _ip_lookup_enabled = True
+    _ipdb_enabled = True
+    _ipdb_auto_update = True
+    _ipdb_update_interval_hours = 24
+    _ipdb_dir = ""
+    _ipdb_country_url = DEFAULT_IPDB_COUNTRY_URL
+    _ipdb_asn_url = DEFAULT_IPDB_ASN_URL
     _play_notify = True
     _play_notify_users: dict[str, bool] = {}
     _play_notify_snapshot: dict[str, Any] | None = None
@@ -98,6 +113,7 @@ class tvhhelper(_PluginBase):
     _tvh_users_cache: TimedValueCache | None = None
     _webhook_program_cache: TimedValueCache | None = None
     _playback_history: list[dict[str, Any]] = []
+    _ipdb_update_running = False
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -119,6 +135,20 @@ class tvhhelper(_PluginBase):
             self._check_interval = normalize_interval(config.get("check_interval"), 60, 30)
             self._play_notify_interval = normalize_interval(config.get("play_notify_interval"), 10, 5)
             self._ip_lookup_enabled = bool(config.get("ip_lookup_enabled", True))
+            self._ipdb_enabled = bool(config.get("ipdb_enabled", True))
+            self._ipdb_auto_update = bool(config.get("ipdb_auto_update", True))
+            self._ipdb_update_interval_hours = self.__to_int(config.get("ipdb_update_interval_hours"), 24)
+            self._ipdb_dir = config.get("ipdb_dir") or self.__default_ipdb_dir()
+            self._ipdb_country_url = self.__normalize_ipdb_url(
+                config.get("ipdb_country_url"),
+                DEFAULT_IPDB_COUNTRY_URL,
+                LEGACY_IPDB_COUNTRY_URLS,
+            )
+            self._ipdb_asn_url = self.__normalize_ipdb_url(
+                config.get("ipdb_asn_url"),
+                DEFAULT_IPDB_ASN_URL,
+                LEGACY_IPDB_ASN_URLS,
+            )
             self._play_notify, self._play_notify_users = resolve_play_notify_settings(
                 self._play_notify,
                 self._play_notify_users,
@@ -131,6 +161,8 @@ class tvhhelper(_PluginBase):
         self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._play_notify_snapshot = None
         self._playback_history = []
+        if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
+            self.__start_ipdb_update_async()
         self.__update_config()
 
     def __reset_runtime_defaults(self):
@@ -150,6 +182,12 @@ class tvhhelper(_PluginBase):
         self._check_interval = 60
         self._play_notify_interval = 10
         self._ip_lookup_enabled = True
+        self._ipdb_enabled = True
+        self._ipdb_auto_update = True
+        self._ipdb_update_interval_hours = 24
+        self._ipdb_dir = self.__default_ipdb_dir()
+        self._ipdb_country_url = DEFAULT_IPDB_COUNTRY_URL
+        self._ipdb_asn_url = DEFAULT_IPDB_ASN_URL
         self._play_notify = True
         self._play_notify_users = {}
         self._play_notify_snapshot = None
@@ -159,6 +197,7 @@ class tvhhelper(_PluginBase):
         self._tvh_users_cache = None
         self._webhook_program_cache = None
         self._playback_history = []
+        self._ipdb_update_running = False
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -185,9 +224,27 @@ class tvhhelper(_PluginBase):
             "check_interval": self._check_interval,
             "play_notify_interval": self._play_notify_interval,
             "ip_lookup_enabled": self._ip_lookup_enabled,
+            "ipdb_enabled": self._ipdb_enabled,
+            "ipdb_auto_update": self._ipdb_auto_update,
+            "ipdb_update_interval_hours": self._ipdb_update_interval_hours,
+            "ipdb_dir": self._ipdb_dir,
+            "ipdb_country_url": self._ipdb_country_url,
+            "ipdb_asn_url": self._ipdb_asn_url,
             "play_notify": self._play_notify,
             "play_notify_users": self._play_notify_users,
         })
+
+    @staticmethod
+    def __default_ipdb_dir() -> str:
+        config_dir = getattr(settings, "CONFIG_DIR", "/config") or "/config"
+        return str(Path(config_dir) / "plugins" / "tvhhelper" / "ipdb")
+
+    @staticmethod
+    def __normalize_ipdb_url(value: Any, default: str, legacy_urls: set[str]) -> str:
+        url = str(value or "").strip()
+        if not url or url in legacy_urls:
+            return default
+        return url
 
     def get_state(self) -> bool:
         return self._enabled
@@ -462,16 +519,7 @@ class tvhhelper(_PluginBase):
 
     @staticmethod
     def __append_button_text(text: str, buttons: list[list[dict]] | None) -> str:
-        labels = []
-        for row in buttons or []:
-            for button in row or []:
-                label = button.get("text") if isinstance(button, dict) else None
-                if label:
-                    labels.append(str(label))
-        if not labels:
-            return text
-        block = "按钮文字:\n```text\n" + "\n".join(labels) + "\n```"
-        return f"{text}\n\n{block}" if text else block
+        return text
 
     def __delete_original(self, event: Event) -> bool:
         message_id = event.event_data.get("original_message_id")
@@ -768,6 +816,14 @@ class tvhhelper(_PluginBase):
                 "func": self.check_playback,
                 "kwargs": {},
             })
+        if self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
+            services.append({
+                "id": "tvhhelper_ipdb_update",
+                "name": "TVH IP库更新",
+                "trigger": IntervalTrigger(hours=max(1, self._ipdb_update_interval_hours), timezone=settings.TZ),
+                "func": self.update_ipdb,
+                "kwargs": {},
+            })
         return services
 
     def get_api(self) -> List[Dict[str, Any]]:
@@ -824,7 +880,7 @@ class tvhhelper(_PluginBase):
         )
         image = select_tvh_webhook_image(payload, self._tvh_url) if self._webhook_logo_enrich else None
         logger.info(f"收到TVH Webhook: {payload.get('event')}")
-        if self._webhook_notify:
+        if self._webhook_notify and self.__should_send_webhook_notification(payload):
             message = {
                 "mtype": NotificationType.Plugin,
                 "title": title,
@@ -835,6 +891,16 @@ class tvhhelper(_PluginBase):
                 message["image"] = image
             self.post_message(**message)
         return schemas.Response(success=True, message="Webhook已接收")
+
+    def __should_send_webhook_notification(self, payload: Dict[str, Any]) -> bool:
+        event = str(payload.get("event") or "")
+        if not event.startswith("playback."):
+            return True
+        self.__sync_play_notify_config()
+        if not self._play_notify_users:
+            return True
+        username = str(payload.get("user") or "")
+        return bool(username and self._play_notify_users.get(username))
 
     def __enrich_webhook_program(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self._webhook_program_enrich and not self._webhook_logo_enrich:
@@ -857,14 +923,95 @@ class tvhhelper(_PluginBase):
     def __lookup_webhook_ip(self, ip: Any) -> tuple[str | None, str | None]:
         if not self._ip_lookup_enabled or not ip or not self._ip_location_cache:
             return None, None
+        ip_text = str(ip)
         try:
-            return fetch_ip_location_cached(
-                str(ip),
+            cached = self._ip_location_cache.get(ip_text)
+            if cached is not None:
+                return cached
+            local_result = self.__lookup_local_ip(ip_text)
+            if all(local_result) and not self.__is_weak_ip_location(local_result[0]):
+                self._ip_location_cache.set(ip_text, local_result)
+                return local_result
+            online_result = fetch_ip_location_cached(
+                ip_text,
+                resolver=lambda value: fetch_ip_location(value, timeout=5),
                 cache=self._ip_location_cache,
             )
+            result = self.__merge_ip_lookup_result(local_result, online_result)
+            if any(result):
+                self._ip_location_cache.set(ip_text, result)
+            return result
         except Exception as err:
             logger.debug(f"TVH Webhook IP归属地查询失败: {ip} - {err}")
             return None, None
+
+    @staticmethod
+    def __merge_ip_lookup_result(
+        local_result: tuple[str | None, str | None],
+        online_result: tuple[str | None, str | None],
+    ) -> tuple[str | None, str | None]:
+        local_location, local_isp = local_result
+        online_location, online_isp = online_result
+        location = online_location if tvhhelper.__is_weak_ip_location(local_location) else local_location
+        return location or online_location, local_isp or online_isp
+
+    @staticmethod
+    def __is_weak_ip_location(location: str | None) -> bool:
+        if not location:
+            return True
+        text = str(location).strip()
+        return len(text) <= 3 and text.isupper()
+
+    def __lookup_local_ip(self, ip: str) -> tuple[str | None, str | None]:
+        if not self._ipdb_enabled:
+            return None, None
+        try:
+            root = Path(self._ipdb_dir or self.__default_ipdb_dir())
+            return lookup_ip_location_from_mmdb(
+                ip,
+                country_db=root / "country.mmdb",
+                asn_db=root / "asn.mmdb",
+            )
+        except Exception as err:
+            logger.debug(f"TVH 本地IP库查询失败: {ip} - {err}")
+            return None, None
+
+    def update_ipdb(self):
+        if not self._ip_lookup_enabled or not self._ipdb_enabled or not self._ipdb_auto_update:
+            return
+        if self._ipdb_update_running:
+            return
+        self._ipdb_update_running = True
+        try:
+            result = ensure_ip_location_db(
+                self._ipdb_dir or self.__default_ipdb_dir(),
+                country_url=self._ipdb_country_url or DEFAULT_IPDB_COUNTRY_URL,
+                asn_url=self._ipdb_asn_url or DEFAULT_IPDB_ASN_URL,
+                max_age_hours=max(1, self._ipdb_update_interval_hours),
+                proxy=getattr(settings, "PROXY_HOST", "") or getattr(settings, "GITHUB_PROXY", ""),
+            )
+            if result.get("updated"):
+                if self._ip_location_cache:
+                    self._ip_location_cache.clear()
+                logger.info(f"TVH IP库更新完成: {result.get('directory')}")
+            elif result.get("success"):
+                logger.debug(f"TVH IP库无需更新: {result.get('directory')}")
+            else:
+                logger.warning(f"TVH IP库更新失败: {result.get('errors')}")
+        except Exception as err:
+            logger.warning(f"TVH IP库更新失败: {err}")
+        finally:
+            self._ipdb_update_running = False
+
+    def __start_ipdb_update_async(self):
+        if self._ipdb_update_running:
+            return
+        thread = threading.Thread(
+            target=self.update_ipdb,
+            name="tvhhelper-ipdb-update",
+            daemon=True,
+        )
+        thread.start()
 
     def __record_playback_history_from_webhook(
         self,
@@ -1162,6 +1309,22 @@ class tvhhelper(_PluginBase):
                                 "props": {"cols": 12, "md": 4},
                                 "content": [{
                                     "component": "VSwitch",
+                                    "props": {"model": "ipdb_enabled", "label": "本地IP库优先"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "ipdb_auto_update", "label": "自动更新IP库"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
                                     "props": {"model": "play_notify", "label": "播放通知"},
                                 }],
                             },
@@ -1268,6 +1431,43 @@ class tvhhelper(_PluginBase):
                                     "props": {"model": "play_notify_interval", "label": "播放通知间隔秒", "type": "number"},
                                 }],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "ipdb_update_interval_hours", "label": "IP库更新间隔小时", "type": "number"},
+                                }],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "ipdb_dir", "label": "本地IP库目录"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "ipdb_country_url", "label": "国家/地区库下载地址"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {"model": "ipdb_asn_url", "label": "ASN组织库下载地址"},
+                                }],
+                            },
                         ],
                     },
                     {
@@ -1306,7 +1506,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。节目补全用于修正当前EPG标题，LOGO图片用于发送通知图片。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。IP归属优先查本地IP库，未命中才在线兜底。",
                         },
                     },
                 ],
@@ -1328,6 +1528,12 @@ class tvhhelper(_PluginBase):
             "check_interval": 60,
             "play_notify_interval": 10,
             "ip_lookup_enabled": True,
+            "ipdb_enabled": True,
+            "ipdb_auto_update": True,
+            "ipdb_update_interval_hours": 24,
+            "ipdb_dir": self.__default_ipdb_dir(),
+            "ipdb_country_url": DEFAULT_IPDB_COUNTRY_URL,
+            "ipdb_asn_url": DEFAULT_IPDB_ASN_URL,
             "play_notify": True,
             "play_notify_users": {},
         }

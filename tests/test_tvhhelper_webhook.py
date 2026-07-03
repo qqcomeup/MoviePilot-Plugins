@@ -58,7 +58,11 @@ def install_moviepilot_stubs(monkeypatch):
         "app": app,
         "app.schemas": schemas,
         "app.core": types.ModuleType("app.core"),
-        "app.core.config": types.SimpleNamespace(settings=types.SimpleNamespace(API_TOKEN="api-token", TZ="Asia/Shanghai")),
+        "app.core.config": types.SimpleNamespace(settings=types.SimpleNamespace(
+            API_TOKEN="api-token",
+            CONFIG_DIR="/config",
+            TZ="Asia/Shanghai",
+        )),
         "app.core.event": types.SimpleNamespace(eventmanager=EventManager(), Event=Event),
         "app.db": types.ModuleType("app.db"),
         "app.db.systemconfig_oper": types.SimpleNamespace(SystemConfigOper=lambda: types.SimpleNamespace(delete=lambda key: None, get=lambda key: {})),
@@ -80,7 +84,9 @@ def import_tvhhelper(monkeypatch):
     monkeypatch.syspath_prepend(str(plugin_root))
     sys.modules.pop("tvhhelper", None)
     sys.modules.pop("tvhhelper.core", None)
-    return importlib.import_module("tvhhelper")
+    module = importlib.import_module("tvhhelper")
+    monkeypatch.setattr(module.tvhhelper, "update_ipdb", lambda self: None)
+    return module
 
 
 def test_receive_webhook_posts_plugin_notification(monkeypatch):
@@ -110,6 +116,29 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
     assert plugin.messages[0]["mtype"] == "Plugin"
     assert plugin.messages[0]["title"] == "TVH开始播放"
     assert "频道: News" in plugin.messages[0]["text"]
+
+
+def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "play_notify_users": {"ck": True},
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "user": "other",
+            "channel": "News",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin.messages == []
 
 
 def test_receive_webhook_enriches_ip_location(monkeypatch):
@@ -275,16 +304,14 @@ def test_receive_webhook_suppresses_image_when_logo_disabled(monkeypatch):
     assert "image" not in plugin.messages[0]
 
 
-def test_button_text_is_appended_for_copy(monkeypatch):
+def test_button_text_is_not_appended(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     text = module.tvhhelper._tvhhelper__append_button_text("请选择：", [[
         {"text": "用户链接"},
         {"text": "用户管理"},
     ]])
 
-    assert "按钮文字:" in text
-    assert "用户链接" in text
-    assert "用户管理" in text
+    assert text == "请选择："
 
 
 def test_page_does_not_show_webhook_copy_template(monkeypatch):

@@ -1,5 +1,6 @@
 import json
 import ipaddress
+import os
 import secrets
 import string
 import time
@@ -11,6 +12,30 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+
+
+DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
+DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb"
+LEGACY_IPDB_COUNTRY_URLS = {
+    "https://github.com/sapics/ip-location-db/releases/download/latest/dbip-country.mmdb",
+}
+LEGACY_IPDB_ASN_URLS = {
+    "https://github.com/sapics/ip-location-db/releases/download/latest/iptoasn-asn.mmdb",
+}
+IPDB_COUNTRY_FILENAME = "country.mmdb"
+IPDB_ASN_FILENAME = "asn.mmdb"
+IPDB_STATUS_FILENAME = "status.json"
+COUNTRY_CODE_NAMES = {
+    "CN": "China",
+    "HK": "Hong Kong",
+    "MO": "Macao",
+    "TW": "Taiwan",
+    "SG": "Singapore",
+    "JP": "Japan",
+    "KR": "South Korea",
+    "US": "United States",
+    "GB": "United Kingdom",
+}
 
 
 @dataclass(frozen=True)
@@ -661,13 +686,15 @@ def _format_tvh_playback_webhook(
         _string_or_none(payload.get("input_kbps")),
         _string_or_none(payload.get("output_kbps")),
     )
-    main_lines = _compact_lines([
+    program_lines = _compact_lines([
         f"频道: {payload.get('channel')}" if payload.get("channel") else None,
         f"节目: {payload.get('program_title')}" if payload.get("program_title") else None,
         f"节目时间: {program_window}" if program_window else None,
         f"节目时长: {program_duration}" if program_duration else None,
         f"节目进度: {program_progress}" if program_progress else None,
         f"节目内容: {program_content}" if program_content else None,
+    ])
+    playback_lines = _compact_lines([
         f"用户: {payload.get('user')}" if payload.get("user") else None,
         f"来源: {source}" if source else None,
         f"客户端: {payload.get('client')}" if payload.get("client") else None,
@@ -676,6 +703,10 @@ def _format_tvh_playback_webhook(
         f"当前时长: {duration}" if event == "playback.start" and duration else None,
         f"播放时长: {duration}" if event == "playback.stop" and duration else None,
     ])
+    main_lines = list(program_lines)
+    if main_lines and playback_lines:
+        main_lines.append("")
+    main_lines.extend(playback_lines)
     tech_lines = _compact_lines([
         f"服务: {_short_service_name(str(payload.get('service')))}" if payload.get("service") else None,
         f"订阅ID: {payload.get('subscription_id')}" if payload.get("subscription_id") is not None else None,
@@ -1388,6 +1419,90 @@ def fetch_ip_location(ip: str, timeout: int = 2) -> tuple[str | None, str | None
     return location or fallback_location, isp
 
 
+def ensure_ip_location_db(
+    directory: str | Path,
+    country_url: str = DEFAULT_IPDB_COUNTRY_URL,
+    asn_url: str = DEFAULT_IPDB_ASN_URL,
+    max_age_hours: int = 24,
+    proxy: str | None = None,
+    now=None,
+    opener=None,
+) -> dict:
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    now_value = float((now or time.time)())
+    country_path = root / IPDB_COUNTRY_FILENAME
+    asn_path = root / IPDB_ASN_FILENAME
+    status_path = root / IPDB_STATUS_FILENAME
+    max_age_seconds = max(1, int(max_age_hours or 24)) * 3600
+    status = _read_ipdb_status(status_path)
+    updated_at = _to_float(status.get("updated_at"))
+    urls_unchanged = (
+        status.get("country_url") == country_url
+        and status.get("asn_url") == asn_url
+    )
+    if (
+        country_path.exists()
+        and asn_path.exists()
+        and updated_at
+        and urls_unchanged
+        and now_value - updated_at < max_age_seconds
+    ):
+        return {
+            "success": True,
+            "updated": False,
+            "message": "IP库未到更新时间",
+            "directory": str(root),
+            "updated_at": updated_at,
+        }
+
+    downloaded = []
+    errors = []
+    for url, target in ((country_url, country_path), (asn_url, asn_path)):
+        if not url:
+            errors.append(f"{target.name}: 未配置下载地址")
+            continue
+        try:
+            _download_file(url, target, proxy=proxy, opener=opener)
+            downloaded.append(target.name)
+        except Exception as err:
+            errors.append(f"{target.name}: {err}")
+    success = country_path.exists() and asn_path.exists()
+    if success:
+        _write_ipdb_status(status_path, {
+            "updated_at": now_value,
+            "country_url": country_url,
+            "asn_url": asn_url,
+            "country_size": country_path.stat().st_size,
+            "asn_size": asn_path.stat().st_size,
+        })
+    return {
+        "success": success,
+        "updated": bool(downloaded),
+        "message": "IP库更新完成" if success else "IP库更新失败",
+        "downloaded": downloaded,
+        "errors": errors,
+        "directory": str(root),
+        "updated_at": now_value if success else updated_at,
+    }
+
+
+def lookup_ip_location_from_mmdb(
+    ip: str,
+    country_db: str | Path | None = None,
+    asn_db: str | Path | None = None,
+    maxminddb_module=None,
+) -> tuple[str | None, str | None]:
+    if not _is_public_ip(str(ip)):
+        return None, None
+    maxminddb_module = maxminddb_module or _import_maxminddb()
+    if not maxminddb_module:
+        return None, None
+    location = _lookup_mmdb_record(country_db, ip, maxminddb_module, _extract_mmdb_location)
+    isp = _lookup_mmdb_record(asn_db, ip, maxminddb_module, _extract_mmdb_isp)
+    return location, isp
+
+
 def fetch_ip_location_cached(
     ip: str,
     resolver=None,
@@ -1398,7 +1513,10 @@ def fetch_ip_location_cached(
     cached = cache.get(ip)
     if cached is not None:
         return _split_location_result(cached)
-    return _split_location_result(cache.set(ip, resolver(ip)))
+    resolved = _split_location_result(resolver(ip))
+    if any(resolved):
+        cache.set(ip, resolved)
+    return resolved
 
 
 def fetch_ip_location_from_pconline(ip: str, timeout: int = 2) -> str | None:
@@ -1462,6 +1580,163 @@ def fetch_ip_location_from_ip_api(ip: str, timeout: int = 2) -> tuple[str | None
     ]
     isp = payload.get("isp") or payload.get("org")
     return " ".join(dict.fromkeys(parts)) or None, str(isp).strip() if isp else None
+
+
+def _read_ipdb_status(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_ipdb_status(path: Path, status: dict) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def _download_file(url: str, target: Path, proxy: str | None = None, opener=None) -> None:
+    opener = opener or _build_url_opener(proxy)
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with opener(url, timeout=60) as response, tmp_path.open("wb") as output:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+        if tmp_path.stat().st_size <= 0:
+            raise TvhError("下载文件为空")
+        os.replace(tmp_path, target)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _build_url_opener(proxy: str | None = None):
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return urllib.request.urlopen
+    handler = urllib.request.ProxyHandler({
+        "http": proxy,
+        "https": proxy,
+    })
+    opener = urllib.request.build_opener(handler)
+    return opener.open
+
+
+def _import_maxminddb():
+    try:
+        import maxminddb  # type: ignore
+        return maxminddb
+    except Exception:
+        return None
+
+
+def _lookup_mmdb_record(path: str | Path | None, ip: str, maxminddb_module, extractor):
+    if not path:
+        return None
+    db_path = Path(path)
+    if not db_path.exists():
+        return None
+    try:
+        with maxminddb_module.open_database(str(db_path)) as reader:
+            record = reader.get(str(ip))
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    return extractor(record)
+
+
+def _extract_mmdb_location(record: dict) -> str | None:
+    country = _extract_mmdb_named_value(record.get("country"))
+    registered_country = _extract_mmdb_named_value(record.get("registered_country"))
+    subdivisions = []
+    for item in record.get("subdivisions") or []:
+        value = _extract_mmdb_named_value(item)
+        if value:
+            subdivisions.append(value)
+    city = _extract_mmdb_named_value(record.get("city"))
+    direct_parts = [
+        _string_or_none(record.get(key))
+        for key in ("country_name", "region_name", "city_name", "region")
+    ]
+    country_code = _string_or_none(record.get("country_code"))
+    if country_code:
+        direct_parts.append(COUNTRY_CODE_NAMES.get(country_code.upper(), country_code.upper()))
+    parts = [country or registered_country] + subdivisions + [city] + direct_parts
+    return " ".join(dict.fromkeys(part for part in parts if part)) or None
+
+
+def _extract_mmdb_isp(record: dict) -> str | None:
+    for key in (
+        "autonomous_system_organization",
+        "organization",
+        "org",
+        "isp",
+        "as_name",
+        "as_organization",
+    ):
+        value = _string_or_none(record.get(key))
+        if value:
+            return value
+    return _find_first_string_by_keys(record, {
+        "autonomous_system_organization",
+        "organization",
+        "org",
+        "isp",
+        "as_name",
+        "as_organization",
+    })
+
+
+def _extract_mmdb_named_value(value) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if not isinstance(value, dict):
+        return None
+    names = value.get("names")
+    if isinstance(names, dict):
+        for key in ("zh-CN", "zh-Hans", "en"):
+            text = _string_or_none(names.get(key))
+            if text:
+                return text
+    for key in ("name", "country_name", "city_name"):
+        text = _string_or_none(value.get(key))
+        if text:
+            return text
+    return None
+
+
+def _find_first_string_by_keys(value, keys: set[str]) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys:
+                text = _string_or_none(item)
+                if text:
+                    return text
+            nested = _find_first_string_by_keys(item, keys)
+            if nested:
+                return nested
+    elif isinstance(value, list):
+        for item in value:
+            nested = _find_first_string_by_keys(item, keys)
+            if nested:
+                return nested
+    return None
+
+
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _split_location_result(result) -> tuple[str | None, str | None]:
