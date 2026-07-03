@@ -181,6 +181,38 @@ def test_receive_webhook_enriches_program_and_image(monkeypatch):
     assert plugin.messages[0]["image"] == "https://example.com/tvb1.png"
 
 
+def test_receive_webhook_records_playback_history(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": False,
+        "webhook_secret": "secret",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "timestamp": 1782819002,
+            "channel": "翡翠台",
+            "program_title": "交易現場[粵]",
+            "user": "ck",
+            "ip": "151.243.229.106",
+            "client": "curl",
+        },
+        x_tvh_token="secret",
+    )
+    page = plugin.get_page()
+
+    assert response.success is True
+    assert page[0]["component"] == "VTextarea"
+    text = page[0]["props"]["modelValue"]
+    assert "最近用户播放记录" not in text
+    assert "翡翠台" in text
+    assert "交易現場[粵]" in text
+    assert "ck" in text
+
+
 def test_receive_webhook_uses_payload_image_when_logo_enabled(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()

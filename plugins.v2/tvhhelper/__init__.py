@@ -65,7 +65,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.49"
+    plugin_version = "0.1.50"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -97,6 +97,7 @@ class tvhhelper(_PluginBase):
     _ip_location_cache: TimedValueCache | None = None
     _tvh_users_cache: TimedValueCache | None = None
     _webhook_program_cache: TimedValueCache | None = None
+    _playback_history: list[dict[str, Any]] = []
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -129,6 +130,7 @@ class tvhhelper(_PluginBase):
         self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
         self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._play_notify_snapshot = None
+        self._playback_history = []
         self.__update_config()
 
     def __reset_runtime_defaults(self):
@@ -156,6 +158,7 @@ class tvhhelper(_PluginBase):
         self._ip_location_cache = None
         self._tvh_users_cache = None
         self._webhook_program_cache = None
+        self._playback_history = []
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -708,6 +711,7 @@ class tvhhelper(_PluginBase):
                 logger.info(
                     f"{title}: {subscription.username} / {subscription.channel} -> {next_subscription.channel}"
                 )
+                self.__record_playback_history_from_switch(subscription, next_subscription)
                 self.post_message(
                     mtype=NotificationType.Plugin,
                     title=title,
@@ -718,6 +722,7 @@ class tvhhelper(_PluginBase):
                 continue
             title, text = format_playback_notification(event_name, subscription)
             logger.info(f"{title}: {subscription.username} / {subscription.channel}")
+            self.__record_playback_history_from_subscription(event_name, subscription)
             self.post_message(
                 mtype=NotificationType.Plugin,
                 title=title,
@@ -811,6 +816,7 @@ class tvhhelper(_PluginBase):
 
         payload = self.__enrich_webhook_program(payload)
         ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
+        self.__record_playback_history_from_webhook(payload, ip_location, ip_isp)
         title, text = format_tvh_webhook_message(
             payload,
             ip_location=ip_location,
@@ -860,6 +866,94 @@ class tvhhelper(_PluginBase):
             logger.debug(f"TVH Webhook IP归属地查询失败: {ip} - {err}")
             return None, None
 
+    def __record_playback_history_from_webhook(
+        self,
+        payload: Dict[str, Any],
+        ip_location: str | None = None,
+        ip_isp: str | None = None,
+    ) -> None:
+        event = str(payload.get("event") or "")
+        if not event.startswith("playback."):
+            return
+        action = "开始" if event == "playback.start" else "停止" if event == "playback.stop" else event
+        duration = ""
+        if event == "playback.stop":
+            duration = self.__format_duration_between(payload.get("started"), payload.get("timestamp"))
+        self.__record_playback_history({
+            "time": self.__format_history_time(payload.get("timestamp")),
+            "event": action,
+            "user": payload.get("user") or "",
+            "channel": payload.get("channel") or "",
+            "program": payload.get("program_title") or "",
+            "source": self.__format_history_source(payload.get("ip"), ip_location, ip_isp),
+            "client": payload.get("client") or "",
+            "duration": duration,
+        })
+
+    def __record_playback_history_from_subscription(self, event_name: str, subscription: Any) -> None:
+        action = "开始" if event_name == "start" else "停止" if event_name == "stop" else str(event_name)
+        duration = ""
+        if event_name == "stop":
+            duration = self.__format_duration_between(subscription.started, time.time())
+        self.__record_playback_history({
+            "time": self.__format_history_time(time.time()),
+            "event": action,
+            "user": subscription.username or "",
+            "channel": subscription.channel or "",
+            "program": subscription.title or "",
+            "source": self.__format_history_source(
+                subscription.peer or subscription.hostname,
+                subscription.location or subscription.hostname_location,
+                subscription.isp or subscription.hostname_isp,
+            ),
+            "client": subscription.user_agent or subscription.client or "",
+            "duration": duration,
+        })
+
+    def __record_playback_history_from_switch(self, old_subscription: Any, new_subscription: Any) -> None:
+        self.__record_playback_history({
+            "time": self.__format_history_time(time.time()),
+            "event": "切台",
+            "user": new_subscription.username or old_subscription.username or "",
+            "channel": f"{old_subscription.channel} -> {new_subscription.channel}",
+            "program": new_subscription.title or "",
+            "source": self.__format_history_source(
+                new_subscription.peer or new_subscription.hostname,
+                new_subscription.location or new_subscription.hostname_location,
+                new_subscription.isp or new_subscription.hostname_isp,
+            ),
+            "client": new_subscription.user_agent or new_subscription.client or "",
+            "duration": "",
+        })
+
+    def __record_playback_history(self, record: dict[str, Any]) -> None:
+        self._playback_history.insert(0, record)
+        del self._playback_history[50:]
+
+    @staticmethod
+    def __format_history_time(value: Any) -> str:
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value or time.time())))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return str(value or "")
+
+    @staticmethod
+    def __format_duration_between(started: Any, stopped: Any) -> str:
+        try:
+            seconds = max(0, int(float(stopped or 0) - float(started or 0)))
+        except (TypeError, ValueError):
+            return ""
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def __format_history_source(ip: Any, location: str | None = None, isp: str | None = None) -> str:
+        if not ip:
+            return ""
+        meta = " / ".join(part for part in [location, isp] if part)
+        return f"{ip} ({meta})" if meta else str(ip)
+
     def __verify_webhook_signature(
         self,
         payload: Dict[str, Any],
@@ -893,16 +987,44 @@ class tvhhelper(_PluginBase):
         return None
 
     def get_page(self) -> List[dict]:
+        if not self._playback_history:
+            return [
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": "暂无最近用户播放记录。",
+                    },
+                }
+            ]
         return [
             {
-                "component": "VAlert",
+                "component": "VTextarea",
                 "props": {
-                    "type": "info",
-                    "variant": "tonal",
-                    "text": "请通过 MoviePilot 机器人命令 /tvh 打开功能菜单。",
+                    "modelValue": self.__format_playback_history_text(),
+                    "label": "最近用户播放记录",
+                    "rows": 18,
+                    "readonly": True,
+                    "auto-grow": True,
                 },
             }
         ]
+
+    def __format_playback_history_text(self) -> str:
+        lines = ["时间 | 事件 | 用户 | 频道 | 节目 | 来源 | 客户端 | 时长"]
+        for item in self._playback_history:
+            lines.append(" | ".join([
+                str(item.get("time") or ""),
+                str(item.get("event") or ""),
+                str(item.get("user") or ""),
+                str(item.get("channel") or ""),
+                str(item.get("program") or ""),
+                str(item.get("source") or ""),
+                str(item.get("client") or ""),
+                str(item.get("duration") or ""),
+            ]))
+        return "\n".join(lines)
 
     def stop_service(self):
         pass
