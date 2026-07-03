@@ -833,6 +833,43 @@ def test_enrich_tvh_webhook_program_overrides_program_fields(monkeypatch):
     assert enriched["channel_icon"] == "https://example.com/payload-logo.png"
 
 
+def test_enrich_tvh_webhook_program_respects_split_switches(monkeypatch):
+    def fake_fetch(*args, **kwargs):
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+        "program_title": "Inside the Stock Exchange[Can]",
+    }
+
+    logo_only = enrich_tvh_webhook_program(
+        payload,
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        enrich_program=False,
+        enrich_logo=True,
+    )
+    program_only = enrich_tvh_webhook_program(
+        payload,
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        enrich_program=True,
+        enrich_logo=False,
+    )
+
+    assert logo_only["program_title"] == "Inside the Stock Exchange[Can]"
+    assert logo_only["channel_icon"] == "https://example.com/logo.png"
+    assert program_only["program_title"] == "交易現場[粵]"
+    assert "channel_icon" not in program_only
+
+
 def test_select_tvh_webhook_image_prefers_channel_icon():
     image = select_tvh_webhook_image({
         "channel_icon": "imagecache/12",

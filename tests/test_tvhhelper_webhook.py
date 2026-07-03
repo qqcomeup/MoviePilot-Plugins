@@ -163,6 +163,7 @@ def test_receive_webhook_enriches_program_and_image(monkeypatch):
         "webhook_notify": True,
         "webhook_secret": "secret",
         "webhook_program_enrich": True,
+        "webhook_logo_enrich": True,
     })
 
     response = plugin.receive_webhook(
@@ -180,7 +181,34 @@ def test_receive_webhook_enriches_program_and_image(monkeypatch):
     assert plugin.messages[0]["image"] == "https://example.com/tvb1.png"
 
 
-def test_receive_webhook_uses_payload_image_without_enrichment(monkeypatch):
+def test_receive_webhook_uses_payload_image_when_logo_enabled(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "webhook_program_enrich": False,
+        "webhook_logo_enrich": True,
+        "tvh_url": "https://m3u.example.com",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "channel": "翡翠台",
+            "program_title": "新聞提要",
+            "channel_icon": "imagecache/12",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert "节目: 新聞提要" in plugin.messages[0]["text"]
+    assert plugin.messages[0]["image"] == "https://m3u.example.com/imagecache/12"
+
+
+def test_receive_webhook_suppresses_image_when_logo_disabled(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     called = False
 
@@ -196,6 +224,7 @@ def test_receive_webhook_uses_payload_image_without_enrichment(monkeypatch):
         "webhook_notify": True,
         "webhook_secret": "secret",
         "webhook_program_enrich": False,
+        "webhook_logo_enrich": False,
         "tvh_url": "https://m3u.example.com",
     })
 
@@ -203,7 +232,6 @@ def test_receive_webhook_uses_payload_image_without_enrichment(monkeypatch):
         payload={
             "event": "playback.start",
             "channel": "翡翠台",
-            "program_title": "新聞提要",
             "channel_icon": "imagecache/12",
         },
         x_tvh_token="secret",
@@ -211,8 +239,7 @@ def test_receive_webhook_uses_payload_image_without_enrichment(monkeypatch):
 
     assert response.success is True
     assert called is False
-    assert "节目: 新聞提要" in plugin.messages[0]["text"]
-    assert plugin.messages[0]["image"] == "https://m3u.example.com/imagecache/12"
+    assert "image" not in plugin.messages[0]
 
 
 def test_receive_webhook_rejects_bad_secret(monkeypatch):

@@ -65,7 +65,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.47"
+    plugin_version = "0.1.48"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -76,6 +76,7 @@ class tvhhelper(_PluginBase):
     _notify = True
     _webhook_notify = True
     _webhook_program_enrich = True
+    _webhook_logo_enrich = True
     _webhook_secret = ""
     _webhook_hmac_secret = ""
     _webhook_seen_events: TimedValueCache | None = None
@@ -105,6 +106,7 @@ class tvhhelper(_PluginBase):
             self._notify = bool(config.get("notify", True))
             self._webhook_notify = bool(config.get("webhook_notify", True))
             self._webhook_program_enrich = bool(config.get("webhook_program_enrich", True))
+            self._webhook_logo_enrich = bool(config.get("webhook_logo_enrich", True))
             self._webhook_secret = config.get("webhook_secret") or ""
             self._webhook_hmac_secret = config.get("webhook_hmac_secret") or ""
             self._tvh_url = (config.get("tvh_url") or self._tvh_url).rstrip("/")
@@ -134,6 +136,7 @@ class tvhhelper(_PluginBase):
         self._notify = True
         self._webhook_notify = True
         self._webhook_program_enrich = True
+        self._webhook_logo_enrich = True
         self._webhook_secret = ""
         self._webhook_hmac_secret = ""
         self._tvh_url = "http://127.0.0.1:9981"
@@ -167,6 +170,7 @@ class tvhhelper(_PluginBase):
             "notify": self._notify,
             "webhook_notify": self._webhook_notify,
             "webhook_program_enrich": self._webhook_program_enrich,
+            "webhook_logo_enrich": self._webhook_logo_enrich,
             "webhook_secret": self._webhook_secret,
             "webhook_hmac_secret": self._webhook_hmac_secret,
             "tvh_url": self._tvh_url,
@@ -796,7 +800,7 @@ class tvhhelper(_PluginBase):
             ip_location=ip_location,
             ip_isp=ip_isp,
         )
-        image = select_tvh_webhook_image(payload, self._tvh_url)
+        image = select_tvh_webhook_image(payload, self._tvh_url) if self._webhook_logo_enrich else None
         logger.info(f"收到TVH Webhook: {payload.get('event')}")
         if self._webhook_notify:
             message = {
@@ -811,7 +815,7 @@ class tvhhelper(_PluginBase):
         return schemas.Response(success=True, message="Webhook已接收")
 
     def __enrich_webhook_program(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self._webhook_program_enrich:
+        if not self._webhook_program_enrich and not self._webhook_logo_enrich:
             return payload
         try:
             return enrich_tvh_webhook_program(
@@ -821,6 +825,8 @@ class tvhhelper(_PluginBase):
                 self._tvh_pass,
                 cache=self._webhook_program_cache,
                 timeout=2,
+                enrich_program=self._webhook_program_enrich,
+                enrich_logo=self._webhook_logo_enrich,
             )
         except Exception as err:
             logger.debug(f"TVH Webhook节目/LOGO补全失败: {err}")
@@ -870,6 +876,22 @@ class tvhhelper(_PluginBase):
             return "Webhook签名错误"
         return None
 
+    @staticmethod
+    def __webhook_copy_text() -> str:
+        return "\n".join([
+            "Webhook URL模板:",
+            "https://<MoviePilot公网域名>/api/v1/plugin/tvhhelper/webhook?apikey=<MoviePilot API_TOKEN>",
+            "",
+            "TVH增强版建议:",
+            "只开启TVH Helper的Webhook通知，关闭轮询播放通知；原版TVH保留轮询播放通知。",
+            "",
+            "播放字段:",
+            "channel, channel_uuid, channel_icon, program_title, program_start, program_stop, program_summary, program_description",
+            "",
+            "安全字段:",
+            "X-Tvh-Token 或 apikey；启用HMAC时同时发送 X-Tvh-Signature 和 X-Tvh-Signature-Input。",
+        ])
+
     def get_page(self) -> List[dict]:
         return [
             {
@@ -879,7 +901,17 @@ class tvhhelper(_PluginBase):
                     "variant": "tonal",
                     "text": "请通过 MoviePilot 机器人命令 /tvh 打开功能菜单。",
                 },
-            }
+            },
+            {
+                "component": "VTextarea",
+                "props": {
+                    "modelValue": self.__webhook_copy_text(),
+                    "label": "Webhook复制模板",
+                    "rows": 10,
+                    "readonly": True,
+                    "auto-grow": True,
+                },
+            },
         ]
 
     def stop_service(self):
@@ -938,7 +970,15 @@ class tvhhelper(_PluginBase):
                                 "props": {"cols": 12, "md": 4},
                                 "content": [{
                                     "component": "VSwitch",
-                                    "props": {"model": "webhook_program_enrich", "label": "Webhook节目/LOGO补全"},
+                                    "props": {"model": "webhook_program_enrich", "label": "Webhook节目补全"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_logo_enrich", "label": "Webhook LOGO图片"},
                                 }],
                             },
                             {
@@ -1058,8 +1098,27 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。TVH Webhook地址为插件API路径 /webhook；节目/LOGO补全会在新版TVH未直接提供字段时查询TVH API。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。节目补全用于修正当前EPG标题，LOGO图片用于发送通知图片。",
                         },
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [{
+                                    "component": "VTextarea",
+                                    "props": {
+                                        "model": "webhook_copy_text",
+                                        "label": "Webhook复制模板",
+                                        "rows": 10,
+                                        "readonly": True,
+                                        "auto-grow": True,
+                                    },
+                                }],
+                            },
+                        ],
                     },
                 ],
             }
@@ -1068,6 +1127,8 @@ class tvhhelper(_PluginBase):
             "notify": True,
             "webhook_notify": True,
             "webhook_program_enrich": True,
+            "webhook_logo_enrich": True,
+            "webhook_copy_text": self.__webhook_copy_text(),
             "webhook_secret": "",
             "webhook_hmac_secret": "",
             "tvh_url": "http://127.0.0.1:9981",

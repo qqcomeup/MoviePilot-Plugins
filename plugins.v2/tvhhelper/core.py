@@ -1476,13 +1476,21 @@ def enrich_tvh_webhook_program(
     password: str,
     cache: TimedValueCache | None = None,
     timeout: int = 2,
+    enrich_program: bool = True,
+    enrich_logo: bool = True,
 ) -> dict:
     event = str(payload.get("event") or "")
     if not event.startswith("playback."):
         return payload
+    if not enrich_program and not enrich_logo:
+        return payload
     channel = _string_or_none(payload.get("channel"))
     channel_uuid = _string_or_none(payload.get("channel_uuid"))
     if not channel and not channel_uuid:
+        return payload
+    if not enrich_program and enrich_logo and (
+        payload.get("channel_icon") or payload.get("program_image")
+    ):
         return payload
 
     cache_key = "|".join([channel_uuid or "", channel or ""])
@@ -1505,7 +1513,11 @@ def enrich_tvh_webhook_program(
     for key, value in metadata.items():
         if value is None or value == "":
             continue
-        if key.startswith("program_") or not enriched.get(key):
+        if key.startswith("program_") and enrich_program:
+            enriched[key] = value
+        elif key in ("channel_icon", "program_image") and enrich_logo and not enriched.get(key):
+            enriched[key] = value
+        elif key not in ("channel_icon", "program_image") and not key.startswith("program_") and not enriched.get(key):
             enriched[key] = value
     return enriched
 
