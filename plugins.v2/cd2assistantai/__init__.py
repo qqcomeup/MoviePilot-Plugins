@@ -17,21 +17,21 @@ from app.plugins import _PluginBase
 from app.schemas import NotificationType
 from app.schemas.types import EventType
 
-class Cd2Assistant(_PluginBase):
+class Cd2AssistantAI(_PluginBase):
     # 插件名称
-    plugin_name = "CloudDrive2助手"
+    plugin_name = "CloudDrive2助手AI"
     # 插件描述
     plugin_desc = "监控上传任务，检测是否有异常，发送通知。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "2.0.6"
+    plugin_version = "2.0.7"
     # 插件作者
-    plugin_author = "thsrite"
+    plugin_author = "thsrite, qqcomeup"
     # 作者主页
     author_url = "https://github.com/thsrite"
     # 插件配置项ID前缀
-    plugin_config_prefix = "cd2assistant_"
+    plugin_config_prefix = "cd2assistantai_"
     # 加载顺序
     plugin_order = 5
     # 可使用的用户级别

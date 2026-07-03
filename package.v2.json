@@ -16,6 +16,20 @@
       "v1.7.6": "新增TV剧集入库聚合功能(防刷屏)；⚡️ 恢复全消息类型支持(登录/评分/测试/播放控制)；🎨 优化通知图标为高清官方源；🔄 融合魔牛插件逻辑同时保留个人排班风格。"
     }
   },
+  "cd2assistantai": {
+    "name": "CloudDrive2助手AI",
+    "description": "监控 CloudDrive2 上传任务，检测异常并发送通知，使用独立插件ID避免与原版冲突。",
+    "labels": "CloudDrive2,通知,工具",
+    "version": "2.0.7",
+    "release": true,
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
+    "author": "thsrite, qqcomeup",
+    "level": 2,
+    "history": {
+      "v2.0.7": "改为独立插件ID cd2assistantai，并使用独立配置前缀 cd2assistantai_，避免与原版 cd2assistant 冲突。",
+      "v2.0.6": "同步原版 CloudDrive2 助手逻辑。"
+    }
+  },
   "tvhhelper": {
     "name": "TVH Helper",
     "description": "Control TVHeadend from MoviePilot bot: status, playback notifications, Webhook, DVB adapters and user links.",
