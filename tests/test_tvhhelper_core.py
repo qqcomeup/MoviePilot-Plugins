@@ -35,10 +35,13 @@ from core import (
     fetch_ip_location_cached,
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
+    enrich_tvh_webhook_program,
+    fetch_tvh_channel_program,
     fetch_tvh_status_bundle,
     detect_playback_events,
     format_playback_notification,
     format_playback_switch_notification,
+    format_tvh_webhook_message,
     is_real_playback_subscription,
     is_playback_switch_pair,
     resolve_play_notify_settings,
@@ -65,6 +68,7 @@ from core import (
     scan_dvb_adapters,
     restart_tvh_server,
     set_tvh_user_enabled,
+    select_tvh_webhook_image,
 )
 
 
@@ -673,6 +677,264 @@ def test_playback_stop_notification_includes_stop_time_and_total_duration():
     assert "开始: 2026-07-01 23:30:00" in text
     assert "停止: 2026-07-01 23:45:10" in text
     assert "时长: 00:15:10" in text
+
+
+def test_tvh_webhook_message_formats_test_event():
+    title, text = format_tvh_webhook_message({
+        "event": "system.webhooktest",
+        "timestamp": 1782819002,
+        "server": {"name": "Living Room TVH"},
+        "message": "Webhook test message from Tvheadend",
+    })
+
+    assert title == "TVH Webhook测试"
+    assert "事件: system.webhooktest" in text
+    assert "服务器: Living Room TVH" in text
+    assert "Webhook test message from Tvheadend" in text
+
+
+def test_tvh_webhook_message_formats_playback_event():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "server": {"name": "Living Room TVH"},
+        "user": "ck",
+        "ip": "151.243.229.106",
+        "client": "VLC",
+        "channel": "News",
+        "title": "HTTP",
+        "service": "Adapter / Service",
+        "subscription_id": 12,
+        "input_kbps": 1000000,
+        "output_kbps": 2000000,
+    }, ip_location="香港 葵青区", ip_isp="Zouter Limited")
+
+    assert title == "TVH开始播放"
+    assert "频道: News" in text
+    assert "用户: ck" in text
+    assert "来源: 151.243.229.106 (香港 葵青区 / Zouter Limited)" in text
+    assert "开始: 2026-06-30 19:29:02" in text
+    assert "当前时长: 00:01:00" in text
+    assert "技术信息" in text
+    assert "输入/输出: 1/2 Mb/s" in text
+
+
+def test_tvh_webhook_message_formats_program_metadata():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782820500,
+    })
+
+    assert title == "TVH开始播放"
+    assert "频道: 翡翠台" in text
+    assert "节目: 交易現場[粵]" in text
+    assert "节目时间: 2026-06-30 19:25:00 - 2026-06-30 19:55:00" in text
+    assert "节目时长: 30 分钟" in text
+    assert "节目进度: 已播 5/30 分钟 (17%)" in text
+
+
+def test_tvh_webhook_message_formats_program_content_and_duration():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.start",
+        "timestamp": 1782819002,
+        "started": 1782818942,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782822600,
+        "program_summary": (
+            "張遮設局找出栽贓之人,太后突然改變態度,只因認出那是薛姝的人。"
+            "雪寧從芷衣處得知薛姝見過沈玠的手帕,便明白自己被陷害的原因。"
+            "燕牧拜謝謝危救命之恩,言語間提及與外甥定非的過往,二人都未明說,但心意已通曉。"
+        ),
+    })
+
+    assert title == "TVH开始播放"
+    assert "节目: 交易現場[粵]" in text
+    assert "节目时长: 65 分钟" in text
+    assert "节目内容: 張遮設局找出栽贓之人" in text
+
+
+def test_tvh_webhook_message_clamps_program_progress():
+    _, text = format_tvh_webhook_message({
+        "event": "playback.stop",
+        "timestamp": 1782822900,
+        "started": 1782822840,
+        "channel": "翡翠台",
+        "program_title": "交易現場[粵]",
+        "program_start": 1782818700,
+        "program_stop": 1782822600,
+    })
+
+    assert "节目时长: 65 分钟" in text
+    assert "节目进度: 已播 65/65 分钟 (100%)" in text
+
+
+def test_tvh_webhook_message_formats_playback_stop_duration():
+    title, text = format_tvh_webhook_message({
+        "event": "playback.stop",
+        "timestamp": 1782819902,
+        "started": 1782819002,
+        "user": "mxy",
+        "ip": "223.73.229.155",
+        "channel": "翡翠台",
+        "client": "Aptv",
+    }, ip_location="广东 佛山", ip_isp="China Mobile Communications Group Co., Ltd.")
+
+    assert title == "TVH停止播放"
+    assert "来源: 223.73.229.155 (广东 佛山 / 中国移动)" in text
+    assert "停止: 2026-06-30 19:45:02" in text
+    assert "播放时长: 00:15:00" in text
+
+
+def test_fetch_tvh_channel_program_matches_epg_entry(monkeypatch):
+    def fake_fetch(base_url, path, username, password, timeout=10):
+        assert path.startswith("/api/epg/events/grid?")
+        return {
+            "entries": [{
+                "channelName": "翡翠台",
+                "channelUuid": "channel-uuid",
+                "channelIcon": "imagecache/12",
+                "eventId": 100,
+                "title": "交易現場[粵]",
+                "summary": "財經資訊",
+                "start": 1782818700,
+                "stop": 1782820500,
+            }]
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    metadata = fetch_tvh_channel_program(
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        channel_name="翡翠台",
+    )
+
+    assert metadata["channel_icon"] == "https://m3u.example.com/imagecache/12"
+    assert metadata["program_title"] == "交易現場[粵]"
+    assert metadata["program_start"] == 1782818700
+
+
+def test_enrich_tvh_webhook_program_uses_cache(monkeypatch):
+    calls = []
+
+    def fake_fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    cache = TimedValueCache(ttl_seconds=60)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+    }
+
+    first = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret", cache=cache)
+    second = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret", cache=cache)
+
+    assert first["program_title"] == "交易現場[粵]"
+    assert second["channel_icon"] == "https://example.com/logo.png"
+    assert len(calls) == 1
+
+
+def test_enrich_tvh_webhook_program_overrides_program_fields(monkeypatch):
+    def fake_fetch(*args, **kwargs):
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+            "program_start": 1782818700,
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+        "channel_icon": "https://example.com/payload-logo.png",
+        "program_title": "Inside the Stock Exchange[Can]",
+        "program_start": 1782818400,
+    }
+
+    enriched = enrich_tvh_webhook_program(payload, "https://m3u.example.com", "ck", "secret")
+
+    assert enriched["program_title"] == "交易現場[粵]"
+    assert enriched["program_start"] == 1782818700
+    assert enriched["channel_icon"] == "https://example.com/payload-logo.png"
+
+
+def test_enrich_tvh_webhook_program_respects_split_switches(monkeypatch):
+    def fake_fetch(*args, **kwargs):
+        return {
+            "channel_icon": "https://example.com/logo.png",
+            "program_title": "交易現場[粵]",
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_channel_program", fake_fetch)
+    payload = {
+        "event": "playback.start",
+        "channel": "翡翠台",
+        "program_title": "Inside the Stock Exchange[Can]",
+    }
+
+    logo_only = enrich_tvh_webhook_program(
+        payload,
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        enrich_program=False,
+        enrich_logo=True,
+    )
+    program_only = enrich_tvh_webhook_program(
+        payload,
+        "https://m3u.example.com",
+        "ck",
+        "secret",
+        enrich_program=True,
+        enrich_logo=False,
+    )
+
+    assert logo_only["program_title"] == "Inside the Stock Exchange[Can]"
+    assert logo_only["channel_icon"] == "https://example.com/logo.png"
+    assert program_only["program_title"] == "交易現場[粵]"
+    assert "channel_icon" not in program_only
+
+
+def test_select_tvh_webhook_image_prefers_channel_icon():
+    image = select_tvh_webhook_image({
+        "channel_icon": "imagecache/12",
+        "program_image": "https://example.com/program.jpg",
+    }, base_url="https://m3u.example.com/")
+
+    assert image == "https://m3u.example.com/imagecache/12"
+
+
+def test_tvh_webhook_message_formats_dvr_error_event():
+    title, text = format_tvh_webhook_message({
+        "event": "dvr.error",
+        "title": "Movie",
+        "channel": "Cinema",
+        "dvr_uuid": "abc",
+        "sched_state": "MISSEDTM",
+        "recording_state": "ERROR",
+        "last_error_text": "No input source available",
+        "filename": "/recordings/movie.ts",
+    })
+
+    assert title == "TVH录制异常"
+    assert "录制ID: abc" in text
+    assert "排程状态: MISSEDTM" in text
+    assert "录制状态: ERROR" in text
+    assert "错误: No input source available" in text
 
 
 def test_play_notify_settings_use_persisted_config_over_runtime_state():

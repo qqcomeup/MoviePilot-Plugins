@@ -1,8 +1,12 @@
+import hashlib
+import hmac
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import Body, Header
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app import schemas
 from app.core.config import settings
 from app.core.event import eventmanager, Event
 from app.db.systemconfig_oper import SystemConfigOper
@@ -26,6 +30,7 @@ from .core import (
     cancel_tvh_subscription,
     decode_callback_value,
     enrich_subscriptions_with_ip_locations,
+    fetch_ip_location_cached,
     fetch_tvh_connections,
     fetch_tvh_inputs,
     fetch_tvh_status,
@@ -34,6 +39,7 @@ from .core import (
     fetch_tvh_users,
     format_playback_notification,
     format_playback_switch_notification,
+    format_tvh_webhook_message,
     format_user_links_message,
     format_dvb_message,
     format_status_message,
@@ -43,10 +49,12 @@ from .core import (
     normalize_interval,
     playback_notification_key,
     detect_playback_events,
+    enrich_tvh_webhook_program,
     plan_playback_notifications,
     resolve_play_notify_settings,
     reset_tvh_user_token,
     restart_tvh_server,
+    select_tvh_webhook_image,
     set_tvh_user_enabled,
     token_for_user,
     TvhUser,
@@ -55,9 +63,9 @@ from .core import (
 
 class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
-    plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、DVB 设备和用户 M3U/EPG 短链接"
+    plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.41"
+    plugin_version = "0.1.53"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -66,6 +74,12 @@ class tvhhelper(_PluginBase):
 
     _enabled = False
     _notify = True
+    _webhook_notify = True
+    _webhook_program_enrich = True
+    _webhook_logo_enrich = True
+    _webhook_secret = ""
+    _webhook_hmac_secret = ""
+    _webhook_seen_events: TimedValueCache | None = None
     _tvh_url = "http://127.0.0.1:9981"
     _tvh_user = ""
     _tvh_pass = ""
@@ -82,6 +96,8 @@ class tvhhelper(_PluginBase):
     _monitor: DvbMonitor | None = None
     _ip_location_cache: TimedValueCache | None = None
     _tvh_users_cache: TimedValueCache | None = None
+    _webhook_program_cache: TimedValueCache | None = None
+    _playback_history: list[dict[str, Any]] = []
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -89,6 +105,11 @@ class tvhhelper(_PluginBase):
         if config:
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
+            self._webhook_notify = bool(config.get("webhook_notify", True))
+            self._webhook_program_enrich = bool(config.get("webhook_program_enrich", True))
+            self._webhook_logo_enrich = bool(config.get("webhook_logo_enrich", True))
+            self._webhook_secret = config.get("webhook_secret") or ""
+            self._webhook_hmac_secret = config.get("webhook_hmac_secret") or ""
             self._tvh_url = (config.get("tvh_url") or self._tvh_url).rstrip("/")
             self._tvh_user = config.get("tvh_user") or ""
             self._tvh_pass = config.get("tvh_pass") or ""
@@ -106,12 +127,20 @@ class tvhhelper(_PluginBase):
         self._monitor = DvbMonitor(self._expected_dvb_count)
         self._ip_location_cache = TimedValueCache(ttl_seconds=21600)
         self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
+        self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
+        self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._play_notify_snapshot = None
+        self._playback_history = []
         self.__update_config()
 
     def __reset_runtime_defaults(self):
         self._enabled = False
         self._notify = True
+        self._webhook_notify = True
+        self._webhook_program_enrich = True
+        self._webhook_logo_enrich = True
+        self._webhook_secret = ""
+        self._webhook_hmac_secret = ""
         self._tvh_url = "http://127.0.0.1:9981"
         self._tvh_user = ""
         self._tvh_pass = ""
@@ -125,8 +154,11 @@ class tvhhelper(_PluginBase):
         self._play_notify_users = {}
         self._play_notify_snapshot = None
         self._play_notify_pending_starts = {}
+        self._webhook_seen_events = None
         self._ip_location_cache = None
         self._tvh_users_cache = None
+        self._webhook_program_cache = None
+        self._playback_history = []
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -139,6 +171,11 @@ class tvhhelper(_PluginBase):
         self.update_config({
             "enabled": self._enabled,
             "notify": self._notify,
+            "webhook_notify": self._webhook_notify,
+            "webhook_program_enrich": self._webhook_program_enrich,
+            "webhook_logo_enrich": self._webhook_logo_enrich,
+            "webhook_secret": self._webhook_secret,
+            "webhook_hmac_secret": self._webhook_hmac_secret,
             "tvh_url": self._tvh_url,
             "tvh_user": self._tvh_user,
             "tvh_pass": self._tvh_pass,
@@ -368,6 +405,7 @@ class tvhhelper(_PluginBase):
             self.__reply(event, "TVH助手执行失败", str(err))
 
     def __reply(self, event: Event, title: str, text: str, **kwargs):
+        text = self.__append_button_text(text, kwargs.get("buttons"))
         self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
@@ -377,6 +415,7 @@ class tvhhelper(_PluginBase):
         ))
 
     def __reply_copy(self, event: Event, title: str, text: str, **kwargs):
+        text = self.__append_button_text(text, kwargs.get("buttons"))
         self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
@@ -405,6 +444,7 @@ class tvhhelper(_PluginBase):
         if not message_id or not chat_id or not channel or not source:
             return False
         try:
+            buttons = kwargs.get("buttons")
             return bool(self.chain.run_module(
                 "edit_message",
                 channel=channel,
@@ -412,13 +452,26 @@ class tvhhelper(_PluginBase):
                 message_id=message_id,
                 chat_id=chat_id,
                 title=title,
-                text=text,
-                buttons=kwargs.get("buttons"),
+                text=self.__append_button_text(text, buttons),
+                buttons=buttons,
                 parse_mode=parse_mode,
             ))
         except Exception as err:
             logger.debug(f"TVH助手编辑原消息失败: {err}")
             return False
+
+    @staticmethod
+    def __append_button_text(text: str, buttons: list[list[dict]] | None) -> str:
+        labels = []
+        for row in buttons or []:
+            for button in row or []:
+                label = button.get("text") if isinstance(button, dict) else None
+                if label:
+                    labels.append(str(label))
+        if not labels:
+            return text
+        block = "按钮文字:\n```text\n" + "\n".join(labels) + "\n```"
+        return f"{text}\n\n{block}" if text else block
 
     def __delete_original(self, event: Event) -> bool:
         message_id = event.event_data.get("original_message_id")
@@ -658,6 +711,7 @@ class tvhhelper(_PluginBase):
                 logger.info(
                     f"{title}: {subscription.username} / {subscription.channel} -> {next_subscription.channel}"
                 )
+                self.__record_playback_history_from_switch(subscription, next_subscription)
                 self.post_message(
                     mtype=NotificationType.Plugin,
                     title=title,
@@ -668,6 +722,7 @@ class tvhhelper(_PluginBase):
                 continue
             title, text = format_playback_notification(event_name, subscription)
             logger.info(f"{title}: {subscription.username} / {subscription.channel}")
+            self.__record_playback_history_from_subscription(event_name, subscription)
             self.post_message(
                 mtype=NotificationType.Plugin,
                 title=title,
@@ -716,19 +771,356 @@ class tvhhelper(_PluginBase):
         return services
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return []
-
-    def get_page(self) -> List[dict]:
         return [
             {
-                "component": "VAlert",
-                "props": {
-                    "type": "info",
-                    "variant": "tonal",
-                    "text": "请通过 MoviePilot 机器人命令 /tvh 打开功能菜单。",
-                },
+                "path": "/webhook",
+                "endpoint": self.receive_webhook,
+                "methods": ["POST"],
+                "summary": "接收TVHeadend Webhook通知",
             }
         ]
+
+    def receive_webhook(
+        self,
+        payload: Optional[Dict[str, Any]] = Body(default=None),
+        x_tvh_token: Optional[str] = Header(default=None),
+        x_tvh_signature: Optional[str] = Header(default=None),
+        x_tvh_signature_input: Optional[str] = Header(default=None),
+        apikey: str = "",
+    ):
+        if not self._enabled:
+            return schemas.Response(success=False, message="TVH助手未启用")
+        if not isinstance(payload, dict):
+            return schemas.Response(success=False, message="Webhook数据无效")
+
+        expected_token = self._webhook_secret or settings.API_TOKEN
+        provided_token = x_tvh_token or payload.get("token") or apikey
+        if expected_token and provided_token != expected_token:
+            return schemas.Response(success=False, message="Webhook密钥错误")
+
+        signature_error = self.__verify_webhook_signature(
+            payload,
+            x_tvh_signature,
+            x_tvh_signature_input,
+        )
+        if signature_error:
+            return schemas.Response(success=False, message=signature_error)
+
+        event = str(payload.get("event") or "")
+        event_id = str(payload.get("event_id") or "")
+        if event != "system.webhooktest" and event_id and self._webhook_seen_events:
+            if self._webhook_seen_events.get(event_id):
+                logger.info(f"忽略重复TVH Webhook: {payload.get('event')} {event_id}")
+                return schemas.Response(success=True, message="Webhook重复事件已忽略")
+            self._webhook_seen_events.set(event_id, True)
+
+        payload = self.__enrich_webhook_program(payload)
+        ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
+        self.__record_playback_history_from_webhook(payload, ip_location, ip_isp)
+        title, text = format_tvh_webhook_message(
+            payload,
+            ip_location=ip_location,
+            ip_isp=ip_isp,
+        )
+        image = select_tvh_webhook_image(payload, self._tvh_url) if self._webhook_logo_enrich else None
+        logger.info(f"收到TVH Webhook: {payload.get('event')}")
+        if self._webhook_notify:
+            message = {
+                "mtype": NotificationType.Plugin,
+                "title": title,
+                "text": text,
+                "parse_mode": "Markdown",
+            }
+            if image:
+                message["image"] = image
+            self.post_message(**message)
+        return schemas.Response(success=True, message="Webhook已接收")
+
+    def __enrich_webhook_program(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self._webhook_program_enrich and not self._webhook_logo_enrich:
+            return payload
+        try:
+            return enrich_tvh_webhook_program(
+                payload,
+                self._tvh_url,
+                self._tvh_user,
+                self._tvh_pass,
+                cache=self._webhook_program_cache,
+                timeout=2,
+                enrich_program=self._webhook_program_enrich,
+                enrich_logo=self._webhook_logo_enrich,
+            )
+        except Exception as err:
+            logger.debug(f"TVH Webhook节目/LOGO补全失败: {err}")
+            return payload
+
+    def __lookup_webhook_ip(self, ip: Any) -> tuple[str | None, str | None]:
+        if not self._ip_lookup_enabled or not ip or not self._ip_location_cache:
+            return None, None
+        try:
+            return fetch_ip_location_cached(
+                str(ip),
+                cache=self._ip_location_cache,
+            )
+        except Exception as err:
+            logger.debug(f"TVH Webhook IP归属地查询失败: {ip} - {err}")
+            return None, None
+
+    def __record_playback_history_from_webhook(
+        self,
+        payload: Dict[str, Any],
+        ip_location: str | None = None,
+        ip_isp: str | None = None,
+    ) -> None:
+        event = str(payload.get("event") or "")
+        if not event.startswith("playback."):
+            return
+        action = "开始" if event == "playback.start" else "停止" if event == "playback.stop" else event
+        duration = ""
+        if event == "playback.stop":
+            duration = self.__format_duration_between(payload.get("started"), payload.get("timestamp"))
+        self.__record_playback_history({
+            "time": self.__format_history_time(payload.get("timestamp")),
+            "event": action,
+            "user": payload.get("user") or "",
+            "channel": payload.get("channel") or "",
+            "program": payload.get("program_title") or "",
+            "source": self.__format_history_source(payload.get("ip"), ip_location, ip_isp),
+            "client": payload.get("client") or "",
+            "duration": duration,
+        })
+
+    def __record_playback_history_from_subscription(self, event_name: str, subscription: Any) -> None:
+        action = "开始" if event_name == "start" else "停止" if event_name == "stop" else str(event_name)
+        duration = ""
+        if event_name == "stop":
+            duration = self.__format_duration_between(subscription.started, time.time())
+        self.__record_playback_history({
+            "time": self.__format_history_time(time.time()),
+            "event": action,
+            "user": subscription.username or "",
+            "channel": subscription.channel or "",
+            "program": subscription.title or "",
+            "source": self.__format_history_source(
+                subscription.peer or subscription.hostname,
+                subscription.location or subscription.hostname_location,
+                subscription.isp or subscription.hostname_isp,
+            ),
+            "client": subscription.user_agent or subscription.client or "",
+            "duration": duration,
+        })
+
+    def __record_playback_history_from_switch(self, old_subscription: Any, new_subscription: Any) -> None:
+        self.__record_playback_history({
+            "time": self.__format_history_time(time.time()),
+            "event": "切台",
+            "user": new_subscription.username or old_subscription.username or "",
+            "channel": f"{old_subscription.channel} -> {new_subscription.channel}",
+            "program": new_subscription.title or "",
+            "source": self.__format_history_source(
+                new_subscription.peer or new_subscription.hostname,
+                new_subscription.location or new_subscription.hostname_location,
+                new_subscription.isp or new_subscription.hostname_isp,
+            ),
+            "client": new_subscription.user_agent or new_subscription.client or "",
+            "duration": "",
+        })
+
+    def __record_playback_history(self, record: dict[str, Any]) -> None:
+        self._playback_history.insert(0, record)
+        del self._playback_history[50:]
+
+    @staticmethod
+    def __format_history_time(value: Any) -> str:
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value or time.time())))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return str(value or "")
+
+    @staticmethod
+    def __format_duration_between(started: Any, stopped: Any) -> str:
+        try:
+            seconds = max(0, int(float(stopped or 0) - float(started or 0)))
+        except (TypeError, ValueError):
+            return ""
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def __format_history_source(ip: Any, location: str | None = None, isp: str | None = None) -> str:
+        if not ip:
+            return ""
+        meta = " / ".join(part for part in [location, isp] if part)
+        return f"{ip} ({meta})" if meta else str(ip)
+
+    def __verify_webhook_signature(
+        self,
+        payload: Dict[str, Any],
+        signature: Optional[str],
+        signature_input: Optional[str],
+    ) -> str | None:
+        if not self._webhook_hmac_secret:
+            return None
+        event = str(payload.get("event") or "")
+        event_id = str(payload.get("event_id") or "")
+        timestamp = str(payload.get("timestamp") or "")
+        expected_input = f"{event}.{event_id}.{timestamp}"
+        if not signature or not signature_input:
+            return "Webhook签名缺失"
+        if signature_input != expected_input:
+            return "Webhook签名输入错误"
+        try:
+            timestamp_value = int(timestamp)
+        except (TypeError, ValueError):
+            return "Webhook时间戳无效"
+        if abs(int(time.time()) - timestamp_value) > 300:
+            return "Webhook时间戳过期"
+        expected = hmac.new(
+            self._webhook_hmac_secret.encode("utf-8"),
+            signature_input.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        provided = signature.removeprefix("sha256=")
+        if not hmac.compare_digest(provided, expected):
+            return "Webhook签名错误"
+        return None
+
+    def get_page(self) -> List[dict]:
+        if not self._playback_history:
+            return [
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": "暂无最近用户播放记录。",
+                    },
+                }
+            ]
+        return [
+            {
+                "component": "VCard",
+                "props": {
+                    "variant": "flat",
+                    "class": "rounded border",
+                },
+                "content": [
+                    {
+                        "component": "VCardText",
+                        "content": [
+                            {
+                                "component": "div",
+                                "props": {
+                                    "class": "d-flex align-center mb-6",
+                                },
+                                "content": [
+                                    {
+                                        "component": "VIcon",
+                                        "props": {
+                                            "class": "mr-3",
+                                            "color": "primary",
+                                        },
+                                        "text": "mdi-play-box-multiple-outline",
+                                    },
+                                    {
+                                        "component": "span",
+                                        "props": {
+                                            "class": "text-h5 font-weight-bold",
+                                        },
+                                        "text": "TVH 最近播放记录",
+                                    },
+                                ],
+                            },
+                            self.__build_playback_history_table(),
+                        ],
+                    },
+                ],
+            },
+        ]
+
+    def __build_playback_history_table(self) -> dict:
+        headers = ["时间", "状态", "用户", "频道", "节目", "来源", "客户端", "时长"]
+        return {
+            "component": "VTable",
+            "props": {
+                "density": "comfortable",
+                "hover": True,
+                "class": "text-no-wrap",
+            },
+            "content": [
+                {
+                    "component": "thead",
+                    "content": [{
+                        "component": "tr",
+                        "content": [
+                            {
+                                "component": "th",
+                                "props": {"class": "text-left font-weight-bold"},
+                                "text": header,
+                            }
+                            for header in headers
+                        ],
+                    }],
+                },
+                {
+                    "component": "tbody",
+                    "content": [
+                        self.__build_playback_history_row(item)
+                        for item in self._playback_history
+                    ],
+                },
+            ],
+        }
+
+    def __build_playback_history_row(self, item: dict[str, Any]) -> dict:
+        return {
+            "component": "tr",
+            "content": [
+                self.__history_cell(item.get("time")),
+                {
+                    "component": "td",
+                    "content": [self.__history_status_chip(str(item.get("event") or ""))],
+                },
+                self.__history_cell(item.get("user"), "font-weight-medium"),
+                self.__history_cell(item.get("channel"), "font-weight-medium"),
+                self.__history_cell(item.get("program")),
+                self.__history_cell(item.get("source")),
+                self.__history_cell(item.get("client")),
+                self.__history_cell(item.get("duration"), "font-weight-medium"),
+            ],
+        }
+
+    @staticmethod
+    def __history_cell(value: Any, css_class: str | None = None) -> dict:
+        props = {"class": css_class} if css_class else {}
+        return {
+            "component": "td",
+            "props": props,
+            "text": str(value or "-"),
+        }
+
+    @staticmethod
+    def __history_status_chip(event: str) -> dict:
+        colors = {
+            "开始": "success",
+            "停止": "info",
+            "切台": "warning",
+        }
+        labels = {
+            "开始": "开始播放",
+            "停止": "停止播放",
+            "切台": "切换频道",
+        }
+        return {
+            "component": "VChip",
+            "props": {
+                "color": colors.get(event, "default"),
+                "variant": "outlined",
+                "size": "small",
+            },
+            "text": labels.get(event, event or "未知"),
+        }
 
     def stop_service(self):
         pass
@@ -771,6 +1163,30 @@ class tvhhelper(_PluginBase):
                                 "content": [{
                                     "component": "VSwitch",
                                     "props": {"model": "play_notify", "label": "播放通知"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_notify", "label": "Webhook通知"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_program_enrich", "label": "Webhook节目补全"},
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
+                                    "component": "VSwitch",
+                                    "props": {"model": "webhook_logo_enrich", "label": "Webhook LOGO图片"},
                                 }],
                             },
                             {
@@ -855,11 +1271,42 @@ class tvhhelper(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "webhook_secret",
+                                        "label": "Webhook Secret",
+                                        "type": "password",
+                                        "placeholder": "留空则使用MoviePilot API_TOKEN",
+                                    },
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [{
+                                    "component": "VTextField",
+                                    "props": {
+                                        "model": "webhook_hmac_secret",
+                                        "label": "Webhook HMAC Secret",
+                                        "type": "password",
+                                        "placeholder": "留空则不校验HMAC签名",
+                                    },
+                                }],
+                            },
+                        ],
+                    },
+                    {
                         "component": "VAlert",
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。DVB状态直接读取TVH接口，用户链接支持短链和TVH原始长链接。",
+                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。节目补全用于修正当前EPG标题，LOGO图片用于发送通知图片。",
                         },
                     },
                 ],
@@ -867,6 +1314,11 @@ class tvhhelper(_PluginBase):
         ], {
             "enabled": False,
             "notify": True,
+            "webhook_notify": True,
+            "webhook_program_enrich": True,
+            "webhook_logo_enrich": True,
+            "webhook_secret": "",
+            "webhook_hmac_secret": "",
             "tvh_url": "http://127.0.0.1:9981",
             "tvh_user": "",
             "tvh_pass": "",

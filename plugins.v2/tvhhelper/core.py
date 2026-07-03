@@ -615,6 +615,262 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
     return "\n".join(details)
 
 
+TVH_WEBHOOK_EVENT_TITLES = {
+    "system.webhooktest": "TVH Webhook测试",
+    "playback.start": "TVH开始播放",
+    "playback.stop": "TVH停止播放",
+    "dvr.start": "TVH开始录制",
+    "dvr.complete": "TVH录制完成",
+    "dvr.error": "TVH录制异常",
+    "dvb.error": "TVH DVB异常",
+    "service.error": "TVH服务异常",
+}
+
+
+def format_tvh_webhook_message(
+    payload: dict,
+    ip_location: str | None = None,
+    ip_isp: str | None = None,
+) -> tuple[str, str]:
+    event = str(payload.get("event") or "tvh.event")
+    title = TVH_WEBHOOK_EVENT_TITLES.get(event, f"TVH通知 {event}")
+    if event.startswith("playback."):
+        return title, _format_tvh_playback_webhook(payload, ip_location, ip_isp)
+    if event.startswith("dvr."):
+        return title, _format_tvh_dvr_webhook(payload)
+    if event in ("dvb.error", "service.error"):
+        return title, _format_tvh_error_webhook(payload)
+    return title, _format_tvh_generic_webhook(payload)
+
+
+def _format_tvh_playback_webhook(
+    payload: dict,
+    ip_location: str | None = None,
+    ip_isp: str | None = None,
+) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    started_time = _format_timestamp(payload.get("started")) or _string_or_none(payload.get("started"))
+    duration = _format_webhook_play_duration(payload.get("started"), payload.get("timestamp"))
+    source = _format_webhook_source(payload.get("ip"), ip_location, ip_isp)
+    program_window = _format_webhook_program_window(payload)
+    program_duration = _format_webhook_program_duration(payload)
+    program_progress = _format_webhook_program_progress(payload)
+    program_content = _format_webhook_program_content(payload)
+    rate_line = _format_rate_pair(
+        _string_or_none(payload.get("input_kbps")),
+        _string_or_none(payload.get("output_kbps")),
+    )
+    main_lines = _compact_lines([
+        f"频道: {payload.get('channel')}" if payload.get("channel") else None,
+        f"节目: {payload.get('program_title')}" if payload.get("program_title") else None,
+        f"节目时间: {program_window}" if program_window else None,
+        f"节目时长: {program_duration}" if program_duration else None,
+        f"节目进度: {program_progress}" if program_progress else None,
+        f"节目内容: {program_content}" if program_content else None,
+        f"用户: {payload.get('user')}" if payload.get("user") else None,
+        f"来源: {source}" if source else None,
+        f"客户端: {payload.get('client')}" if payload.get("client") else None,
+        f"开始: {started_time}" if started_time else None,
+        f"停止: {event_time}" if event == "playback.stop" else None,
+        f"当前时长: {duration}" if event == "playback.start" and duration else None,
+        f"播放时长: {duration}" if event == "playback.stop" and duration else None,
+    ])
+    tech_lines = _compact_lines([
+        f"服务: {_short_service_name(str(payload.get('service')))}" if payload.get("service") else None,
+        f"订阅ID: {payload.get('subscription_id')}" if payload.get("subscription_id") is not None else None,
+        f"输入/输出: {rate_line}" if rate_line else None,
+        f"事件: {event}",
+    ])
+    return _format_tvh_sections(main_lines, [("技术信息", tech_lines)])
+
+
+def _format_webhook_program_window(payload: dict) -> str | None:
+    start = _format_timestamp(payload.get("program_start"))
+    stop = _format_timestamp(payload.get("program_stop"))
+    if start and stop:
+        return f"{start} - {stop}"
+    return start or stop
+
+
+def _format_webhook_program_duration(payload: dict) -> str | None:
+    start = _coerce_datetime(payload.get("program_start"))
+    stop = _coerce_datetime(payload.get("program_stop"))
+    if not start or not stop:
+        return None
+    seconds = max(0, int((stop - start).total_seconds()))
+    if seconds <= 0:
+        return None
+    minutes = max(1, int(round(seconds / 60)))
+    return f"{minutes} 分钟"
+
+
+def _format_webhook_program_progress(payload: dict) -> str | None:
+    start = _coerce_datetime(payload.get("program_start"))
+    stop = _coerce_datetime(payload.get("program_stop"))
+    current = _coerce_datetime(payload.get("timestamp"))
+    if not start or not stop or not current:
+        return None
+    total_seconds = int((stop - start).total_seconds())
+    if total_seconds <= 0:
+        return None
+    elapsed_seconds = min(max(0, int((current - start).total_seconds())), total_seconds)
+    elapsed_minutes = int(elapsed_seconds / 60)
+    total_minutes = max(1, int(round(total_seconds / 60)))
+    percent = int(round(elapsed_seconds * 100 / total_seconds))
+    return f"已播 {elapsed_minutes}/{total_minutes} 分钟 ({percent}%)"
+
+
+def _format_webhook_program_content(payload: dict) -> str | None:
+    for key in ("program_summary", "program_description"):
+        value = _string_or_none(payload.get(key))
+        if value:
+            return " ".join(value.split())
+    return None
+
+
+def _format_tvh_dvr_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    error_text = payload.get("last_error_text")
+    result = payload.get("recording_state") or payload.get("sched_state")
+    if event == "dvr.error" and error_text:
+        result = error_text
+    main_lines = _compact_lines([
+        f"节目: {payload.get('title')}" if payload.get("title") else None,
+        f"频道: {payload.get('channel')}" if payload.get("channel") else None,
+        f"用户: {payload.get('user')}" if payload.get("user") else None,
+        f"结果: {result}" if result else None,
+        f"时间: {event_time}",
+    ])
+    file_lines = _compact_lines([
+        str(payload.get("filename")) if payload.get("filename") else None,
+    ])
+    tech_lines = _compact_lines([
+        f"录制ID: {payload.get('dvr_uuid')}" if payload.get("dvr_uuid") else None,
+        f"排程状态: {payload.get('sched_state')}" if payload.get("sched_state") else None,
+        f"录制状态: {payload.get('recording_state')}" if payload.get("recording_state") else None,
+        f"错误: {error_text}" if error_text and (event == "dvr.error" or str(error_text).upper() != "OK") else None,
+        f"事件: {event}",
+    ])
+    sections = []
+    if file_lines:
+        sections.append(("文件", file_lines))
+    sections.append(("技术信息", tech_lines))
+    return _format_tvh_sections(main_lines, sections)
+
+
+def _format_tvh_error_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "")
+    event_time = _format_timestamp(payload.get("timestamp")) or "未知"
+    main_lines = _compact_lines([
+        f"服务: {_short_service_name(str(payload.get('service')))}" if payload.get("service") else None,
+        f"输入: {payload.get('input')}" if payload.get("input") else None,
+        f"频点: {payload.get('mux')}" if payload.get("mux") else None,
+        f"适配器: {payload.get('adapter')}" if payload.get("adapter") else None,
+        f"状态: {payload.get('status_text')}" if payload.get("status_text") else None,
+        f"时间: {event_time}",
+    ])
+    tech_lines = _compact_lines([
+        f"状态码: {payload.get('status_flags')}" if payload.get("status_flags") is not None else None,
+        f"事件: {event}",
+    ])
+    return _format_tvh_sections(main_lines, [("技术信息", tech_lines)])
+
+
+def _format_tvh_generic_webhook(payload: dict) -> str:
+    event = str(payload.get("event") or "tvh.event")
+    server = payload.get("server") if isinstance(payload.get("server"), dict) else {}
+    lines = [
+        f"事件: {event}",
+        f"时间: {_format_timestamp(payload.get('timestamp')) or '未知'}",
+    ]
+    if server.get("name"):
+        lines.append(f"服务器: {server.get('name')}")
+    if payload.get("user"):
+        lines.append(f"用户: {payload.get('user')}")
+    if payload.get("ip"):
+        lines.append(f"IP: {payload.get('ip')}")
+    if payload.get("client"):
+        lines.append(f"客户端: {payload.get('client')}")
+    if payload.get("channel"):
+        lines.append(f"频道: {payload.get('channel')}")
+    if payload.get("title"):
+        lines.append(f"标题: {payload.get('title')}")
+    if payload.get("service"):
+        lines.append(f"服务: {_short_service_name(str(payload.get('service')))}")
+    if payload.get("adapter"):
+        lines.append(f"适配器: {payload.get('adapter')}")
+    if payload.get("input"):
+        lines.append(f"输入: {payload.get('input')}")
+    if payload.get("mux"):
+        lines.append(f"频点: {payload.get('mux')}")
+    if payload.get("status_text"):
+        lines.append(f"状态: {payload.get('status_text')}")
+    if payload.get("status_flags") is not None:
+        lines.append(f"状态码: {payload.get('status_flags')}")
+    if payload.get("profile"):
+        lines.append(f"配置: {payload.get('profile')}")
+    if payload.get("subscription_id") is not None:
+        lines.append(f"订阅ID: {payload.get('subscription_id')}")
+    if payload.get("dvr_uuid"):
+        lines.append(f"录制ID: {payload.get('dvr_uuid')}")
+    if payload.get("sched_state"):
+        lines.append(f"排程状态: {payload.get('sched_state')}")
+    if payload.get("recording_state"):
+        lines.append(f"录制状态: {payload.get('recording_state')}")
+    if payload.get("filename"):
+        lines.append(f"文件: {payload.get('filename')}")
+    error_text = payload.get("last_error_text")
+    if error_text and (event == "dvr.error" or str(error_text).upper() != "OK"):
+        lines.append(f"错误: {error_text}")
+    rate_line = _format_rate_pair(
+        _string_or_none(payload.get("input_kbps")),
+        _string_or_none(payload.get("output_kbps")),
+    )
+    if rate_line:
+        lines.append(f"输入/输出: {rate_line}")
+    if payload.get("message"):
+        lines.append(str(payload.get("message")))
+    return f"```text\n{chr(10).join(lines)}\n```"
+
+
+def _format_tvh_sections(
+    main_lines: list[str],
+    sections: list[tuple[str, list[str]]],
+) -> str:
+    lines = list(main_lines)
+    for header, values in sections:
+        if not values:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(header)
+        lines.extend(values)
+    return f"```text\n{chr(10).join(lines)}\n```"
+
+
+def _compact_lines(values: Iterable[str | None]) -> list[str]:
+    return [str(value) for value in values if value]
+
+
+def _format_webhook_source(ip, location: str | None, isp: str | None) -> str | None:
+    if not ip:
+        return None
+    carrier = normalize_isp_carrier(isp) or (str(isp).strip() if isp else None)
+    parts = [part for part in [location, carrier] if part]
+    meta = " / ".join(dict.fromkeys(parts)) if parts else None
+    return f"{ip} ({meta})" if meta else str(ip)
+
+
+def _format_webhook_play_duration(started, timestamp) -> str | None:
+    started_dt = _coerce_datetime(started)
+    event_dt = _coerce_datetime(timestamp)
+    if not started_dt or not event_dt:
+        return None
+    return _format_duration(max(0, int((event_dt - started_dt).total_seconds())))
+
+
 def playback_subscription_key(subscription: TvhSubscription) -> str:
     if subscription.subscription_id:
         return str(subscription.subscription_id)
@@ -1254,6 +1510,176 @@ def fetch_tvh_json(base_url: str, path: str, username: str, password: str, timeo
     url = f"{normalize_base_url(base_url)}{path}"
     request = urllib.request.Request(url)
     return _open_tvh_json(request, url, username, password, timeout)
+
+
+def enrich_tvh_webhook_program(
+    payload: dict,
+    base_url: str,
+    username: str,
+    password: str,
+    cache: TimedValueCache | None = None,
+    timeout: int = 2,
+    enrich_program: bool = True,
+    enrich_logo: bool = True,
+) -> dict:
+    event = str(payload.get("event") or "")
+    if not event.startswith("playback."):
+        return payload
+    if not enrich_program and not enrich_logo:
+        return payload
+    channel = _string_or_none(payload.get("channel"))
+    channel_uuid = _string_or_none(payload.get("channel_uuid"))
+    if not channel and not channel_uuid:
+        return payload
+    if not enrich_program and enrich_logo and (
+        payload.get("channel_icon") or payload.get("program_image")
+    ):
+        return payload
+
+    cache_key = "|".join([channel_uuid or "", channel or ""])
+    metadata = cache.get(cache_key) if cache else None
+    if metadata is None:
+        metadata = fetch_tvh_channel_program(
+            base_url,
+            username,
+            password,
+            channel_name=channel,
+            channel_uuid=channel_uuid,
+            timeout=timeout,
+        )
+        if cache:
+            cache.set(cache_key, metadata)
+
+    if not metadata:
+        return payload
+    enriched = dict(payload)
+    for key, value in metadata.items():
+        if value is None or value == "":
+            continue
+        if key.startswith("program_") and enrich_program:
+            enriched[key] = value
+        elif key in ("channel_icon", "program_image") and enrich_logo and not enriched.get(key):
+            enriched[key] = value
+        elif key not in ("channel_icon", "program_image") and not key.startswith("program_") and not enriched.get(key):
+            enriched[key] = value
+    return enriched
+
+
+def fetch_tvh_channel_program(
+    base_url: str,
+    username: str,
+    password: str,
+    channel_name: str | None = None,
+    channel_uuid: str | None = None,
+    timeout: int = 2,
+) -> dict:
+    query = urllib.parse.urlencode({"mode": "now", "limit": 999})
+    epg_payload = fetch_tvh_json(
+        base_url,
+        f"/api/epg/events/grid?{query}",
+        username,
+        password,
+        timeout=timeout,
+    )
+    for entry in epg_payload.get("entries", []):
+        if _tvh_channel_entry_matches(entry, channel_name, channel_uuid):
+            return _tvh_program_metadata_from_epg_entry(base_url, entry)
+
+    metadata = _fetch_tvh_channel_metadata(
+        base_url,
+        username,
+        password,
+        channel_name=channel_name,
+        channel_uuid=channel_uuid,
+        timeout=timeout,
+    )
+    return metadata or {}
+
+
+def select_tvh_webhook_image(payload: dict, base_url: str | None = None) -> str | None:
+    return _normalize_tvh_image_url(
+        base_url,
+        payload.get("channel_icon") or payload.get("program_image"),
+    )
+
+
+def _fetch_tvh_channel_metadata(
+    base_url: str,
+    username: str,
+    password: str,
+    channel_name: str | None = None,
+    channel_uuid: str | None = None,
+    timeout: int = 2,
+) -> dict:
+    channel_payload = fetch_tvh_json(
+        base_url,
+        "/api/channel/grid?limit=999",
+        username,
+        password,
+        timeout=timeout,
+    )
+    for entry in channel_payload.get("entries", []):
+        if _tvh_channel_entry_matches(entry, channel_name, channel_uuid):
+            return _tvh_channel_metadata_from_channel_entry(base_url, entry)
+    return {}
+
+
+def _tvh_program_metadata_from_epg_entry(base_url: str, entry: dict) -> dict:
+    metadata = {
+        "channel": _string_or_none(entry.get("channelName")),
+        "channel_uuid": _string_or_none(entry.get("channelUuid")),
+        "channel_icon": _normalize_tvh_image_url(base_url, entry.get("channelIcon")),
+        "program_event_id": entry.get("eventId"),
+        "program_title": _string_or_none(entry.get("title")),
+        "program_subtitle": _string_or_none(entry.get("subtitle")),
+        "program_summary": _string_or_none(entry.get("summary")),
+        "program_description": _string_or_none(entry.get("description")),
+        "program_start": entry.get("start"),
+        "program_stop": entry.get("stop"),
+        "program_image": _normalize_tvh_image_url(base_url, entry.get("image")),
+    }
+    return {key: value for key, value in metadata.items() if value is not None and value != ""}
+
+
+def _tvh_channel_metadata_from_channel_entry(base_url: str, entry: dict) -> dict:
+    icon = (
+        entry.get("icon_public_url")
+        or entry.get("icon")
+        or entry.get("channelIcon")
+    )
+    metadata = {
+        "channel": _string_or_none(entry.get("name") or entry.get("channelName")),
+        "channel_uuid": _string_or_none(entry.get("uuid") or entry.get("channelUuid")),
+        "channel_icon": _normalize_tvh_image_url(base_url, icon),
+    }
+    return {key: value for key, value in metadata.items() if value is not None and value != ""}
+
+
+def _tvh_channel_entry_matches(
+    entry: dict,
+    channel_name: str | None,
+    channel_uuid: str | None,
+) -> bool:
+    entry_uuid = _string_or_none(entry.get("channelUuid") or entry.get("uuid"))
+    if channel_uuid and entry_uuid and channel_uuid == entry_uuid:
+        return True
+    entry_name = _string_or_none(entry.get("channelName") or entry.get("name"))
+    return bool(channel_name and entry_name and _normalize_match_text(channel_name) == _normalize_match_text(entry_name))
+
+
+def _normalize_match_text(value: str) -> str:
+    return str(value).strip().casefold()
+
+
+def _normalize_tvh_image_url(base_url: str | None, image) -> str | None:
+    value = _string_or_none(image)
+    if not value:
+        return None
+    if "://" in value or value.startswith("data:"):
+        return value
+    if not base_url:
+        return value
+    return f"{normalize_base_url(base_url)}/{value.lstrip('/')}"
 
 
 def post_tvh_form(
