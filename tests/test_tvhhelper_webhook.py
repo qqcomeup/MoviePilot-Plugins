@@ -210,7 +210,7 @@ def test_receive_webhook_ignores_duplicate_event_id(monkeypatch):
         "webhook_secret": "secret",
     })
     payload = {
-        "event": "system.webhooktest",
+        "event": "playback.start",
         "event_id": "same-event",
         "timestamp": int(time.time()),
     }

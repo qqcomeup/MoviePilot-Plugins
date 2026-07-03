@@ -771,8 +771,9 @@ class tvhhelper(_PluginBase):
         if signature_error:
             return schemas.Response(success=False, message=signature_error)
 
+        event = str(payload.get("event") or "")
         event_id = str(payload.get("event_id") or "")
-        if event_id and self._webhook_seen_events:
+        if event != "system.webhooktest" and event_id and self._webhook_seen_events:
             if self._webhook_seen_events.get(event_id):
                 logger.info(f"忽略重复TVH Webhook: {payload.get('event')} {event_id}")
                 return schemas.Response(success=True, message="Webhook重复事件已忽略")
