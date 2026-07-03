@@ -242,6 +242,27 @@ def test_receive_webhook_suppresses_image_when_logo_disabled(monkeypatch):
     assert "image" not in plugin.messages[0]
 
 
+def test_button_text_is_appended_for_copy(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    text = module.tvhhelper._tvhhelper__append_button_text("请选择：", [[
+        {"text": "用户链接"},
+        {"text": "用户管理"},
+    ]])
+
+    assert "按钮文字:" in text
+    assert "用户链接" in text
+    assert "用户管理" in text
+
+
+def test_page_does_not_show_webhook_copy_template(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+
+    page = plugin.get_page()
+
+    assert all(item.get("component") != "VTextarea" for item in page)
+
+
 def test_receive_webhook_rejects_bad_secret(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()

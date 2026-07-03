@@ -65,7 +65,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.48"
+    plugin_version = "0.1.49"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -402,6 +402,7 @@ class tvhhelper(_PluginBase):
             self.__reply(event, "TVH助手执行失败", str(err))
 
     def __reply(self, event: Event, title: str, text: str, **kwargs):
+        text = self.__append_button_text(text, kwargs.get("buttons"))
         self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
@@ -411,6 +412,7 @@ class tvhhelper(_PluginBase):
         ))
 
     def __reply_copy(self, event: Event, title: str, text: str, **kwargs):
+        text = self.__append_button_text(text, kwargs.get("buttons"))
         self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
@@ -439,6 +441,7 @@ class tvhhelper(_PluginBase):
         if not message_id or not chat_id or not channel or not source:
             return False
         try:
+            buttons = kwargs.get("buttons")
             return bool(self.chain.run_module(
                 "edit_message",
                 channel=channel,
@@ -446,13 +449,26 @@ class tvhhelper(_PluginBase):
                 message_id=message_id,
                 chat_id=chat_id,
                 title=title,
-                text=text,
-                buttons=kwargs.get("buttons"),
+                text=self.__append_button_text(text, buttons),
+                buttons=buttons,
                 parse_mode=parse_mode,
             ))
         except Exception as err:
             logger.debug(f"TVH助手编辑原消息失败: {err}")
             return False
+
+    @staticmethod
+    def __append_button_text(text: str, buttons: list[list[dict]] | None) -> str:
+        labels = []
+        for row in buttons or []:
+            for button in row or []:
+                label = button.get("text") if isinstance(button, dict) else None
+                if label:
+                    labels.append(str(label))
+        if not labels:
+            return text
+        block = "按钮文字:\n```text\n" + "\n".join(labels) + "\n```"
+        return f"{text}\n\n{block}" if text else block
 
     def __delete_original(self, event: Event) -> bool:
         message_id = event.event_data.get("original_message_id")
@@ -876,22 +892,6 @@ class tvhhelper(_PluginBase):
             return "Webhook签名错误"
         return None
 
-    @staticmethod
-    def __webhook_copy_text() -> str:
-        return "\n".join([
-            "Webhook URL模板:",
-            "https://<MoviePilot公网域名>/api/v1/plugin/tvhhelper/webhook?apikey=<MoviePilot API_TOKEN>",
-            "",
-            "TVH增强版建议:",
-            "只开启TVH Helper的Webhook通知，关闭轮询播放通知；原版TVH保留轮询播放通知。",
-            "",
-            "播放字段:",
-            "channel, channel_uuid, channel_icon, program_title, program_start, program_stop, program_summary, program_description",
-            "",
-            "安全字段:",
-            "X-Tvh-Token 或 apikey；启用HMAC时同时发送 X-Tvh-Signature 和 X-Tvh-Signature-Input。",
-        ])
-
     def get_page(self) -> List[dict]:
         return [
             {
@@ -901,17 +901,7 @@ class tvhhelper(_PluginBase):
                     "variant": "tonal",
                     "text": "请通过 MoviePilot 机器人命令 /tvh 打开功能菜单。",
                 },
-            },
-            {
-                "component": "VTextarea",
-                "props": {
-                    "modelValue": self.__webhook_copy_text(),
-                    "label": "Webhook复制模板",
-                    "rows": 10,
-                    "readonly": True,
-                    "auto-grow": True,
-                },
-            },
+            }
         ]
 
     def stop_service(self):
@@ -1101,25 +1091,6 @@ class tvhhelper(_PluginBase):
                             "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。节目补全用于修正当前EPG标题，LOGO图片用于发送通知图片。",
                         },
                     },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{
-                                    "component": "VTextarea",
-                                    "props": {
-                                        "model": "webhook_copy_text",
-                                        "label": "Webhook复制模板",
-                                        "rows": 10,
-                                        "readonly": True,
-                                        "auto-grow": True,
-                                    },
-                                }],
-                            },
-                        ],
-                    },
                 ],
             }
         ], {
@@ -1128,7 +1099,6 @@ class tvhhelper(_PluginBase):
             "webhook_notify": True,
             "webhook_program_enrich": True,
             "webhook_logo_enrich": True,
-            "webhook_copy_text": self.__webhook_copy_text(),
             "webhook_secret": "",
             "webhook_hmac_secret": "",
             "tvh_url": "http://127.0.0.1:9981",
