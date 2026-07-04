@@ -93,6 +93,7 @@ from .core import (
     playback_notification_key,
     detect_playback_events,
     enrich_tvh_webhook_program,
+    ensure_tvhhelper_dvr_config,
     plan_playback_notifications,
     resolve_play_notify_settings,
     normalize_dvr_filter,
@@ -114,7 +115,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.65"
+    plugin_version = "0.1.66"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -1104,17 +1105,23 @@ class tvhhelper(_PluginBase):
         if not selected:
             raise ValueError("预约录制会话已过期，请重新选择节目。")
         configs = fetch_tvh_dvr_configs(self._tvh_url, self._tvh_user, self._tvh_pass)
-        if not configs:
-            raise ValueError("TVH 未返回可用 DVR 配置，无法创建录制任务。")
+        dvr_config, config_warning = ensure_tvhhelper_dvr_config(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            configs=configs,
+        )
         result = create_tvh_dvr_recording(
             self._tvh_url,
             self._tvh_user,
             self._tvh_pass,
             selected,
-            configs[0],
+            dvr_config,
             start_padding_minutes=session.get("start_padding", 3),
             stop_padding_minutes=session.get("stop_padding", 10),
         )
+        if config_warning:
+            result["warning"] = config_warning
         self.__save_record_session(session_id, {})
         self.__edit_or_reply(
             event,

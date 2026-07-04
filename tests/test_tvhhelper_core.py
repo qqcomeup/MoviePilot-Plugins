@@ -49,6 +49,7 @@ from core import (
     fetch_ip_location_from_pconline,
     fetch_ip_location_from_ipapi,
     enrich_tvh_webhook_program,
+    ensure_tvhhelper_dvr_config,
     fetch_tvh_channel_program,
     fetch_tvh_status,
     fetch_tvh_status_bundle,
@@ -414,14 +415,110 @@ def test_tvh_epg_events_are_parsed_and_old_events_are_skipped():
 
 
 def test_tvh_dvr_configs_skip_disabled_entries():
-    assert parse_tvh_dvr_configs({
+    configs = parse_tvh_dvr_configs({
         "entries": [
-            {"uuid": "cfg-1", "name": "Default profile", "enabled": True},
+            {"uuid": "cfg-1", "name": "Default profile", "enabled": True, "pre-extra-time": 5, "post-extra-time": 10, "warm-time": 60},
             {"uuid": "cfg-2", "name": "Disabled", "enabled": False},
         ]
-    }) == [
-        TvhDvrConfig(uuid="cfg-1", name="Default profile", enabled=True),
-    ]
+    })
+
+    assert len(configs) == 1
+    assert configs[0].uuid == "cfg-1"
+    assert configs[0].name == "Default profile"
+    assert configs[0].enabled is True
+    assert configs[0].pre_extra_time == 5
+    assert configs[0].post_extra_time == 10
+    assert configs[0].warm_time == 60
+
+
+def test_ensure_tvhhelper_dvr_config_creates_dedicated_config(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((path, json.loads(data["conf"])))
+        return {"uuid": "cfg-helper"}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    config, warning = ensure_tvhhelper_dvr_config(
+        "https://tvh.example.com",
+        "admin",
+        "pass",
+        configs=[TvhDvrConfig(
+            uuid="cfg-default",
+            name="Default",
+            pre_extra_time=5,
+            post_extra_time=5,
+            warm_time=60,
+            raw={"storage": "/recordings/", "pathname": "$t.$x"},
+        )],
+    )
+
+    assert warning is None
+    assert config.uuid == "cfg-helper"
+    assert config.name == "MoviePilot TVH Helper"
+    assert calls[0][0] == "/api/dvr/config/create"
+    assert calls[0][1]["storage"] == "/recordings/"
+    assert calls[0][1]["pre-extra-time"] == 0
+    assert calls[0][1]["post-extra-time"] == 0
+    assert calls[0][1]["warm-time"] == 60
+
+
+def test_ensure_tvhhelper_dvr_config_updates_existing_dedicated_config(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((path, json.loads(data["node"])))
+        return {}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    config, warning = ensure_tvhhelper_dvr_config(
+        "https://tvh.example.com",
+        "admin",
+        "pass",
+        configs=[TvhDvrConfig(
+            uuid="cfg-helper",
+            name="MoviePilot TVH Helper",
+            pre_extra_time=5,
+            post_extra_time=5,
+            warm_time=30,
+        )],
+    )
+
+    assert warning is None
+    assert config.uuid == "cfg-helper"
+    assert config.pre_extra_time == 0
+    assert config.post_extra_time == 0
+    assert config.warm_time == 60
+    assert calls == [(
+        "/api/idnode/save",
+        {
+            "uuid": "cfg-helper",
+            "name": "MoviePilot TVH Helper",
+            "pre-extra-time": 0,
+            "post-extra-time": 0,
+            "warm-time": 60,
+        },
+    )]
+
+
+def test_ensure_tvhhelper_dvr_config_falls_back_when_create_fails(monkeypatch):
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        raise core.TvhError("forbidden")
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+    fallback = TvhDvrConfig(uuid="cfg-default", name="Default")
+
+    config, warning = ensure_tvhhelper_dvr_config(
+        "https://tvh.example.com",
+        "admin",
+        "pass",
+        configs=[fallback],
+    )
+
+    assert config == fallback
+    assert "专用 DVR 配置创建失败" in warning
 
 
 def test_tvh_dvr_entries_are_parsed_from_upcoming_grid():
@@ -721,6 +818,7 @@ def test_record_confirm_message_mentions_clipped_start():
 
     assert "节目: 新闻" in message
     assert "提前/延后: 3/10 分钟" in message
+    assert "TVH 会提前约 60 秒预热调谐" in message
     assert "已自动调整为立即开始" in message
 
 
@@ -758,8 +856,12 @@ def test_create_tvh_dvr_recording_posts_conf_json(monkeypatch):
     conf = json.loads(calls[0][4]["conf"])
     assert conf["config_name"] == "cfg-1"
     assert conf["channel"] == "ch-1"
-    assert conf["start"] == 1940
-    assert conf["stop"] == 2900
+    assert conf["start"] == 2000
+    assert conf["stop"] == 2600
+    assert conf["start_extra"] == 1
+    assert conf["stop_extra"] == 5
+    assert result["start"] == 1940
+    assert result["stop"] == 2900
     assert conf["disp_title"] == "新闻"
     assert conf["disp_extratext"] == "摘要"
 

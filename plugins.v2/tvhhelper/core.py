@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -17,6 +17,8 @@ from typing import Iterable
 DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
 DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb"
 DEFAULT_IP2REGION_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
+TVH_HELPER_DVR_CONFIG_NAME = "MoviePilot TVH Helper"
+TVH_HELPER_DVR_WARM_TIME_SECONDS = 60
 LEGACY_IPDB_COUNTRY_URLS = {
     "https://github.com/sapics/ip-location-db/releases/download/latest/dbip-country.mmdb",
 }
@@ -124,6 +126,10 @@ class TvhDvrConfig:
     uuid: str
     name: str
     enabled: bool = True
+    pre_extra_time: int | None = None
+    post_extra_time: int | None = None
+    warm_time: int | None = None
+    raw: dict = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -2326,7 +2332,15 @@ def parse_tvh_dvr_configs(payload: dict) -> list[TvhDvrConfig]:
         enabled = entry.get("enabled")
         if enabled is False:
             continue
-        configs.append(TvhDvrConfig(uuid=uuid, name=name or uuid, enabled=True))
+        configs.append(TvhDvrConfig(
+            uuid=uuid,
+            name=name or uuid,
+            enabled=True,
+            pre_extra_time=_to_int_or_none(entry.get("pre-extra-time")),
+            post_extra_time=_to_int_or_none(entry.get("post-extra-time")),
+            warm_time=_to_int_or_none(entry.get("warm-time")),
+            raw=dict(entry),
+        ))
     return configs
 
 
@@ -2413,6 +2427,168 @@ def fetch_tvh_dvr_configs(base_url: str, username: str, password: str, timeout: 
     return parse_tvh_dvr_configs(payload)
 
 
+def ensure_tvhhelper_dvr_config(
+    base_url: str,
+    username: str,
+    password: str,
+    configs: list[TvhDvrConfig] | None = None,
+    timeout: int = 10,
+) -> tuple[TvhDvrConfig, str | None]:
+    configs = configs if configs is not None else fetch_tvh_dvr_configs(base_url, username, password, timeout=timeout)
+    preferred = configs[0] if configs else None
+    existing = next(
+        (
+            config for config in configs
+            if _normalize_match_text(config.name) == _normalize_match_text(TVH_HELPER_DVR_CONFIG_NAME)
+        ),
+        None,
+    )
+    if existing:
+        if _tvhhelper_dvr_config_matches(existing):
+            return existing, None
+        try:
+            return update_tvhhelper_dvr_config(base_url, username, password, existing, timeout=timeout), None
+        except Exception as err:
+            return existing, f"专用 DVR 配置更新失败，已继续使用现有配置，可能叠加 TVH 全局提前/延后：{err}"
+    try:
+        return create_tvhhelper_dvr_config(base_url, username, password, preferred, timeout=timeout), None
+    except Exception as err:
+        if preferred:
+            return preferred, f"专用 DVR 配置创建失败，已回退到 {preferred.name or preferred.uuid}，可能叠加 TVH 全局提前/延后：{err}"
+        raise
+
+
+def create_tvhhelper_dvr_config(
+    base_url: str,
+    username: str,
+    password: str,
+    preferred: TvhDvrConfig | None = None,
+    timeout: int = 10,
+) -> TvhDvrConfig:
+    conf = _build_tvhhelper_dvr_config_conf(preferred)
+    response = post_tvh_form(
+        base_url,
+        "/api/dvr/config/create",
+        username,
+        password,
+        {"conf": json.dumps(conf, ensure_ascii=False, separators=(",", ":"))},
+        timeout=timeout,
+    )
+    uuid = _string_or_none(response.get("uuid") or response.get("id") or response.get("uuidError"))
+    if not uuid:
+        raise TvhError("TVH 未返回 DVR 配置 ID。")
+    return TvhDvrConfig(
+        uuid=uuid,
+        name=TVH_HELPER_DVR_CONFIG_NAME,
+        enabled=True,
+        pre_extra_time=0,
+        post_extra_time=0,
+        warm_time=TVH_HELPER_DVR_WARM_TIME_SECONDS,
+        raw=conf,
+    )
+
+
+def update_tvhhelper_dvr_config(
+    base_url: str,
+    username: str,
+    password: str,
+    config: TvhDvrConfig,
+    timeout: int = 10,
+) -> TvhDvrConfig:
+    node = {
+        "uuid": config.uuid,
+        "name": TVH_HELPER_DVR_CONFIG_NAME,
+        "pre-extra-time": 0,
+        "post-extra-time": 0,
+        "warm-time": TVH_HELPER_DVR_WARM_TIME_SECONDS,
+    }
+    post_tvh_form(
+        base_url,
+        "/api/idnode/save",
+        username,
+        password,
+        {"node": json.dumps(node, ensure_ascii=False, separators=(",", ":"))},
+        timeout=timeout,
+    )
+    raw = dict(config.raw)
+    raw.update(node)
+    return TvhDvrConfig(
+        uuid=config.uuid,
+        name=TVH_HELPER_DVR_CONFIG_NAME,
+        enabled=config.enabled,
+        pre_extra_time=0,
+        post_extra_time=0,
+        warm_time=TVH_HELPER_DVR_WARM_TIME_SECONDS,
+        raw=raw,
+    )
+
+
+def _tvhhelper_dvr_config_matches(config: TvhDvrConfig) -> bool:
+    return (
+        config.pre_extra_time == 0
+        and config.post_extra_time == 0
+        and config.warm_time == TVH_HELPER_DVR_WARM_TIME_SECONDS
+    )
+
+
+def _build_tvhhelper_dvr_config_conf(preferred: TvhDvrConfig | None) -> dict:
+    conf: dict = {}
+    raw = preferred.raw if preferred else {}
+    copy_fields = [
+        "profile",
+        "pri",
+        "retention-days",
+        "removal-days",
+        "remove-after-playback",
+        "clone",
+        "rerecord-errors",
+        "complex-scheduling",
+        "fetch-artwork",
+        "fetch-artwork-known-broadcasts-allow-unknown",
+        "storage",
+        "storage-mfree",
+        "storage-mused",
+        "directory-permissions",
+        "file-permissions",
+        "charset",
+        "pathname",
+        "cache",
+        "day-dir",
+        "channel-dir",
+        "title-dir",
+        "format-tvmovies-subdir",
+        "format-tvshows-subdir",
+        "channel-in-title",
+        "date-in-title",
+        "time-in-title",
+        "episode-in-title",
+        "subtitle-in-title",
+        "omit-title",
+        "clean-title",
+        "whitespace-in-title",
+        "windows-compatible-filenames",
+        "tag-files",
+        "create-scene-markers",
+        "epg-update-window",
+        "epg-running",
+        "autorec-maxcount",
+        "autorec-maxsched",
+        "record",
+        "skip-commercials",
+    ]
+    for field_name in copy_fields:
+        if field_name in raw:
+            conf[field_name] = raw[field_name]
+    conf.update({
+        "enabled": True,
+        "name": TVH_HELPER_DVR_CONFIG_NAME,
+        "pre-extra-time": 0,
+        "post-extra-time": 0,
+        "warm-time": TVH_HELPER_DVR_WARM_TIME_SECONDS,
+    })
+    return conf
+
+
 def fetch_tvh_dvr_entries(base_url: str, username: str, password: str, timeout: int = 10) -> list[TvhDvrEntry]:
     upcoming_query = urllib.parse.urlencode({
         "limit": 100,
@@ -2468,17 +2644,21 @@ def create_tvh_dvr_recording(
     now: int | None = None,
     timeout: int = 10,
 ) -> dict:
-    start, stop, _ = calculate_recording_window(
+    display_start, display_stop, _ = calculate_recording_window(
         event,
         start_padding_minutes=start_padding_minutes,
         stop_padding_minutes=stop_padding_minutes,
         now=now,
     )
+    start_extra = max(0, int(start_padding_minutes or 0))
+    stop_extra = max(0, int(stop_padding_minutes or 0))
     conf = {
         "enabled": True,
         "config_name": dvr_config.uuid,
-        "start": start,
-        "stop": stop,
+        "start": int(event.start),
+        "stop": int(event.stop),
+        "start_extra": start_extra,
+        "stop_extra": stop_extra,
         "disp_title": event.title,
         "disp_subtitle": event.subtitle or "",
         "disp_extratext": event.summary or event.description or "",
@@ -2502,8 +2682,12 @@ def create_tvh_dvr_recording(
     return {
         "uuid": response.get("uuid") or response.get("id") or response.get("uuidError"),
         "response": response,
-        "start": start,
-        "stop": stop,
+        "start": display_start,
+        "stop": display_stop,
+        "event_start": int(event.start),
+        "event_stop": int(event.stop),
+        "start_extra": start_extra,
+        "stop_extra": stop_extra,
         "config": dvr_config.name,
     }
 
@@ -2544,6 +2728,7 @@ def format_record_confirm_message(
         f"节目时间: {format_record_datetime_range(event.start, event.stop)}",
         f"录制时间: {format_record_datetime_range(start, stop)}",
         f"提前/延后: {start_padding_minutes}/{stop_padding_minutes} 分钟",
+        f"提示: TVH 会提前约 {TVH_HELPER_DVR_WARM_TIME_SECONDS} 秒预热调谐，实际调谐时间可能更早。",
     ]
     if clipped:
         lines.append("提示: 录制开始时间早于当前时间，已自动调整为立即开始。")
@@ -2560,6 +2745,8 @@ def format_record_created_message(result: dict, event: TvhEpgEvent) -> str:
     ]
     if result.get("uuid"):
         lines.append(f"任务ID: {result.get('uuid')}")
+    if result.get("warning"):
+        lines.extend(["", f"提示: {result.get('warning')}"])
     return "\n".join(lines)
 
 
