@@ -51,6 +51,8 @@ from .core import (
     DEFAULT_IPDB_ASN_URL,
     DEFAULT_IPDB_COUNTRY_URL,
     DEFAULT_IP2REGION_URL,
+    DEFAULT_RECORD_START_PADDING_MINUTES,
+    DEFAULT_RECORD_STOP_PADDING_MINUTES,
     LEGACY_IPDB_ASN_URLS,
     LEGACY_IPDB_COUNTRY_URLS,
     fetch_ip_location,
@@ -123,7 +125,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.76"
+    plugin_version = "0.1.77"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -501,10 +503,10 @@ class tvhhelper(_PluginBase):
                 self.__adjust_record_padding(event, session_id, target, self.__to_int(minutes_text, 0))
             elif payload.startswith("record_pad_start|"):
                 _, session_id, minutes_text = payload.split("|", 2)
-                self.__select_record_start_padding(event, session_id, self.__to_int(minutes_text, 3))
+                self.__select_record_start_padding(event, session_id, self.__to_int(minutes_text, DEFAULT_RECORD_START_PADDING_MINUTES))
             elif payload.startswith("record_pad_stop|"):
                 _, session_id, minutes_text = payload.split("|", 2)
-                self.__select_record_stop_padding(event, session_id, self.__to_int(minutes_text, 10))
+                self.__select_record_stop_padding(event, session_id, self.__to_int(minutes_text, DEFAULT_RECORD_STOP_PADDING_MINUTES))
             elif payload.startswith("record_confirm|"):
                 self.__confirm_recording(event, payload.split("|", 1)[1])
             elif payload.startswith("record_merge|"):
@@ -1104,8 +1106,8 @@ class tvhhelper(_PluginBase):
         session_id = self.__create_record_session({
             "channel": channel,
             "events": events,
-            "start_padding": 3,
-            "stop_padding": 10,
+            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
+            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
         })
         self.__show_record_programs_from_session(event, session_id, page)
 
@@ -1133,8 +1135,8 @@ class tvhhelper(_PluginBase):
         session.update({
             "channel": channel,
             "events": events,
-            "start_padding": 3,
-            "stop_padding": 10,
+            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
+            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
         })
         self.__save_record_session(session_id, session)
         self.__show_record_programs_from_session(event, session_id, page)
@@ -1154,8 +1156,8 @@ class tvhhelper(_PluginBase):
         session = self.__record_session(session_id)
         selected = self.__find_record_event(session, event_id)
         session["selected_event"] = selected
-        session["start_padding"] = 3
-        session["stop_padding"] = 10
+        session["start_padding"] = DEFAULT_RECORD_START_PADDING_MINUTES
+        session["stop_padding"] = DEFAULT_RECORD_STOP_PADDING_MINUTES
         self.__save_record_session(session_id, session)
         self.__show_record_padding_adjust(event, session_id)
 
@@ -1166,8 +1168,8 @@ class tvhhelper(_PluginBase):
             raise ValueError("未找到选择的节目，请返回节目列表后重试。")
         selected = events[event_index]
         session["selected_event"] = selected
-        session["start_padding"] = 3
-        session["stop_padding"] = 10
+        session["start_padding"] = DEFAULT_RECORD_START_PADDING_MINUTES
+        session["stop_padding"] = DEFAULT_RECORD_STOP_PADDING_MINUTES
         self.__save_record_session(session_id, session)
         self.__show_record_padding_adjust(event, session_id)
 
@@ -1181,8 +1183,8 @@ class tvhhelper(_PluginBase):
             "调整录制时间",
             format_record_confirm_message(
                 selected,
-                session.get("start_padding", 3),
-                session.get("stop_padding", 10),
+                session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
+                session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
             ),
             buttons=build_record_padding_adjust_buttons(self.__class__.__name__, session_id),
         )
@@ -1192,9 +1194,9 @@ class tvhhelper(_PluginBase):
         if not session.get("selected_event"):
             raise ValueError("预约录制会话已过期，请重新选择节目。")
         if target == "start":
-            session["start_padding"] = max(0, int(session.get("start_padding", 3) or 0) + delta_minutes)
+            session["start_padding"] = max(0, int(session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES) or 0) + delta_minutes)
         elif target == "stop":
-            session["stop_padding"] = max(0, int(session.get("stop_padding", 10) or 0) + delta_minutes)
+            session["stop_padding"] = max(0, int(session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES) or 0) + delta_minutes)
         else:
             raise ValueError("未知录制时间调整类型。")
         self.__save_record_session(session_id, session)
@@ -1231,8 +1233,8 @@ class tvhhelper(_PluginBase):
                     format_record_merge_confirm_message(
                         candidate,
                         selected,
-                        session.get("start_padding", 3),
-                        session.get("stop_padding", 10),
+                        session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
+                        session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
                     ),
                     buttons=build_record_merge_choice_buttons(self.__class__.__name__, session_id),
                 )
@@ -1253,8 +1255,8 @@ class tvhhelper(_PluginBase):
             self._tvh_pass,
             selected,
             dvr_config,
-            start_padding_minutes=session.get("start_padding", 3),
-            stop_padding_minutes=session.get("stop_padding", 10),
+            start_padding_minutes=session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
+            stop_padding_minutes=session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
         )
         if config_warning:
             result["warning"] = config_warning
@@ -1281,8 +1283,8 @@ class tvhhelper(_PluginBase):
             self._tvh_pass,
             candidate,
             selected,
-            start_padding_minutes=session.get("start_padding", 3),
-            stop_padding_minutes=session.get("stop_padding", 10),
+            start_padding_minutes=session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
+            stop_padding_minutes=session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
         )
         session.pop("selected_event", None)
         session.pop("merge_candidate", None)
@@ -1303,8 +1305,8 @@ class tvhhelper(_PluginBase):
         return find_record_merge_candidate(
             entries,
             selected,
-            start_padding_minutes=session.get("start_padding", 3),
-            stop_padding_minutes=session.get("stop_padding", 10),
+            start_padding_minutes=session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
+            stop_padding_minutes=session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
         )
 
     def __cancel_recording(self, event: Event, session_id: str):

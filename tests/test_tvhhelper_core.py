@@ -32,6 +32,8 @@ from core import (
     build_record_merge_choice_buttons,
     build_record_padding_adjust_buttons,
     build_record_program_buttons,
+    build_record_start_padding_buttons,
+    build_record_stop_padding_buttons,
     build_play_notify_user_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
@@ -397,6 +399,14 @@ def test_record_padding_adjust_buttons_use_plus_minus_five_minutes():
         if button.get("callback_data")
     ]
     assert max(len(value.encode("utf-8")) for value in callbacks) <= 64
+
+
+def test_record_padding_preset_buttons_use_consistent_five_minute_steps():
+    start_buttons = [button["text"] for row in build_record_start_padding_buttons("tvhhelper", "session-1") for button in row]
+    stop_buttons = [button["text"] for row in build_record_stop_padding_buttons("tvhhelper", "session-1") for button in row]
+
+    assert start_buttons[:5] == ["提前0分钟", "提前5分钟", "提前10分钟", "提前15分钟", "提前30分钟"]
+    assert stop_buttons[:5] == ["延后0分钟", "延后5分钟", "延后10分钟", "延后15分钟", "延后30分钟"]
 
 
 def test_record_created_buttons_return_to_program_list():
@@ -890,6 +900,19 @@ def test_record_confirm_message_mentions_clipped_start():
     assert "提前/延后: 3/10 分钟" in message
     assert "TVH 会提前约 60 秒预热调谐" in message
     assert "已自动调整为立即开始" in message
+
+
+def test_recording_window_defaults_use_five_minute_padding():
+    event = TvhEpgEvent(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="新闻",
+        start=2000,
+        stop=2600,
+    )
+
+    assert calculate_recording_window(event, now=1000) == (1700, 2900, False)
 
 
 def test_find_record_merge_candidate_matches_adjacent_same_channel():

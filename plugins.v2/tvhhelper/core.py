@@ -17,6 +17,8 @@ from typing import Iterable
 DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
 DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb"
 DEFAULT_IP2REGION_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
+DEFAULT_RECORD_START_PADDING_MINUTES = 5
+DEFAULT_RECORD_STOP_PADDING_MINUTES = 5
 TVH_HELPER_DVR_CONFIG_NAME = "MoviePilot TVH Helper"
 TVH_HELPER_DVR_WARM_TIME_SECONDS = 60
 LEGACY_IPDB_COUNTRY_URLS = {
@@ -431,7 +433,7 @@ def build_record_program_buttons(
 
 
 def build_record_start_padding_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
-    return _build_record_padding_buttons(plugin_id, "record_pad_start", session_id, [0, 1, 3, 5, 10], "提前")
+    return _build_record_padding_buttons(plugin_id, "record_pad_start", session_id, [0, 5, 10, 15, 30], "提前")
 
 
 def build_record_stop_padding_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
@@ -2712,8 +2714,8 @@ def fetch_tvh_dvr_entries(base_url: str, username: str, password: str, timeout: 
 
 def calculate_recording_window(
     event: TvhEpgEvent,
-    start_padding_minutes: int = 3,
-    stop_padding_minutes: int = 10,
+    start_padding_minutes: int = DEFAULT_RECORD_START_PADDING_MINUTES,
+    stop_padding_minutes: int = DEFAULT_RECORD_STOP_PADDING_MINUTES,
     now: int | None = None,
 ) -> tuple[int, int, bool]:
     start = int(event.start) - max(0, int(start_padding_minutes or 0)) * 60
@@ -2731,8 +2733,8 @@ def calculate_recording_window(
 def find_record_merge_candidate(
     entries: list[TvhDvrEntry],
     event: TvhEpgEvent,
-    start_padding_minutes: int = 3,
-    stop_padding_minutes: int = 10,
+    start_padding_minutes: int = DEFAULT_RECORD_START_PADDING_MINUTES,
+    stop_padding_minutes: int = DEFAULT_RECORD_STOP_PADDING_MINUTES,
     threshold_seconds: int = 120,
     now: int | None = None,
 ) -> TvhDvrEntry | None:
@@ -2766,8 +2768,8 @@ def merge_tvh_dvr_entry_recording(
     password: str,
     entry: TvhDvrEntry,
     event: TvhEpgEvent,
-    start_padding_minutes: int = 3,
-    stop_padding_minutes: int = 10,
+    start_padding_minutes: int = DEFAULT_RECORD_START_PADDING_MINUTES,
+    stop_padding_minutes: int = DEFAULT_RECORD_STOP_PADDING_MINUTES,
     timeout: int = 10,
 ) -> dict:
     merged_start = min(int(entry.start), int(event.start))
@@ -2884,8 +2886,8 @@ def create_tvh_dvr_recording(
     password: str,
     event: TvhEpgEvent,
     dvr_config: TvhDvrConfig,
-    start_padding_minutes: int = 3,
-    stop_padding_minutes: int = 10,
+    start_padding_minutes: int = DEFAULT_RECORD_START_PADDING_MINUTES,
+    stop_padding_minutes: int = DEFAULT_RECORD_STOP_PADDING_MINUTES,
     now: int | None = None,
     timeout: int = 10,
 ) -> dict:
