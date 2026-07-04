@@ -32,12 +32,10 @@ from .core import (
     build_tvh_dvr_download_url,
     can_remove_tvh_dvr_entry,
     build_record_channel_buttons,
-    build_record_confirm_buttons,
     build_record_created_buttons,
     build_record_merge_choice_buttons,
+    build_record_padding_adjust_buttons,
     build_record_program_buttons,
-    build_record_start_padding_buttons,
-    build_record_stop_padding_buttons,
     build_play_notify_user_buttons,
     build_user_action_buttons,
     build_user_confirm_buttons,
@@ -75,7 +73,6 @@ from .core import (
     format_record_created_message,
     format_record_merge_confirm_message,
     format_record_merged_message,
-    format_record_program_detail,
     format_dvr_adjusted_message,
     format_dvr_cancel_confirm_message,
     format_dvr_entries_message,
@@ -126,7 +123,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.74"
+    plugin_version = "0.1.75"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -499,6 +496,9 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("record_program|"):
                 _, session_id, event_id = payload.split("|", 2)
                 self.__select_record_program(event, session_id, event_id)
+            elif payload.startswith("record_pad_delta|"):
+                _, session_id, target, minutes_text = payload.split("|", 3)
+                self.__adjust_record_padding(event, session_id, target, self.__to_int(minutes_text, 0))
             elif payload.startswith("record_pad_start|"):
                 _, session_id, minutes_text = payload.split("|", 2)
                 self.__select_record_start_padding(event, session_id, self.__to_int(minutes_text, 3))
@@ -1157,12 +1157,7 @@ class tvhhelper(_PluginBase):
         session["start_padding"] = 3
         session["stop_padding"] = 10
         self.__save_record_session(session_id, session)
-        self.__edit_or_reply(
-            event,
-            "选择提前录制时间",
-            format_record_program_detail(selected) + "\n\n请选择提前开始录制时间。",
-            buttons=build_record_start_padding_buttons(self.__class__.__name__, session_id),
-        )
+        self.__show_record_padding_adjust(event, session_id)
 
     def __select_record_program_by_index(self, event: Event, session_id: str, event_index: int):
         session = self.__record_session(session_id)
@@ -1174,44 +1169,48 @@ class tvhhelper(_PluginBase):
         session["start_padding"] = 3
         session["stop_padding"] = 10
         self.__save_record_session(session_id, session)
-        self.__edit_or_reply(
-            event,
-            "选择提前录制时间",
-            format_record_program_detail(selected) + "\n\n请选择提前开始录制时间。",
-            buttons=build_record_start_padding_buttons(self.__class__.__name__, session_id),
-        )
+        self.__show_record_padding_adjust(event, session_id)
 
-    def __select_record_start_padding(self, event: Event, session_id: str, minutes: int):
+    def __show_record_padding_adjust(self, event: Event, session_id: str):
         session = self.__record_session(session_id)
-        session["start_padding"] = max(0, minutes)
-        self.__save_record_session(session_id, session)
         selected = session.get("selected_event")
         if not selected:
             raise ValueError("预约录制会话已过期，请重新选择节目。")
         self.__edit_or_reply(
             event,
-            "选择延后结束时间",
-            format_record_program_detail(selected) + f"\n\n已选择提前 {session['start_padding']} 分钟，请选择结束后延长时间。",
-            buttons=build_record_stop_padding_buttons(self.__class__.__name__, session_id),
-        )
-
-    def __select_record_stop_padding(self, event: Event, session_id: str, minutes: int):
-        session = self.__record_session(session_id)
-        session["stop_padding"] = max(0, minutes)
-        self.__save_record_session(session_id, session)
-        selected = session.get("selected_event")
-        if not selected:
-            raise ValueError("预约录制会话已过期，请重新选择节目。")
-        self.__edit_or_reply(
-            event,
-            "确认预约录制",
+            "调整录制时间",
             format_record_confirm_message(
                 selected,
                 session.get("start_padding", 3),
                 session.get("stop_padding", 10),
             ),
-            buttons=build_record_confirm_buttons(self.__class__.__name__, session_id),
+            buttons=build_record_padding_adjust_buttons(self.__class__.__name__, session_id),
         )
+
+    def __adjust_record_padding(self, event: Event, session_id: str, target: str, delta_minutes: int):
+        session = self.__record_session(session_id)
+        if not session.get("selected_event"):
+            raise ValueError("预约录制会话已过期，请重新选择节目。")
+        if target == "start":
+            session["start_padding"] = max(0, int(session.get("start_padding", 3) or 0) + delta_minutes)
+        elif target == "stop":
+            session["stop_padding"] = max(0, int(session.get("stop_padding", 10) or 0) + delta_minutes)
+        else:
+            raise ValueError("未知录制时间调整类型。")
+        self.__save_record_session(session_id, session)
+        self.__show_record_padding_adjust(event, session_id)
+
+    def __select_record_start_padding(self, event: Event, session_id: str, minutes: int):
+        session = self.__record_session(session_id)
+        session["start_padding"] = max(0, minutes)
+        self.__save_record_session(session_id, session)
+        self.__show_record_padding_adjust(event, session_id)
+
+    def __select_record_stop_padding(self, event: Event, session_id: str, minutes: int):
+        session = self.__record_session(session_id)
+        session["stop_padding"] = max(0, minutes)
+        self.__save_record_session(session_id, session)
+        self.__show_record_padding_adjust(event, session_id)
 
     def __confirm_recording(self, event: Event, session_id: str, merge_action: str | None = None):
         session = self.__record_session(session_id)

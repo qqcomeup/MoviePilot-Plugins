@@ -30,6 +30,7 @@ from core import (
     build_record_confirm_buttons,
     build_record_created_buttons,
     build_record_merge_choice_buttons,
+    build_record_padding_adjust_buttons,
     build_record_program_buttons,
     build_play_notify_user_buttons,
     build_user_confirm_buttons,
@@ -371,6 +372,31 @@ def test_record_confirm_buttons_confirm_and_cancel():
             {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
         ],
     ]
+
+
+def test_record_padding_adjust_buttons_use_plus_minus_five_minutes():
+    assert build_record_padding_adjust_buttons("tvhhelper", "session-1") == [
+        [
+            {"text": "提前 -5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|start|-5"},
+            {"text": "提前 +5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|start|5"},
+        ],
+        [
+            {"text": "延后 -5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|stop|-5"},
+            {"text": "延后 +5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|stop|5"},
+        ],
+        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|record_confirm|session-1"}],
+        [
+            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+        ],
+    ]
+    callbacks = [
+        button["callback_data"]
+        for row in build_record_padding_adjust_buttons("tvhhelper", "session-1")
+        for button in row
+        if button.get("callback_data")
+    ]
+    assert max(len(value.encode("utf-8")) for value in callbacks) <= 64
 
 
 def test_record_created_buttons_return_to_program_list():

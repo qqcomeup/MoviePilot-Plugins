@@ -613,6 +613,49 @@ def test_record_confirm_clears_session_to_prevent_duplicate_create(monkeypatch):
     assert "会话已过期" in plugin.messages[1].kwargs["text"]
 
 
+def test_record_padding_delta_updates_same_confirm_page(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    event = types.SimpleNamespace(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="晚间新闻",
+        start=1893456000,
+        stop=1893457800,
+        subtitle=None,
+        summary=None,
+        description=None,
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin._record_session_cache.set("session-1", {
+        "selected_event": event,
+        "events": [event],
+        "start_padding": 3,
+        "stop_padding": 10,
+    })
+    callback_event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "record_pad_delta|session-1|start|-5",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(callback_event)
+    callback_event.event_data["text"] = "record_pad_delta|session-1|stop|5"
+    plugin.handle_callback(callback_event)
+
+    session = plugin._record_session_cache.get("session-1")
+    assert session["start_padding"] == 0
+    assert session["stop_padding"] == 15
+    assert plugin.messages[-2].kwargs["title"] == "调整录制时间"
+    assert "提前/延后: 0/10 分钟" in plugin.messages[-2].kwargs["text"]
+    assert plugin.messages[-1].kwargs["title"] == "调整录制时间"
+    assert "提前/延后: 0/15 分钟" in plugin.messages[-1].kwargs["text"]
+    assert plugin.messages[-1].kwargs["buttons"][0][0]["text"] == "提前 -5"
+    assert plugin.messages[-1].kwargs["buttons"][1][1]["text"] == "延后 +5"
+
+
 def test_dvr_tasks_callback_lists_entries(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(

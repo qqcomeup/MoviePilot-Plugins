@@ -438,6 +438,24 @@ def build_record_stop_padding_buttons(plugin_id: str, session_id: str) -> list[l
     return _build_record_padding_buttons(plugin_id, "record_pad_stop", session_id, [0, 5, 10, 15, 30], "延后")
 
 
+def build_record_padding_adjust_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [
+            {"text": "提前 -5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|start|-5")},
+            {"text": "提前 +5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|start|5")},
+        ],
+        [
+            {"text": "延后 -5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|stop|-5")},
+            {"text": "延后 +5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|stop|5")},
+        ],
+        [{"text": "确认录制", "callback_data": plugin_callback(plugin_id, f"record_confirm|{session_id}")}],
+        [
+            {"text": "返回节目", "callback_data": plugin_callback(plugin_id, f"record_programs|{session_id}|0")},
+            {"text": "取消", "callback_data": plugin_callback(plugin_id, f"record_cancel|{session_id}")},
+        ],
+    ]
+
+
 def build_record_confirm_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
     return [
         [{"text": "确认录制", "callback_data": plugin_callback(plugin_id, f"record_confirm|{session_id}")}],
