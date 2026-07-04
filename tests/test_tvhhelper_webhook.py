@@ -174,8 +174,10 @@ def test_receive_webhook_dvr_complete_enriches_filesize_from_dvr_entry(monkeypat
                 uuid="dvr-1",
                 title="晚间新闻",
                 channel="翡翠台",
-                start=1,
-                stop=2,
+                start=1783139400,
+                stop=1783141200,
+                start_real=1783139040,
+                stop_real=1783141500,
                 filesize=916009132,
                 filename="/recordings/晚间新闻.ts",
             )
@@ -205,6 +207,8 @@ def test_receive_webhook_dvr_complete_enriches_filesize_from_dvr_entry(monkeypat
     assert response.success is True
     assert len(plugin.messages) == 1
     assert "录制体积: 873.6 MB" in plugin.messages[0]["text"]
+    assert "节目时长: 30 分钟" in plugin.messages[0]["text"]
+    assert "录制时长: 41 分钟" in plugin.messages[0]["text"]
 
 
 def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypatch):

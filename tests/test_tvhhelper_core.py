@@ -1632,10 +1632,14 @@ def test_tvh_webhook_message_formats_dvr_complete_filesize():
         "recording_state": "FINISHED",
         "filename": "/recordings/show.ts",
         "filesize": 916009132,
+        "start": 1783139400,
+        "stop": 1783141200,
+        "start_real": 1783139040,
+        "stop_real": 1783141500,
     })
 
     assert title == "TVH录制完成"
-    assert "文件\n/recordings/show.ts\n录制体积: 873.6 MB" in text
+    assert "文件\n/recordings/show.ts\n录制体积: 873.6 MB\n节目时长: 30 分钟\n录制时长: 41 分钟" in text
 
 
 def test_tvh_webhook_message_separates_program_content_from_user():

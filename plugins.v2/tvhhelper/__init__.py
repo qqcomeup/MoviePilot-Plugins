@@ -122,7 +122,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.69"
+    plugin_version = "0.1.70"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -1550,6 +1550,10 @@ class tvhhelper(_PluginBase):
                 enriched["filesize"] = entry.filesize
             if entry.filename and not enriched.get("filename"):
                 enriched["filename"] = entry.filename
+            for key in ("start", "stop", "start_real", "stop_real", "duration"):
+                value = getattr(entry, key, None)
+                if value is not None and not enriched.get(key):
+                    enriched[key] = value
             return enriched
         return payload
 

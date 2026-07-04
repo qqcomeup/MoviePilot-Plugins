@@ -141,6 +141,7 @@ class TvhDvrEntry:
     stop: int
     start_real: int | None = None
     stop_real: int | None = None
+    duration: int | None = None
     start_extra: int | None = None
     stop_extra: int | None = None
     sched_status: str | None = None
@@ -1114,6 +1115,8 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     error_text = payload.get("last_error_text")
     result = payload.get("recording_state") or payload.get("sched_state")
     filesize = _to_int_or_none(payload.get("filesize") or payload.get("data_size"))
+    program_duration = _format_webhook_dvr_program_duration(payload)
+    recording_duration = _format_webhook_dvr_recording_duration(payload)
     if event == "dvr.error" and error_text:
         result = error_text
     main_lines = _compact_lines([
@@ -1126,6 +1129,8 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     file_lines = _compact_lines([
         str(payload.get("filename")) if payload.get("filename") else None,
         f"录制体积: {_format_file_size(filesize)}" if filesize else None,
+        f"节目时长: {program_duration}" if program_duration else None,
+        f"录制时长: {recording_duration}" if recording_duration else None,
     ])
     tech_lines = _compact_lines([
         f"录制ID: {payload.get('dvr_uuid')}" if payload.get("dvr_uuid") else None,
@@ -1139,6 +1144,41 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
         sections.append(("文件", file_lines))
     sections.append(("技术信息", tech_lines))
     return _format_tvh_sections(main_lines, sections)
+
+
+def _format_webhook_dvr_program_duration(payload: dict) -> str | None:
+    return _format_duration_minutes_between(payload.get("start"), payload.get("stop"))
+
+
+def _format_webhook_dvr_recording_duration(payload: dict) -> str | None:
+    duration = _format_duration_minutes_between(payload.get("start_real"), payload.get("stop_real"))
+    if duration:
+        return duration
+    duration_seconds = _to_int_or_none(payload.get("duration"))
+    if duration_seconds is not None and duration_seconds > 0:
+        return _format_duration_minutes(duration_seconds)
+    return None
+
+
+def _format_duration_minutes_between(start, stop) -> str | None:
+    start_dt = _coerce_datetime(start)
+    stop_dt = _coerce_datetime(stop)
+    if not start_dt or not stop_dt:
+        return None
+    seconds = int((stop_dt - start_dt).total_seconds())
+    if seconds <= 0:
+        return None
+    return _format_duration_minutes(seconds)
+
+
+def _format_duration_minutes(seconds: int | float | str | None) -> str | None:
+    try:
+        value = int(float(seconds or 0))
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return f"{max(1, int(round(value / 60)))} 分钟"
 
 
 def _format_tvh_error_webhook(payload: dict) -> str:
@@ -2391,6 +2431,7 @@ def parse_tvh_dvr_entries(payload: dict) -> list[TvhDvrEntry]:
             stop=stop,
             start_real=_to_int_or_none(entry.get("start_real")),
             stop_real=_to_int_or_none(entry.get("stop_real")),
+            duration=_to_int_or_none(entry.get("duration")),
             start_extra=_to_int_or_none(entry.get("start_extra")),
             stop_extra=_to_int_or_none(entry.get("stop_extra")),
             sched_status=_string_or_none(entry.get("sched_status") or entry.get("sched_state")),
