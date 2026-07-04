@@ -17,8 +17,8 @@ from typing import Iterable
 DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
 DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-ASN.mmdb"
 DEFAULT_IP2REGION_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
-DEFAULT_RECORD_START_PADDING_MINUTES = 5
-DEFAULT_RECORD_STOP_PADDING_MINUTES = 5
+DEFAULT_RECORD_START_PADDING_MINUTES = 10
+DEFAULT_RECORD_STOP_PADDING_MINUTES = 10
 TVH_HELPER_DVR_CONFIG_NAME = "MoviePilot TVH Helper"
 TVH_HELPER_DVR_WARM_TIME_SECONDS = 60
 LEGACY_IPDB_COUNTRY_URLS = {

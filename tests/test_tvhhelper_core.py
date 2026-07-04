@@ -902,7 +902,7 @@ def test_record_confirm_message_mentions_clipped_start():
     assert "已自动调整为立即开始" in message
 
 
-def test_recording_window_defaults_use_five_minute_padding():
+def test_recording_window_defaults_use_ten_minute_padding():
     event = TvhEpgEvent(
         event_id="100",
         channel_uuid="ch-1",
@@ -912,7 +912,7 @@ def test_recording_window_defaults_use_five_minute_padding():
         stop=2600,
     )
 
-    assert calculate_recording_window(event, now=1000) == (1700, 2900, False)
+    assert calculate_recording_window(event, now=1000) == (1400, 3200, False)
 
 
 def test_find_record_merge_candidate_matches_adjacent_same_channel():
