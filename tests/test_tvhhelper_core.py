@@ -12,10 +12,22 @@ from core import (
     TvhUser,
     TvhSubscription,
     TvhServerStatus,
+    TvhDvrSummary,
+    TvhChannel,
+    TvhDvrConfig,
+    TvhDvrEntry,
+    TvhEpgEvent,
+    adjust_tvh_dvr_entry_stop,
+    build_dvr_entry_action_buttons,
+    build_dvr_entry_buttons,
+    build_dvr_filter_buttons,
     build_epg_url,
     build_long_epg_url,
     build_long_m3u_url,
     build_m3u_url,
+    build_record_channel_buttons,
+    build_record_confirm_buttons,
+    build_record_program_buttons,
     build_play_notify_user_buttons,
     build_user_confirm_buttons,
     build_main_buttons,
@@ -38,8 +50,18 @@ from core import (
     fetch_ip_location_from_ipapi,
     enrich_tvh_webhook_program,
     fetch_tvh_channel_program,
+    fetch_tvh_status,
     fetch_tvh_status_bundle,
+    calculate_recording_window,
+    create_tvh_dvr_recording,
+    cancel_tvh_dvr_entry,
+    remove_tvh_dvr_entry,
+    stop_tvh_dvr_entry,
     detect_playback_events,
+    format_record_confirm_message,
+    format_dvr_entry_detail,
+    filter_tvh_dvr_entries,
+    format_subscription_status_line,
     format_playback_notification,
     format_playback_switch_notification,
     format_tvh_webhook_message,
@@ -51,6 +73,9 @@ from core import (
     format_user_message,
     format_dvb_message,
     format_status_message,
+    build_tvh_dvr_download_url,
+    fetch_tvh_dvr_ticket_download_url,
+    can_remove_tvh_dvr_entry,
     merge_subscription_details,
     normalize_interval,
     lookup_ip_location_from_mmdb,
@@ -64,9 +89,14 @@ from core import (
     parse_tvh_passwd_users,
     parse_tvh_inputs,
     parse_tvh_connections,
+    parse_tvh_channels,
+    parse_tvh_dvr_configs,
+    parse_tvh_dvr_entries,
+    parse_tvh_epg_events,
     parse_tvh_subscriptions,
     parse_tvh_users,
     playback_subscription_key,
+    summarize_tvh_dvr_entries,
     tokens_from_passwd_payload,
     scan_dvb_adapters,
     restart_tvh_server,
@@ -241,6 +271,10 @@ def test_main_buttons_use_plugin_callbacks():
             {"text": "播放通知", "callback_data": "[PLUGIN]tvhhelper|play_notify_users"},
         ],
         [
+            {"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|record_menu"},
+            {"text": "录制任务", "callback_data": "[PLUGIN]tvhhelper|dvr_tasks"},
+        ],
+        [
             {"text": "重启TVH", "callback_data": "[PLUGIN]tvhhelper|confirm_restart"},
         ],
     ]
@@ -254,6 +288,552 @@ def test_restart_confirm_buttons_require_second_click():
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
         ],
     ]
+
+
+def test_record_channel_buttons_page_channels():
+    channels = [
+        TvhChannel(uuid=f"ch-{index}", name=f"频道{index}", number=str(index))
+        for index in range(1, 10)
+    ]
+
+    buttons = build_record_channel_buttons("tvhhelper", "session-1", channels, page=1, page_size=8)
+
+    assert buttons[0][0]["text"] == "9 频道9"
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_ch|session-1|8"
+    assert buttons[1][0]["text"] == "上一页"
+
+
+def test_record_program_buttons_use_session_and_event_id():
+    events = [
+        TvhEpgEvent(
+            event_id="100",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="晚间新闻",
+            start=1893456000,
+            stop=1893457800,
+        )
+    ]
+
+    buttons = build_record_program_buttons("tvhhelper", "session-1", events)
+
+    assert buttons[0][0]["text"].endswith("晚间新闻")
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_prog|session-1|0"
+
+
+def test_record_buttons_fit_telegram_callback_limit():
+    channels = [
+        TvhChannel(uuid="cc28bb2d998203bd47f6f67611d85e4a", name=f"频道{index}", number=str(index))
+        for index in range(1, 10)
+    ]
+    events = [
+        TvhEpgEvent(
+            event_id="very-long-event-id-that-should-not-be-placed-in-callback-data",
+            channel_uuid="cc28bb2d998203bd47f6f67611d85e4a",
+            channel_name="翡翠台",
+            title="晚间新闻",
+            start=1893456000,
+            stop=1893457800,
+        )
+    ]
+    session_id = "abcd1234ef"
+    buttons = (
+        build_record_channel_buttons("tvhhelper", session_id, channels, page=1, page_size=8)
+        + build_record_program_buttons("tvhhelper", session_id, events)
+        + build_record_confirm_buttons("tvhhelper", session_id)
+    )
+
+    callback_data = [
+        button["callback_data"]
+        for row in buttons
+        for button in row
+        if button.get("callback_data")
+    ]
+
+    assert callback_data
+    assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+
+
+def test_record_confirm_buttons_confirm_and_cancel():
+    assert build_record_confirm_buttons("tvhhelper", "session-1") == [
+        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|record_confirm|session-1"}],
+        [
+            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+        ],
+    ]
+
+
+def test_tvh_channels_are_parsed_from_grid_and_list_payloads():
+    assert parse_tvh_channels({
+        "entries": [
+            {"uuid": "ch-1", "name": "翡翠台", "number": "81"},
+            {"uuid": "disabled", "name": "禁用频道", "enabled": False},
+            {"key": "ch-2", "val": "HOY TV"},
+        ]
+    }) == [
+        TvhChannel(uuid="ch-1", name="翡翠台", number="81"),
+        TvhChannel(uuid="ch-2", name="HOY TV", number=None),
+    ]
+
+
+def test_tvh_epg_events_are_parsed_and_old_events_are_skipped():
+    events = parse_tvh_epg_events({
+        "entries": [
+            {
+                "eventId": 100,
+                "channelUuid": "ch-1",
+                "channelName": "翡翠台",
+                "title": "新闻",
+                "start": 2000,
+                "stop": 2600,
+                "summary": "节目简介",
+            },
+            {
+                "eventId": 99,
+                "channelUuid": "ch-1",
+                "channelName": "翡翠台",
+                "title": "旧节目",
+                "start": 1000,
+                "stop": 1500,
+            },
+        ]
+    }, now=1800)
+
+    assert events == [
+        TvhEpgEvent(
+            event_id="100",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="新闻",
+            start=2000,
+            stop=2600,
+            summary="节目简介",
+        )
+    ]
+
+
+def test_tvh_dvr_configs_skip_disabled_entries():
+    assert parse_tvh_dvr_configs({
+        "entries": [
+            {"uuid": "cfg-1", "name": "Default profile", "enabled": True},
+            {"uuid": "cfg-2", "name": "Disabled", "enabled": False},
+        ]
+    }) == [
+        TvhDvrConfig(uuid="cfg-1", name="Default profile", enabled=True),
+    ]
+
+
+def test_tvh_dvr_entries_are_parsed_from_upcoming_grid():
+    entries = parse_tvh_dvr_entries({
+        "entries": [
+            {
+                "uuid": "dvr-1",
+                "disp_title": "原來愛上賊#15[粵][PG]",
+                "channelname": "翡翠台",
+                "start": 2000,
+                "stop": 2600,
+                "start_real": 1940,
+                "stop_real": 2900,
+                "sched_status": "Scheduled for recording",
+                "status": "Scheduled for recording",
+                "comment": "Created by MoviePilot TVH Helper",
+                "filesize": 916009132,
+                "filename": "/recordings/原來愛上賊#15[粵][PG]-翡翠台.ts",
+                "url": "dvrfile/dvr-1",
+            },
+            {"uuid": "bad", "start": 1, "stop": 2},
+        ]
+    })
+
+    assert entries == [
+        TvhDvrEntry(
+            uuid="dvr-1",
+            title="原來愛上賊#15[粵][PG]",
+            channel="翡翠台",
+            start=2000,
+            stop=2600,
+            start_real=1940,
+            stop_real=2900,
+            sched_status="Scheduled for recording",
+            status="Scheduled for recording",
+            comment="Created by MoviePilot TVH Helper",
+            filesize=916009132,
+            filename="/recordings/原來愛上賊#15[粵][PG]-翡翠台.ts",
+            url="dvrfile/dvr-1",
+        )
+    ]
+
+
+def test_dvr_entry_buttons_fit_telegram_callback_limit():
+    entries = [
+        TvhDvrEntry(
+            uuid="17b514be12680fa1c17fdb39dbc22e85",
+            title="原來愛上賊#15[粵][PG]",
+            channel="翡翠台",
+            start=1893456000,
+            stop=1893457800,
+            sched_status="Scheduled for recording",
+        )
+    ]
+    buttons = (
+        build_dvr_entry_buttons("tvhhelper", "session-1", entries)
+        + build_dvr_entry_action_buttons("tvhhelper", "session-1", 0)
+    )
+    callback_data = [
+        button["callback_data"]
+        for row in buttons
+        for button in row
+        if button.get("callback_data")
+    ]
+
+    assert callback_data
+    assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+
+
+def test_dvr_filter_buttons_fit_telegram_callback_limit():
+    buttons = build_dvr_filter_buttons("tvhhelper", "session-1")
+    callback_data = [
+        button["callback_data"]
+        for row in buttons
+        for button in row
+        if button.get("callback_data")
+    ]
+
+    assert callback_data
+    assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+
+
+def test_filter_tvh_dvr_entries_by_status():
+    entries = [
+        TvhDvrEntry(uuid="recording", title="录制中", channel="翡翠台", start=1, stop=2, sched_status="recording"),
+        TvhDvrEntry(uuid="finished", title="已完成", channel="翡翠台", start=1, stop=2, sched_status="completed"),
+        TvhDvrEntry(uuid="failed", title="失败", channel="翡翠台", start=1, stop=2, sched_status="failed"),
+        TvhDvrEntry(uuid="rerecord", title="需重录", channel="翡翠台", start=1, stop=2, sched_status="completedRerecord"),
+        TvhDvrEntry(uuid="scheduled", title="等待", channel="翡翠台", start=1, stop=2, sched_status="Scheduled for recording"),
+    ]
+
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "recording")] == ["recording"]
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "finished")] == ["finished"]
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "failed")] == ["failed", "rerecord"]
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "all")] == [
+        "recording",
+        "finished",
+        "failed",
+        "rerecord",
+        "scheduled",
+    ]
+
+
+def test_subscription_status_line_marks_dvr_recording_without_ip():
+    message = format_subscription_status_line(TvhSubscription(
+        subscription_id="87",
+        username="ck",
+        channel="翡翠台",
+        title="DVR: 原來愛上賊#15[粵][PG]",
+        profile="pass",
+        state="Running",
+        service="HDIC HD2312 #2 : DVB-T #0/HKDTMB/602MHz/Jade",
+        errors="19",
+        input_kbps="1279716",
+        output_kbps="1279716",
+    ))
+
+    assert "类型: 正在录制" in message
+    assert "节目: 原來愛上賊#15[粵][PG]" in message
+    assert "来源: TVH录制任务" in message
+    assert "IP: 未知IP" not in message
+
+
+def test_dvr_entry_detail_formats_task_fields():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        start_real=1940,
+        stop_real=2900,
+        sched_status="Scheduled for recording",
+        filesize=916009132,
+        filename="/recordings/晚间新闻.ts",
+    )
+
+    message = format_dvr_entry_detail(entry, download_url="https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1")
+
+    assert "状态: 等待录制" in message
+    assert "频道: 翡翠台" in message
+    assert "节目: 晚间新闻" in message
+    assert "录制体积: 873.6 MB" in message
+    assert "下载: 可用" in message
+    assert "文件: 晚间新闻.ts" in message
+    assert "任务ID: dvr-1" in message
+
+
+def test_dvr_entry_detail_shows_tvh_failure_reason():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="粵講粵㜺鬼[粵]",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="completedError",
+        status="Not enough disk space",
+        error="403",
+    )
+
+    message = format_dvr_entry_detail(entry)
+
+    assert "状态: 失败" in message
+    assert "异常原因: 磁盘空间不足" in message
+    assert "错误: 403" in message
+
+
+def test_dvr_entry_detail_marks_completed_rerecord():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="粵講粵㜺鬼[粵]",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="completedRerecord",
+        status="Not enough disk space",
+    )
+
+    message = format_dvr_entry_detail(entry)
+
+    assert "状态: 需重录" in message
+    assert "异常原因: 磁盘空间不足" in message
+
+
+def test_dvr_download_url_uses_tvh_relative_url():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="completed",
+        url="dvrfile/dvr-1",
+    )
+
+    assert build_tvh_dvr_download_url("https://tvh.example.com/", entry) == "https://tvh.example.com/dvrfile/dvr-1"
+
+
+def test_tvh_dvr_ticket_download_url_parses_recordings_playlist(monkeypatch):
+    def fake_fetch_text(base_url, path, username, password, timeout=10):
+        assert path == "/play/ticket/dvrfile/dvr-1?playlist=m3u"
+        return "\n".join([
+            "#EXTM3U",
+            "https://tvh.example.com/dvrfile/other?ticket=other-ticket",
+            "https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1",
+        ])
+
+    monkeypatch.setattr(core, "fetch_tvh_text", fake_fetch_text)
+
+    assert fetch_tvh_dvr_ticket_download_url("https://tvh.example.com/", "admin", "pass", "dvr-1") == (
+        "https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1"
+    )
+
+
+def test_dvr_action_buttons_show_download_and_remove_for_finished_entry():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="completed",
+        filename="/recordings/晚间新闻.ts",
+    )
+
+    buttons = build_dvr_entry_action_buttons("tvhhelper", "session-1", 0, entry, "https://tvh.example.com/dvrfile/dvr-1")
+    flat = [button for row in buttons for button in row]
+
+    assert {"text": "下载录制文件", "url": "https://tvh.example.com/dvrfile/dvr-1"} in flat
+    assert any(button.get("text") == "删除录制文件" for button in flat)
+    assert not any(button.get("text") == "取消任务" for button in flat)
+    assert can_remove_tvh_dvr_entry(entry) is True
+
+
+def test_dvr_action_buttons_do_not_remove_recording_entry():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="recording",
+        filename="/recordings/晚间新闻.ts",
+    )
+
+    buttons = build_dvr_entry_action_buttons("tvhhelper", "session-1", 0, entry, "https://tvh.example.com/dvrfile/dvr-1")
+    flat = [button for row in buttons for button in row]
+
+    assert any(button.get("text") == "下载录制文件" for button in flat)
+    assert not any(button.get("text") == "删除录制文件" for button in flat)
+    assert any(button.get("text") == "停止录制" for button in flat)
+    assert can_remove_tvh_dvr_entry(entry) is False
+
+
+def test_dvr_action_buttons_show_stop_for_recording_entry():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+        sched_status="recording",
+    )
+
+    buttons = build_dvr_entry_action_buttons("tvhhelper", "session-1", 0, entry)
+    flat = [button for row in buttons for button in row]
+
+    assert any(button.get("text") == "停止录制" for button in flat)
+    assert not any(button.get("text") == "删除录制文件" for button in flat)
+
+
+def test_recording_window_applies_padding_and_clips_to_now():
+    event = TvhEpgEvent(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="新闻",
+        start=2000,
+        stop=2600,
+    )
+
+    assert calculate_recording_window(event, 3, 10, now=1000) == (1820, 3200, False)
+    assert calculate_recording_window(event, 3, 10, now=1900) == (1900, 3200, True)
+
+
+def test_record_confirm_message_mentions_clipped_start():
+    event = TvhEpgEvent(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="新闻",
+        start=2000,
+        stop=2600,
+    )
+
+    message = format_record_confirm_message(event, 3, 10, now=1900)
+
+    assert "节目: 新闻" in message
+    assert "提前/延后: 3/10 分钟" in message
+    assert "已自动调整为立即开始" in message
+
+
+def test_create_tvh_dvr_recording_posts_conf_json(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {"uuid": "dvr-1"}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+    event = TvhEpgEvent(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="新闻",
+        start=2000,
+        stop=2600,
+        summary="摘要",
+    )
+
+    result = create_tvh_dvr_recording(
+        "https://tvh.example.com",
+        "admin",
+        "pass",
+        event,
+        TvhDvrConfig(uuid="cfg-1", name="Default"),
+        start_padding_minutes=1,
+        stop_padding_minutes=5,
+        now=1000,
+    )
+
+    assert result["uuid"] == "dvr-1"
+    assert calls[0][1] == "/api/dvr/entry/create"
+    conf = json.loads(calls[0][4]["conf"])
+    assert conf["config_name"] == "cfg-1"
+    assert conf["channel"] == "ch-1"
+    assert conf["start"] == 1940
+    assert conf["stop"] == 2900
+    assert conf["disp_title"] == "新闻"
+    assert conf["disp_extratext"] == "摘要"
+
+
+def test_cancel_tvh_dvr_entry_posts_uuid_array(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {"success": True}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    response = cancel_tvh_dvr_entry("https://tvh.example.com", "admin", "pass", "dvr-1")
+
+    assert response == {"success": True}
+    assert calls[0][1] == "/api/dvr/entry/cancel"
+    assert json.loads(calls[0][4]["uuid"]) == ["dvr-1"]
+
+
+def test_remove_tvh_dvr_entry_posts_uuid_array(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {"success": True}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    response = remove_tvh_dvr_entry("https://tvh.example.com", "admin", "pass", "dvr-1")
+
+    assert response == {"success": True}
+    assert calls[0][1] == "/api/dvr/entry/remove"
+    assert json.loads(calls[0][4]["uuid"]) == ["dvr-1"]
+
+
+def test_stop_tvh_dvr_entry_posts_uuid_array(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {"success": True}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+
+    response = stop_tvh_dvr_entry("https://tvh.example.com", "admin", "pass", "dvr-1")
+
+    assert response == {"success": True}
+    assert calls[0][1] == "/api/dvr/entry/stop"
+    assert json.loads(calls[0][4]["uuid"]) == ["dvr-1"]
+
+
+def test_adjust_tvh_dvr_entry_stop_posts_idnode_save(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=2000,
+        stop=2600,
+    )
+
+    result = adjust_tvh_dvr_entry_stop("https://tvh.example.com", "admin", "pass", entry, 5)
+
+    assert result["stop"] == 2900
+    assert calls[0][1] == "/api/idnode/save"
+    node = json.loads(calls[0][4]["node"])
+    assert node == [{"uuid": "dvr-1", "stop": 2900}]
 
 
 def test_restart_tvh_server_calls_tvh_restart_api(monkeypatch):
@@ -1097,7 +1677,7 @@ def test_status_message_includes_online_users():
     assert message == (
         "```text\n"
         "版本: 4.3\n"
-        "TVH: OK | DVB: 1/3\n"
+        "TVH: OK | DVB: 1/3 | 在线: 1\n"
         "```\n"
         "\n"
         "在线: 1\n"
@@ -1130,9 +1710,9 @@ def test_status_summary_is_copyable_code_block():
     assert message.startswith(
         "```text\n"
         "版本: 4.3-2707~g576b01895\n"
-        "TVH: OK | DVB: 3/3\n"
-        "启动于: 2026-06-15 11:34:39\n"
-        "运行时间: 1天 01:01:01\n"
+        "TVH: OK | DVB: 3/3 | 在线: 0\n"
+        "系统: CPU - | 内存 -\n"
+        "运行: 1天 01:01:01\n"
         "```\n"
         "\n"
         "在线: 0\n"
@@ -1529,7 +2109,7 @@ def test_ip_location_enrichment_skips_private_ips():
             subscription_id="12",
             username="test",
             channel="News",
-            peer="192.168.9.2",
+            peer="10.0.0.2",
         )],
         resolver=lambda ip: calls.append(ip) or "内网",
     )
@@ -1664,8 +2244,87 @@ def test_status_message_can_show_tvh_start_time_and_uptime():
         uptime_seconds=90061,
     )
 
-    assert "启动于: 2026-07-01 12:00:00" in message
-    assert "运行时间: 1天 01:01:01" in message
+    assert "系统: CPU - | 内存 -\n运行: 1天 01:01:01" in message
+
+
+def test_status_message_can_show_tvh_health_summary():
+    message = format_status_message(
+        True,
+        "4.3",
+        ["adapter0", "adapter1", "adapter2"],
+        3,
+        [TvhSubscription(subscription_id="1", username="ck", channel="翡翠台")],
+        uptime_seconds=90061,
+        status=TvhServerStatus(
+            ok=True,
+            version="4.3",
+            uptime_seconds=90061,
+            cpu_percent=12.4,
+            memory_used_percent=48.6,
+            network_rx_bps=1_500_000,
+            network_tx_bps=860_000,
+            storage_total=2_000_000_000_000,
+            storage_available=1_900_000_000_000,
+            storage_used_percent=5.0,
+        ),
+        dvr_summary=TvhDvrSummary(recording=1, failed=0),
+    )
+
+    assert "TVH: OK | DVB: 3/3 | 在线: 1" in message
+    assert "系统: CPU 12% | 内存 49%\n运行: 1天 01:01:01" in message
+    assert "网络: ↓1.4 MB/s | ↑839.8 KB/s" in message
+    assert "录制: 可用 1.7 TB / 共 1.8 TB" in message
+    assert "任务: 录制中 1 | 失败 0" in message
+
+
+def test_fetch_tvh_status_parses_health_fields(monkeypatch):
+    def fake_fetch(base_url, path, username, password):
+        assert path == "/api/serverinfo"
+        return {
+            "sw_version": "4.3",
+            "start_time": 1783131684,
+            "uptime": 90061,
+            "system": {
+                "cpu_percent": 12.5,
+                "memory_total": 1000,
+                "memory_available": 400,
+                "memory_used_percent": 60,
+            },
+            "network": {
+                "rx_bps": 1500000,
+                "tx_bps": 860000,
+            },
+            "recording_storage": {
+                "total": 2000000000000,
+                "available": 1900000000000,
+                "used_percent": 5,
+            },
+        }
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    status = fetch_tvh_status("https://tvh.example.com", "ck", "secret")
+
+    assert status.cpu_percent == 12.5
+    assert status.memory_total == 1000
+    assert status.memory_available == 400
+    assert status.memory_used_percent == 60
+    assert status.network_rx_bps == 1500000
+    assert status.network_tx_bps == 860000
+    assert status.storage_total == 2000000000000
+    assert status.storage_available == 1900000000000
+    assert status.storage_used_percent == 5
+
+
+def test_summarize_tvh_dvr_entries_counts_recording_and_failed():
+    summary = summarize_tvh_dvr_entries([
+        TvhDvrEntry(uuid="recording", title="录制中", channel="翡翠台", start=1, stop=2, sched_status="recording"),
+        TvhDvrEntry(uuid="finished", title="完成", channel="翡翠台", start=1, stop=2, sched_status="completed"),
+        TvhDvrEntry(uuid="error", title="失败", channel="翡翠台", start=1, stop=2, sched_status="completedError"),
+        TvhDvrEntry(uuid="rerecord", title="重录", channel="翡翠台", start=1, stop=2, sched_status="completedRerecord"),
+    ])
+
+    assert summary == TvhDvrSummary(recording=1, failed=2)
 
 
 def test_subscription_details_merge_connection_ip_and_client():

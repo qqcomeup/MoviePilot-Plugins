@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,20 @@ from app.schemas.types import ChainEventType, EventType
 from .core import (
     DvbMonitor,
     TimedValueCache,
+    adjust_tvh_dvr_entry_stop,
+    build_dvr_cancel_confirm_buttons,
+    build_dvr_entry_action_buttons,
+    build_dvr_entry_buttons,
+    build_dvr_filter_buttons,
+    build_dvr_remove_confirm_buttons,
+    build_dvr_stop_confirm_buttons,
+    build_tvh_dvr_download_url,
+    can_remove_tvh_dvr_entry,
+    build_record_channel_buttons,
+    build_record_confirm_buttons,
+    build_record_program_buttons,
+    build_record_start_padding_buttons,
+    build_record_stop_padding_buttons,
     build_play_notify_user_buttons,
     build_user_action_buttons,
     build_user_confirm_buttons,
@@ -40,13 +55,30 @@ from .core import (
     fetch_ip_location,
     fetch_ip_location_cached,
     fetch_tvh_connections,
+    fetch_tvh_channels,
+    fetch_tvh_dvr_configs,
+    fetch_tvh_dvr_entries,
+    fetch_tvh_dvr_ticket_download_url,
+    fetch_tvh_epg_events,
     fetch_tvh_inputs,
     fetch_tvh_status,
     fetch_tvh_status_bundle,
     fetch_tvh_subscriptions,
     fetch_tvh_users,
+    filter_tvh_dvr_entries,
     format_playback_notification,
     format_playback_switch_notification,
+    format_record_confirm_message,
+    format_record_created_message,
+    format_record_program_detail,
+    format_dvr_adjusted_message,
+    format_dvr_cancel_confirm_message,
+    format_dvr_entries_message,
+    format_dvr_entry_detail,
+    format_dvr_remove_confirm_message,
+    format_dvr_removed_message,
+    format_dvr_stop_confirm_message,
+    format_dvr_stopped_message,
     format_tvh_webhook_message,
     format_user_links_message,
     format_dvb_message,
@@ -63,10 +95,16 @@ from .core import (
     enrich_tvh_webhook_program,
     plan_playback_notifications,
     resolve_play_notify_settings,
+    normalize_dvr_filter,
     reset_tvh_user_token,
+    cancel_tvh_dvr_entry,
+    create_tvh_dvr_recording,
+    remove_tvh_dvr_entry,
+    stop_tvh_dvr_entry,
     restart_tvh_server,
     select_tvh_webhook_image,
     set_tvh_user_enabled,
+    summarize_tvh_dvr_entries,
     token_for_user,
     TvhUser,
 )
@@ -76,7 +114,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.55"
+    plugin_version = "0.1.65"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -115,6 +153,7 @@ class tvhhelper(_PluginBase):
     _ip_location_cache: TimedValueCache | None = None
     _tvh_users_cache: TimedValueCache | None = None
     _webhook_program_cache: TimedValueCache | None = None
+    _record_session_cache: TimedValueCache | None = None
     _playback_history: list[dict[str, Any]] = []
     _ipdb_update_running = False
 
@@ -163,6 +202,7 @@ class tvhhelper(_PluginBase):
         self._tvh_users_cache = TimedValueCache(ttl_seconds=10)
         self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
         self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
+        self._record_session_cache = TimedValueCache(ttl_seconds=900)
         self._play_notify_snapshot = None
         self._playback_history = []
         if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
@@ -201,6 +241,7 @@ class tvhhelper(_PluginBase):
         self._ip_location_cache = None
         self._tvh_users_cache = None
         self._webhook_program_cache = None
+        self._record_session_cache = None
         self._playback_history = []
         self._ipdb_update_running = False
 
@@ -209,6 +250,12 @@ class tvhhelper(_PluginBase):
         try:
             return int(value)
         except (TypeError, ValueError):
+            return default
+
+    def __payload_int(self, payload: str, index: int, default: int) -> int:
+        try:
+            return self.__to_int(payload.split("|")[index], default)
+        except (IndexError, AttributeError):
             return default
 
     def __update_config(self):
@@ -326,6 +373,86 @@ class tvhhelper(_PluginBase):
                     self.__status_text(),
                     buttons=build_main_buttons(self.__class__.__name__),
                 )
+            elif payload == "noop":
+                return
+            elif payload == "record_menu":
+                self.__show_record_channels(event, page=0)
+            elif payload == "dvr_tasks":
+                self.__show_dvr_tasks(event, page=0)
+            elif payload.startswith("dvr_tasks_filter|"):
+                _, session_id, dvr_filter = payload.split("|", 2)
+                self.__show_dvr_tasks(event, page=0, session_id=session_id, dvr_filter=dvr_filter)
+            elif payload.startswith("dvr_tasks_page|"):
+                _, session_id, page_text = payload.split("|", 2)
+                self.__show_dvr_tasks(event, page=self.__to_int(page_text, 0), session_id=session_id)
+            elif payload.startswith("dvr_task|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__show_dvr_task_detail(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_cancel_confirm|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_cancel|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_stop_confirm|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_stop|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_remove_confirm|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_remove|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_stop_delta|"):
+                _, session_id, index_text, minutes_text = payload.split("|", 3)
+                self.__adjust_dvr_task_stop(
+                    event,
+                    session_id,
+                    self.__to_int(index_text, -1),
+                    self.__to_int(minutes_text, 0),
+                )
+            elif payload.startswith("record_chs|"):
+                _, session_id, page_text = payload.split("|", 2)
+                self.__show_record_channels(event, page=self.__to_int(page_text, 0), session_id=session_id)
+            elif payload.startswith("record_ch|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__show_record_programs_from_channel_index(
+                    event,
+                    session_id=session_id,
+                    channel_index=self.__to_int(index_text, -1),
+                    page=0,
+                )
+            elif payload.startswith("record_channels|"):
+                self.__show_record_channels(event, page=self.__payload_int(payload, 1, 0))
+            elif payload.startswith("record_channel|"):
+                _, encoded_channel, page_text = payload.split("|", 2)
+                self.__show_record_programs(
+                    event,
+                    channel_id=decode_callback_value(encoded_channel),
+                    page=self.__to_int(page_text, 0),
+                )
+            elif payload.startswith("record_programs|"):
+                _, session_id, page_text = payload.split("|", 2)
+                self.__show_record_programs_from_session(event, session_id, self.__to_int(page_text, 0))
+            elif payload.startswith("record_prog|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__select_record_program_by_index(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("record_program|"):
+                _, session_id, event_id = payload.split("|", 2)
+                self.__select_record_program(event, session_id, event_id)
+            elif payload.startswith("record_pad_start|"):
+                _, session_id, minutes_text = payload.split("|", 2)
+                self.__select_record_start_padding(event, session_id, self.__to_int(minutes_text, 3))
+            elif payload.startswith("record_pad_stop|"):
+                _, session_id, minutes_text = payload.split("|", 2)
+                self.__select_record_stop_padding(event, session_id, self.__to_int(minutes_text, 10))
+            elif payload.startswith("record_confirm|"):
+                self.__confirm_recording(event, payload.split("|", 1)[1])
+            elif payload.startswith("record_cancel|"):
+                self.__cancel_recording(event, payload.split("|", 1)[1])
             elif payload == "confirm_restart":
                 self.__edit_or_reply(
                     event,
@@ -553,6 +680,13 @@ class tvhhelper(_PluginBase):
             self.__tvh_connections,
         )
         subscriptions = self.__enrich_ip_locations(subscriptions)
+        try:
+            dvr_summary = summarize_tvh_dvr_entries(
+                fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+            )
+        except Exception as err:
+            logger.debug(f"TVH录制任务摘要读取失败: {err}")
+            dvr_summary = None
         return format_status_message(
             status.ok,
             status.version,
@@ -561,6 +695,8 @@ class tvhhelper(_PluginBase):
             subscriptions,
             start_time=status.start_time,
             uptime_seconds=status.uptime_seconds,
+            status=status,
+            dvr_summary=dvr_summary,
         )
 
     def __online_users_text(self, subscriptions) -> str:
@@ -648,6 +784,384 @@ class tvhhelper(_PluginBase):
             text,
             buttons=build_subscription_close_buttons(self.__class__.__name__, connections),
         )
+
+    def __show_dvr_tasks(
+        self,
+        event: Event,
+        page: int = 0,
+        prefix: str | None = None,
+        session_id: str | None = None,
+        dvr_filter: str | None = None,
+    ):
+        entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+        if session_id:
+            session = self.__record_session(session_id)
+            current_filter = normalize_dvr_filter(dvr_filter or session.get("dvr_filter"))
+            session["dvr_entries_all"] = entries
+            session["dvr_entries"] = filter_tvh_dvr_entries(entries, current_filter)
+            session["dvr_filter"] = current_filter
+            self.__save_record_session(session_id, session)
+        else:
+            current_filter = normalize_dvr_filter(dvr_filter)
+            session_id = self.__create_record_session({
+                "dvr_entries_all": entries,
+                "dvr_entries": filter_tvh_dvr_entries(entries, current_filter),
+                "dvr_filter": current_filter,
+            })
+        session = self.__record_session(session_id)
+        visible_entries = session.get("dvr_entries") or []
+        current_filter = normalize_dvr_filter(session.get("dvr_filter"))
+        text = format_dvr_entries_message(visible_entries, current_filter, page=page)
+        if prefix:
+            text = f"{prefix}\n\n{text}"
+        buttons = (
+            build_dvr_entry_buttons(self.__class__.__name__, session_id, visible_entries, page=page)
+            if visible_entries else build_dvr_filter_buttons(self.__class__.__name__, session_id) + build_secondary_nav_buttons(self.__class__.__name__)
+        )
+        self.__edit_or_reply(
+            event,
+            "TVH录制任务",
+            text,
+            buttons=buttons,
+        )
+
+    def __show_dvr_task_detail(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        download_url = self.__ticket_download_url_for_entry(entry)
+        self.__edit_or_reply(
+            event,
+            "TVH录制任务详情",
+            format_dvr_entry_detail(entry, download_url=download_url),
+            buttons=build_dvr_entry_action_buttons(
+                self.__class__.__name__,
+                session_id,
+                entry_index,
+                entry,
+                download_url,
+            ),
+        )
+
+    def __confirm_cancel_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        self.__edit_or_reply(
+            event,
+            "确认取消录制任务",
+            format_dvr_cancel_confirm_message(entry),
+            buttons=build_dvr_cancel_confirm_buttons(self.__class__.__name__, session_id, entry_index),
+        )
+
+    def __cancel_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        cancel_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
+        self.__show_dvr_tasks(event, prefix=f"已请求取消录制任务：{entry.title}", session_id=session_id)
+
+    def __confirm_stop_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        self.__edit_or_reply(
+            event,
+            "确认停止录制",
+            format_dvr_stop_confirm_message(entry),
+            buttons=build_dvr_stop_confirm_buttons(self.__class__.__name__, session_id, entry_index),
+        )
+
+    def __stop_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        stop_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
+        self.__show_dvr_tasks(event, prefix=format_dvr_stopped_message(entry), session_id=session_id)
+
+    def __confirm_remove_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        if not can_remove_tvh_dvr_entry(entry):
+            raise ValueError("该录制任务仍在等待或录制中，不能删除录制文件。")
+        self.__edit_or_reply(
+            event,
+            "确认删除录制文件",
+            format_dvr_remove_confirm_message(entry),
+            buttons=build_dvr_remove_confirm_buttons(self.__class__.__name__, session_id, entry_index),
+        )
+
+    def __remove_dvr_task(self, event: Event, session_id: str, entry_index: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        if not can_remove_tvh_dvr_entry(entry):
+            raise ValueError("该录制任务仍在等待或录制中，不能删除录制文件。")
+        remove_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
+        self.__show_dvr_tasks(event, prefix=format_dvr_removed_message(entry), session_id=session_id)
+
+    def __adjust_dvr_task_stop(self, event: Event, session_id: str, entry_index: int, delta_minutes: int):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        entry = self.__dvr_entry_from_session(entries, entry_index)
+        result = adjust_tvh_dvr_entry_stop(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            entry,
+            delta_minutes,
+        )
+        self.__show_dvr_tasks(
+            event,
+            prefix=format_dvr_adjusted_message(entry, int(result["stop"])),
+            session_id=session_id,
+        )
+
+    def __show_record_channels(
+        self,
+        event: Event,
+        page: int = 0,
+        prefix: str | None = None,
+        session_id: str | None = None,
+    ):
+        if session_id:
+            session = self.__record_session(session_id)
+            channels = session.get("channels") or []
+        else:
+            channels = fetch_tvh_channels(self._tvh_url, self._tvh_user, self._tvh_pass)
+            session_id = self.__create_record_session({"channels": channels})
+        if not channels:
+            text = "未读取到 TVH 频道，无法预约录制。"
+            if prefix:
+                text = f"{prefix}\n\n{text}"
+            self.__edit_or_reply(
+                event,
+                "TVH预约录制",
+                text,
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        text = "请选择要预约录制的频道。"
+        if prefix:
+            text = f"{prefix}\n\n{text}"
+        self.__edit_or_reply(
+            event,
+            "TVH预约录制",
+            text,
+            buttons=build_record_channel_buttons(self.__class__.__name__, session_id, channels, page=page),
+        )
+
+    def __show_record_programs(self, event: Event, channel_id: str, page: int = 0):
+        channels = fetch_tvh_channels(self._tvh_url, self._tvh_user, self._tvh_pass)
+        channel = next(
+            (
+                item for item in channels
+                if item.uuid == channel_id or item.name == channel_id
+            ),
+            None,
+        )
+        if not channel:
+            raise ValueError("未找到选择的 TVH 频道，请返回后重新选择。")
+        events = fetch_tvh_epg_events(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            channel_uuid=channel.uuid,
+            channel_name=channel.name,
+            hours=24,
+        )
+        if not events:
+            self.__edit_or_reply(
+                event,
+                "TVH预约录制",
+                f"频道 {channel.name} 未来 24 小时没有可预约的节目。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        session_id = self.__create_record_session({
+            "channel": channel,
+            "events": events,
+            "start_padding": 3,
+            "stop_padding": 10,
+        })
+        self.__show_record_programs_from_session(event, session_id, page)
+
+    def __show_record_programs_from_channel_index(
+        self,
+        event: Event,
+        session_id: str,
+        channel_index: int,
+        page: int = 0,
+    ):
+        session = self.__record_session(session_id)
+        channels = session.get("channels") or []
+        if channel_index < 0 or channel_index >= len(channels):
+            raise ValueError("未找到选择的 TVH 频道，请返回后重新选择。")
+        channel = channels[channel_index]
+        events = fetch_tvh_epg_events(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            channel_uuid=channel.uuid,
+            channel_name=channel.name,
+            hours=24,
+        )
+        if not events:
+            self.__edit_or_reply(
+                event,
+                "TVH预约录制",
+                f"频道 {channel.name} 未来 24 小时没有可预约的节目。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        session.update({
+            "channel": channel,
+            "events": events,
+            "start_padding": 3,
+            "stop_padding": 10,
+        })
+        self.__save_record_session(session_id, session)
+        self.__show_record_programs_from_session(event, session_id, page)
+
+    def __show_record_programs_from_session(self, event: Event, session_id: str, page: int = 0):
+        session = self.__record_session(session_id)
+        channel = session.get("channel")
+        events = session.get("events") or []
+        self.__edit_or_reply(
+            event,
+            "选择节目指南",
+            f"频道: {channel.name if channel else '-'}\n请选择未来 24 小时内要录制的节目。",
+            buttons=build_record_program_buttons(self.__class__.__name__, session_id, events, page=page),
+        )
+
+    def __select_record_program(self, event: Event, session_id: str, event_id: str):
+        session = self.__record_session(session_id)
+        selected = self.__find_record_event(session, event_id)
+        session["selected_event"] = selected
+        session["start_padding"] = 3
+        session["stop_padding"] = 10
+        self.__save_record_session(session_id, session)
+        self.__edit_or_reply(
+            event,
+            "选择提前录制时间",
+            format_record_program_detail(selected) + "\n\n请选择提前开始录制时间。",
+            buttons=build_record_start_padding_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __select_record_program_by_index(self, event: Event, session_id: str, event_index: int):
+        session = self.__record_session(session_id)
+        events = session.get("events") or []
+        if event_index < 0 or event_index >= len(events):
+            raise ValueError("未找到选择的节目，请返回节目列表后重试。")
+        selected = events[event_index]
+        session["selected_event"] = selected
+        session["start_padding"] = 3
+        session["stop_padding"] = 10
+        self.__save_record_session(session_id, session)
+        self.__edit_or_reply(
+            event,
+            "选择提前录制时间",
+            format_record_program_detail(selected) + "\n\n请选择提前开始录制时间。",
+            buttons=build_record_start_padding_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __select_record_start_padding(self, event: Event, session_id: str, minutes: int):
+        session = self.__record_session(session_id)
+        session["start_padding"] = max(0, minutes)
+        self.__save_record_session(session_id, session)
+        selected = session.get("selected_event")
+        if not selected:
+            raise ValueError("预约录制会话已过期，请重新选择节目。")
+        self.__edit_or_reply(
+            event,
+            "选择延后结束时间",
+            format_record_program_detail(selected) + f"\n\n已选择提前 {session['start_padding']} 分钟，请选择结束后延长时间。",
+            buttons=build_record_stop_padding_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __select_record_stop_padding(self, event: Event, session_id: str, minutes: int):
+        session = self.__record_session(session_id)
+        session["stop_padding"] = max(0, minutes)
+        self.__save_record_session(session_id, session)
+        selected = session.get("selected_event")
+        if not selected:
+            raise ValueError("预约录制会话已过期，请重新选择节目。")
+        self.__edit_or_reply(
+            event,
+            "确认预约录制",
+            format_record_confirm_message(
+                selected,
+                session.get("start_padding", 3),
+                session.get("stop_padding", 10),
+            ),
+            buttons=build_record_confirm_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __confirm_recording(self, event: Event, session_id: str):
+        session = self.__record_session(session_id)
+        selected = session.get("selected_event")
+        if not selected:
+            raise ValueError("预约录制会话已过期，请重新选择节目。")
+        configs = fetch_tvh_dvr_configs(self._tvh_url, self._tvh_user, self._tvh_pass)
+        if not configs:
+            raise ValueError("TVH 未返回可用 DVR 配置，无法创建录制任务。")
+        result = create_tvh_dvr_recording(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            selected,
+            configs[0],
+            start_padding_minutes=session.get("start_padding", 3),
+            stop_padding_minutes=session.get("stop_padding", 10),
+        )
+        self.__save_record_session(session_id, {})
+        self.__edit_or_reply(
+            event,
+            "TVH预约录制已创建",
+            format_record_created_message(result, selected),
+            buttons=build_secondary_nav_buttons(self.__class__.__name__),
+        )
+
+    def __cancel_recording(self, event: Event, session_id: str):
+        self.__save_record_session(session_id, {})
+        self.__edit_or_reply(
+            event,
+            "TVH预约录制已取消",
+            "已取消本次预约录制操作。",
+            buttons=build_secondary_nav_buttons(self.__class__.__name__),
+        )
+
+    def __create_record_session(self, data: dict[str, Any]) -> str:
+        if not self._record_session_cache:
+            self._record_session_cache = TimedValueCache(ttl_seconds=900)
+        session_id = secrets.token_urlsafe(8)
+        self._record_session_cache.set(session_id, data)
+        return session_id
+
+    def __save_record_session(self, session_id: str, data: dict[str, Any]) -> None:
+        if not self._record_session_cache:
+            self._record_session_cache = TimedValueCache(ttl_seconds=900)
+        self._record_session_cache.set(session_id, data)
+
+    def __record_session(self, session_id: str) -> dict[str, Any]:
+        session = self._record_session_cache.get(session_id) if self._record_session_cache else None
+        if not isinstance(session, dict) or not session:
+            raise ValueError("预约录制会话已过期，请重新从 /tvh 进入。")
+        return session
+
+    @staticmethod
+    def __dvr_entry_from_session(entries: list[Any], entry_index: int):
+        if entry_index < 0 or entry_index >= len(entries):
+            raise ValueError("未找到选择的录制任务，请返回任务列表后重试。")
+        return entries[entry_index]
+
+    @staticmethod
+    def __find_record_event(session: dict[str, Any], event_id: str):
+        for item in session.get("events") or []:
+            if str(item.event_id) == str(event_id):
+                return item
+        raise ValueError("未找到选择的节目，请返回节目列表后重试。")
 
     def __tvh_online_subscriptions(self):
         return merge_subscription_details(
@@ -895,8 +1409,42 @@ class tvhhelper(_PluginBase):
             }
             if image:
                 message["image"] = image
+            dvr_download_url = self.__ticket_download_url_for_payload(payload)
+            if event == "dvr.complete" and dvr_download_url:
+                message["buttons"] = [[{"text": "下载录制文件", "url": dvr_download_url}]]
             self.post_message(**message)
         return schemas.Response(success=True, message="Webhook已接收")
+
+    def __ticket_download_url_for_entry(self, entry) -> str | None:
+        if not build_tvh_dvr_download_url(self._tvh_url, entry):
+            return None
+        try:
+            return fetch_tvh_dvr_ticket_download_url(
+                self._tvh_url,
+                self._tvh_user,
+                self._tvh_pass,
+                str(entry.uuid),
+                timeout=10,
+            )
+        except Exception as err:
+            logger.warning(f"TVH录制下载ticket生成失败: {err}")
+            return None
+
+    def __ticket_download_url_for_payload(self, payload: Dict[str, Any]) -> str | None:
+        dvr_uuid = payload.get("dvr_uuid") or payload.get("uuid") or payload.get("id")
+        if not dvr_uuid:
+            return None
+        try:
+            return fetch_tvh_dvr_ticket_download_url(
+                self._tvh_url,
+                self._tvh_user,
+                self._tvh_pass,
+                str(dvr_uuid),
+                timeout=10,
+            )
+        except Exception as err:
+            logger.warning(f"TVH录制完成通知下载ticket生成失败: {err}")
+            return None
 
     def __should_send_webhook_notification(self, payload: Dict[str, Any]) -> bool:
         event = str(payload.get("event") or "")

@@ -82,6 +82,67 @@ class TvhServerStatus:
     version: str | None = None
     start_time: str | None = None
     uptime_seconds: int | None = None
+    cpu_percent: float | None = None
+    memory_total: int | None = None
+    memory_available: int | None = None
+    memory_used_percent: float | None = None
+    network_rx_bps: int | None = None
+    network_tx_bps: int | None = None
+    storage_total: int | None = None
+    storage_available: int | None = None
+    storage_used_percent: float | None = None
+
+
+@dataclass(frozen=True)
+class TvhDvrSummary:
+    recording: int = 0
+    failed: int = 0
+
+
+@dataclass(frozen=True)
+class TvhChannel:
+    uuid: str
+    name: str
+    number: str | None = None
+
+
+@dataclass(frozen=True)
+class TvhEpgEvent:
+    event_id: str
+    channel_uuid: str
+    channel_name: str
+    title: str
+    start: int
+    stop: int
+    subtitle: str | None = None
+    summary: str | None = None
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class TvhDvrConfig:
+    uuid: str
+    name: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class TvhDvrEntry:
+    uuid: str
+    title: str
+    channel: str
+    start: int
+    stop: int
+    start_real: int | None = None
+    stop_real: int | None = None
+    sched_status: str | None = None
+    rec_status: str | None = None
+    status: str | None = None
+    comment: str | None = None
+    error: str | None = None
+    filesize: int | None = None
+    filename: str | None = None
+    url: str | None = None
 
 
 class TvhError(Exception):
@@ -188,6 +249,10 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
         [
             {"text": "关闭用户", "callback_data": plugin_callback(plugin_id, "close_menu")},
             {"text": "播放通知", "callback_data": plugin_callback(plugin_id, "play_notify_users")},
+        ],
+        [
+            {"text": "预约录制", "callback_data": plugin_callback(plugin_id, "record_menu")},
+            {"text": "录制任务", "callback_data": plugin_callback(plugin_id, "dvr_tasks")},
         ],
         [
             {"text": "重启TVH", "callback_data": plugin_callback(plugin_id, "confirm_restart")},
@@ -311,6 +376,177 @@ def build_subscription_close_buttons(plugin_id: str, subscriptions: list[TvhSubs
     ] + build_secondary_nav_buttons(plugin_id)
 
 
+def build_record_channel_buttons(
+    plugin_id: str,
+    session_id: str,
+    channels: list[TvhChannel],
+    page: int = 0,
+    page_size: int = 8,
+) -> list[list[dict]]:
+    page_items, page, total_pages = _paginate(channels, page, page_size)
+    buttons = [
+        {
+            "text": _record_channel_label(channel),
+            "callback_data": plugin_callback(plugin_id, f"record_ch|{session_id}|{page * page_size + offset}"),
+        }
+        for offset, channel in enumerate(page_items)
+    ]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    nav = _record_page_nav(plugin_id, f"record_chs|{session_id}", page, total_pages)
+    return rows + nav + build_secondary_nav_buttons(plugin_id)
+
+
+def build_record_program_buttons(
+    plugin_id: str,
+    session_id: str,
+    events: list[TvhEpgEvent],
+    page: int = 0,
+    page_size: int = 8,
+) -> list[list[dict]]:
+    page_items, page, total_pages = _paginate(events, page, page_size)
+    buttons = [
+        {
+            "text": _record_program_button_label(event),
+            "callback_data": plugin_callback(plugin_id, f"record_prog|{session_id}|{page * page_size + offset}"),
+        }
+        for offset, event in enumerate(page_items)
+    ]
+    rows = [[button] for button in buttons]
+    nav = _record_page_nav(plugin_id, f"record_programs|{session_id}", page, total_pages)
+    return rows + nav + [
+        [
+            {"text": "返回频道", "callback_data": plugin_callback(plugin_id, f"record_chs|{session_id}|0")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_record_start_padding_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return _build_record_padding_buttons(plugin_id, "record_pad_start", session_id, [0, 1, 3, 5, 10], "提前")
+
+
+def build_record_stop_padding_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return _build_record_padding_buttons(plugin_id, "record_pad_stop", session_id, [0, 5, 10, 15, 30], "延后")
+
+
+def build_record_confirm_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [{"text": "确认录制", "callback_data": plugin_callback(plugin_id, f"record_confirm|{session_id}")}],
+        [
+            {"text": "返回节目", "callback_data": plugin_callback(plugin_id, f"record_programs|{session_id}|0")},
+            {"text": "取消", "callback_data": plugin_callback(plugin_id, f"record_cancel|{session_id}")},
+        ],
+    ]
+
+
+def build_dvr_entry_buttons(
+    plugin_id: str,
+    session_id: str,
+    entries: list[TvhDvrEntry],
+    page: int = 0,
+    page_size: int = 8,
+) -> list[list[dict]]:
+    page_items, page, total_pages = _paginate(entries, page, page_size)
+    buttons = [
+        {
+            "text": _dvr_entry_button_label(entry),
+            "callback_data": plugin_callback(plugin_id, f"dvr_task|{session_id}|{page * page_size + offset}"),
+        }
+        for offset, entry in enumerate(page_items)
+    ]
+    rows = [[button] for button in buttons]
+    nav = _record_page_nav(plugin_id, f"dvr_tasks_page|{session_id}", page, total_pages)
+    return rows + nav + build_dvr_filter_buttons(plugin_id, session_id) + build_secondary_nav_buttons(plugin_id)
+
+
+def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [
+            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|all")},
+            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|recording")},
+        ],
+        [
+            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|finished")},
+            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|failed")},
+        ],
+    ]
+
+
+def build_dvr_entry_action_buttons(
+    plugin_id: str,
+    session_id: str,
+    entry_index: int,
+    entry: TvhDvrEntry | None = None,
+    download_url: str | None = None,
+) -> list[list[dict]]:
+    target = f"{session_id}|{entry_index}"
+    rows = [
+        [
+            {"text": "刷新", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
+            {"text": "返回任务", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_page|{session_id}|0")},
+        ],
+    ]
+    if download_url:
+        rows.append([{"text": "下载录制文件", "url": download_url}])
+    if entry is None or _dvr_entry_can_adjust(entry):
+        rows.extend([
+            [
+                {"text": "延后结束+5", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|5")},
+                {"text": "延后结束+10", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|10")},
+            ],
+        ])
+        action_button = (
+            {"text": "停止录制", "callback_data": plugin_callback(plugin_id, f"dvr_stop_confirm|{target}")}
+            if entry is not None and is_recording_tvh_dvr_entry(entry)
+            else {"text": "取消任务", "callback_data": plugin_callback(plugin_id, f"dvr_cancel_confirm|{target}")}
+        )
+        rows.append([
+            {"text": "提前结束-5", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|-5")},
+            action_button,
+        ])
+    if entry is not None and can_remove_tvh_dvr_entry(entry):
+        rows.append([
+            {"text": "删除录制文件", "callback_data": plugin_callback(plugin_id, f"dvr_remove_confirm|{target}")},
+        ])
+    rows.append([
+        {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+    ])
+    return rows
+
+
+def build_dvr_remove_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
+    target = f"{session_id}|{entry_index}"
+    return [
+        [{"text": "确认删除文件", "callback_data": plugin_callback(plugin_id, f"dvr_remove|{target}")}],
+        [
+            {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_dvr_cancel_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
+    target = f"{session_id}|{entry_index}"
+    return [
+        [{"text": "确认取消任务", "callback_data": plugin_callback(plugin_id, f"dvr_cancel|{target}")}],
+        [
+            {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_dvr_stop_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
+    target = f"{session_id}|{entry_index}"
+    return [
+        [{"text": "确认停止录制", "callback_data": plugin_callback(plugin_id, f"dvr_stop|{target}")}],
+        [
+            {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
 def build_secondary_nav_buttons(plugin_id: str) -> list[list[dict]]:
     return [[
         {"text": "返回", "callback_data": plugin_callback(plugin_id, "main_menu")},
@@ -334,6 +570,58 @@ def _subscription_button_label(subscription: TvhSubscription) -> str:
     if subscription.peer:
         return f"{subscription.username} / {subscription.peer}"
     return subscription.username
+
+
+def _paginate(items: list, page: int, page_size: int) -> tuple[list, int, int]:
+    page_size = max(1, int(page_size or 1))
+    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    page = min(max(0, int(page or 0)), total_pages - 1)
+    start = page * page_size
+    return items[start:start + page_size], page, total_pages
+
+
+def _record_page_nav(plugin_id: str, prefix: str, page: int, total_pages: int) -> list[list[dict]]:
+    if total_pages <= 1:
+        return []
+    row = []
+    if page > 0:
+        row.append({"text": "上一页", "callback_data": plugin_callback(plugin_id, f"{prefix}|{page - 1}")})
+    row.append({"text": f"{page + 1}/{total_pages}", "callback_data": plugin_callback(plugin_id, "noop")})
+    if page < total_pages - 1:
+        row.append({"text": "下一页", "callback_data": plugin_callback(plugin_id, f"{prefix}|{page + 1}")})
+    return [row]
+
+
+def _record_channel_label(channel: TvhChannel) -> str:
+    return f"{channel.number} {channel.name}" if channel.number else channel.name
+
+
+def _record_program_button_label(event: TvhEpgEvent) -> str:
+    return f"{format_record_time_range(event.start, event.stop)} {event.title}"
+
+
+def _dvr_entry_button_label(entry: TvhDvrEntry) -> str:
+    return f"{format_record_time_range(entry.start_real or entry.start, entry.stop_real or entry.stop)} {entry.title}"
+
+
+def _build_record_padding_buttons(
+    plugin_id: str,
+    action: str,
+    session_id: str,
+    minutes_values: list[int],
+    prefix: str,
+) -> list[list[dict]]:
+    buttons = [
+        {
+            "text": f"{prefix}{minutes}分钟",
+            "callback_data": plugin_callback(plugin_id, f"{action}|{session_id}|{minutes}"),
+        }
+        for minutes in minutes_values
+    ]
+    return [buttons[index:index + 3] for index in range(0, len(buttons), 3)] + [[
+        {"text": "返回节目", "callback_data": plugin_callback(plugin_id, f"record_programs|{session_id}|0")},
+        {"text": "取消", "callback_data": plugin_callback(plugin_id, f"record_cancel|{session_id}")},
+    ]]
 
 
 def build_user_link(public_base_url: str, user: TvhUser, link_type: str) -> str | None:
@@ -503,6 +791,20 @@ def _string_or_none(value) -> str | None:
     return str(value)
 
 
+def _to_int_or_none(value) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float_or_none(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _bool_or_none(value) -> bool | None:
     if value is None or value == "":
         return None
@@ -578,8 +880,10 @@ def format_status_message(
     subscriptions: list[TvhSubscription] | None = None,
     start_time: str | None = None,
     uptime_seconds: int | None = None,
+    status: TvhServerStatus | None = None,
+    dvr_summary: TvhDvrSummary | None = None,
 ) -> str:
-    status = "OK" if tvh_ok else "失败"
+    status_label = "OK" if tvh_ok else "失败"
     subscriptions = subscriptions or []
     if subscriptions:
         subscription_lines = "\n\n".join(
@@ -590,12 +894,18 @@ def format_status_message(
         subscription_lines = "无"
     summary_lines = [
         f"版本: {version or '未知'}",
-        f"TVH: {status} | DVB: {len(inputs)}/{expected_dvb_count}",
+        f"TVH: {status_label} | DVB: {len(inputs)}/{expected_dvb_count} | 在线: {len(subscriptions)}",
     ]
-    if start_time:
+    system_lines = _format_system_health_lines(status, uptime_seconds)
+    network_line = _format_network_health_line(status)
+    recording_lines = _format_recording_health_lines(status, dvr_summary)
+    if system_lines:
+        summary_lines.extend(system_lines)
+    elif start_time:
         summary_lines.append(f"启动于: {start_time}")
-    if uptime_seconds is not None:
-        summary_lines.append(f"运行时间: {_format_duration(uptime_seconds)}")
+    if network_line:
+        summary_lines.append(network_line)
+    summary_lines.extend(recording_lines)
     lines = [
         f"```text\n{chr(10).join(summary_lines)}\n```",
         "",
@@ -606,9 +916,9 @@ def format_status_message(
 
 
 def format_subscription_status_line(subscription: TvhSubscription) -> str:
-    endpoint = subscription.peer or subscription.hostname or "未知IP"
+    endpoint = subscription.peer or subscription.hostname
     endpoint_meta = _endpoint_meta(subscription.location, subscription.isp)
-    endpoint_text = f"{endpoint} ({endpoint_meta})" if endpoint_meta else endpoint
+    endpoint_text = f"{endpoint} ({endpoint_meta})" if endpoint and endpoint_meta else endpoint
     client_line = " | ".join(
         value
         for value in [
@@ -620,10 +930,19 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
     )
     service = _short_service_name(subscription.service)
     rate_line = _format_rate_pair(subscription.input_kbps, subscription.output_kbps)
+    dvr_title = _subscription_dvr_title(subscription)
     details = [
         f"{subscription.username} / {subscription.channel}",
-        f"IP: {endpoint_text}",
     ]
+    if dvr_title:
+        details.append("类型: 正在录制")
+        details.append(f"节目: {dvr_title}")
+    if endpoint_text:
+        details.append(f"IP: {endpoint_text}")
+    elif dvr_title:
+        details.append("来源: TVH录制任务")
+    else:
+        details.append("IP: 未知IP")
     if subscription.isp:
         details.append(f"ISP: {subscription.isp}")
     if client_line:
@@ -1278,6 +1597,63 @@ def _format_rate_mbps(value: str | None) -> str | None:
     return f"{mbps:.2f}".rstrip("0").rstrip(".")
 
 
+def _format_percent(value: float | int | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number >= 10:
+        return f"{number:.0f}%"
+    return f"{number:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _format_byte_rate(value: int | None) -> str | None:
+    text = _format_file_size(value)
+    return f"{text}/s" if text != "未知" else None
+
+
+def _format_system_health_lines(status: TvhServerStatus | None, uptime_seconds: int | None) -> list[str]:
+    if not status and uptime_seconds is None:
+        return []
+    cpu = _format_percent(status.cpu_percent if status else None) or "-"
+    memory = _format_percent(status.memory_used_percent if status else None)
+    if not memory and status and status.memory_total and status.memory_available is not None:
+        used = max(0, status.memory_total - status.memory_available)
+        memory = _format_percent((used * 100.0) / status.memory_total)
+    memory = memory or "-"
+    uptime = _format_duration(uptime_seconds) if uptime_seconds is not None else "-"
+    return [
+        f"系统: CPU {cpu} | 内存 {memory}",
+        f"运行: {uptime}",
+    ]
+
+
+def _format_network_health_line(status: TvhServerStatus | None) -> str | None:
+    if not status:
+        return None
+    rx = _format_byte_rate(status.network_rx_bps)
+    tx = _format_byte_rate(status.network_tx_bps)
+    if not rx and not tx:
+        return None
+    return f"网络: ↓{rx or '-'} | ↑{tx or '-'}"
+
+
+def _format_recording_health_lines(status: TvhServerStatus | None, dvr_summary: TvhDvrSummary | None) -> list[str]:
+    lines: list[str] = []
+    storage = None
+    if status and status.storage_total:
+        available = _format_file_size(status.storage_available)
+        total = _format_file_size(status.storage_total)
+        storage = f"录制: 可用 {available} / 共 {total}"
+    if storage:
+        lines.append(storage)
+    if dvr_summary:
+        lines.append(f"任务: 录制中 {dvr_summary.recording} | 失败 {dvr_summary.failed}")
+    return lines
+
+
 def _short_service_name(service: str | None) -> str | None:
     if not service:
         return None
@@ -1292,6 +1668,22 @@ def _format_timestamp(value: str | int | float | None) -> str | None:
         return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d %H:%M:%S")
     except (OSError, OverflowError, TypeError, ValueError):
         return str(value)
+
+
+def _format_clock(value: str | int | float | None) -> str:
+    try:
+        return datetime.fromtimestamp(int(value)).strftime("%H:%M")
+    except (OSError, OverflowError, TypeError, ValueError):
+        return str(value or "")
+
+
+def _format_datetime(value: str | int | float | None) -> str:
+    formatted = _format_timestamp(value)
+    return formatted or ""
+
+
+def _collapse_whitespace(value: str) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _format_duration(seconds: int | float | str | None) -> str:
@@ -1867,6 +2259,712 @@ def fetch_tvh_json(base_url: str, path: str, username: str, password: str, timeo
     return _open_tvh_json(request, url, username, password, timeout)
 
 
+def fetch_tvh_text(base_url: str, path: str, username: str, password: str, timeout: int = 10) -> str:
+    url = f"{normalize_base_url(base_url)}{path}"
+    request = urllib.request.Request(url)
+    return _open_tvh_text(request, url, username, password, timeout)
+
+
+def parse_tvh_channels(payload: dict) -> list[TvhChannel]:
+    channels: list[TvhChannel] = []
+    for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        uuid = _string_or_none(entry.get("uuid") or entry.get("channelUuid") or entry.get("key"))
+        name = _string_or_none(entry.get("name") or entry.get("channelName") or entry.get("val"))
+        if not uuid or not name:
+            continue
+        if entry.get("enabled") is False:
+            continue
+        channels.append(TvhChannel(
+            uuid=uuid,
+            name=name,
+            number=_string_or_none(entry.get("number") or entry.get("channelNumber")),
+        ))
+    return channels
+
+
+def parse_tvh_epg_events(payload: dict, now: int | None = None) -> list[TvhEpgEvent]:
+    now_value = int(now if now is not None else time.time())
+    events: list[TvhEpgEvent] = []
+    for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        event_id = _string_or_none(entry.get("eventId") or entry.get("event_id") or entry.get("id"))
+        channel_uuid = _string_or_none(entry.get("channelUuid") or entry.get("channel_uuid"))
+        channel_name = _string_or_none(entry.get("channelName") or entry.get("channel") or entry.get("name"))
+        title = _string_or_none(entry.get("title"))
+        start = _to_int_or_none(entry.get("start"))
+        stop = _to_int_or_none(entry.get("stop"))
+        if not event_id or not title or start is None or stop is None:
+            continue
+        if stop <= now_value:
+            continue
+        events.append(TvhEpgEvent(
+            event_id=event_id,
+            channel_uuid=channel_uuid or "",
+            channel_name=channel_name or "",
+            title=title,
+            start=start,
+            stop=stop,
+            subtitle=_string_or_none(entry.get("subtitle")),
+            summary=_string_or_none(entry.get("summary")),
+            description=_string_or_none(entry.get("description")),
+        ))
+    return sorted(events, key=lambda item: (item.start, item.stop, item.title))
+
+
+def parse_tvh_dvr_configs(payload: dict) -> list[TvhDvrConfig]:
+    configs: list[TvhDvrConfig] = []
+    for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        uuid = _string_or_none(entry.get("uuid") or entry.get("key"))
+        name = _string_or_none(entry.get("name") or entry.get("val") or entry.get("comment"))
+        if not uuid:
+            continue
+        enabled = entry.get("enabled")
+        if enabled is False:
+            continue
+        configs.append(TvhDvrConfig(uuid=uuid, name=name or uuid, enabled=True))
+    return configs
+
+
+def parse_tvh_dvr_entries(payload: dict) -> list[TvhDvrEntry]:
+    entries: list[TvhDvrEntry] = []
+    for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        uuid = _string_or_none(entry.get("uuid") or entry.get("id"))
+        title = _string_or_none(entry.get("disp_title") or entry.get("title") or entry.get("basename"))
+        start = _to_int_or_none(entry.get("start"))
+        stop = _to_int_or_none(entry.get("stop"))
+        if not uuid or not title or start is None or stop is None:
+            continue
+        entries.append(TvhDvrEntry(
+            uuid=uuid,
+            title=title,
+            channel=_string_or_none(
+                entry.get("channelname")
+                or entry.get("channelName")
+                or entry.get("channel_name")
+                or entry.get("channel")
+            ) or "",
+            start=start,
+            stop=stop,
+            start_real=_to_int_or_none(entry.get("start_real")),
+            stop_real=_to_int_or_none(entry.get("stop_real")),
+            sched_status=_string_or_none(entry.get("sched_status") or entry.get("sched_state")),
+            rec_status=_string_or_none(entry.get("rec_status") or entry.get("recording_state")),
+            status=_string_or_none(entry.get("status")),
+            comment=_string_or_none(entry.get("comment")),
+            error=_string_or_none(entry.get("error") or entry.get("errors") or entry.get("last_error")),
+            filesize=_to_int_or_none(entry.get("filesize") or entry.get("data_size")),
+            filename=_string_or_none(entry.get("filename") or entry.get("files") or entry.get("file")),
+            url=_string_or_none(entry.get("url") or entry.get("play_url") or entry.get("download_url")),
+        ))
+    return sorted(entries, key=lambda item: (item.start_real or item.start, item.stop_real or item.stop, item.title))
+
+
+def fetch_tvh_channels(base_url: str, username: str, password: str, timeout: int = 10) -> list[TvhChannel]:
+    payload = fetch_tvh_json(base_url, "/api/channel/grid?limit=999&sort=number", username, password, timeout=timeout)
+    channels = parse_tvh_channels(payload)
+    if channels:
+        return channels
+    payload = fetch_tvh_json(base_url, "/api/channel/list?numbers=1", username, password, timeout=timeout)
+    return parse_tvh_channels(payload)
+
+
+def fetch_tvh_epg_events(
+    base_url: str,
+    username: str,
+    password: str,
+    channel_uuid: str | None = None,
+    channel_name: str | None = None,
+    hours: int = 24,
+    timeout: int = 10,
+    now: int | None = None,
+) -> list[TvhEpgEvent]:
+    now_value = int(now if now is not None else time.time())
+    query = urllib.parse.urlencode({
+        "limit": 999,
+        "sort": "start",
+        "dir": "ASC",
+        "fulltext": 0,
+    })
+    payload = fetch_tvh_json(base_url, f"/api/epg/events/grid?{query}", username, password, timeout=timeout)
+    cutoff = now_value + max(1, int(hours or 24)) * 3600
+    events = []
+    for event in parse_tvh_epg_events(payload, now=now_value):
+        if event.start >= cutoff:
+            continue
+        if channel_uuid and event.channel_uuid and event.channel_uuid != channel_uuid:
+            continue
+        if channel_name and event.channel_name and _normalize_match_text(event.channel_name) != _normalize_match_text(channel_name):
+            continue
+        if channel_uuid and not event.channel_uuid and channel_name and _normalize_match_text(event.channel_name) != _normalize_match_text(channel_name):
+            continue
+        events.append(event)
+    return events
+
+
+def fetch_tvh_dvr_configs(base_url: str, username: str, password: str, timeout: int = 10) -> list[TvhDvrConfig]:
+    payload = fetch_tvh_json(base_url, "/api/dvr/config/grid?limit=999", username, password, timeout=timeout)
+    return parse_tvh_dvr_configs(payload)
+
+
+def fetch_tvh_dvr_entries(base_url: str, username: str, password: str, timeout: int = 10) -> list[TvhDvrEntry]:
+    upcoming_query = urllib.parse.urlencode({
+        "limit": 100,
+        "sort": "start",
+        "dir": "ASC",
+    })
+    finished_query = urllib.parse.urlencode({
+        "limit": 100,
+        "sort": "stop",
+        "dir": "DESC",
+    })
+    entries: dict[str, TvhDvrEntry] = {}
+    for path in (
+        f"/api/dvr/entry/grid_upcoming?{upcoming_query}",
+        f"/api/dvr/entry/grid_finished?{finished_query}",
+        f"/api/dvr/entry/grid_failed?{finished_query}",
+    ):
+        payload = fetch_tvh_json(base_url, path, username, password, timeout=timeout)
+        for entry in parse_tvh_dvr_entries(payload):
+            entries[entry.uuid] = entry
+    return sorted(
+        entries.values(),
+        key=lambda item: (_dvr_sort_group(item), item.start_real or item.start, item.stop_real or item.stop, item.title),
+    )
+
+
+def calculate_recording_window(
+    event: TvhEpgEvent,
+    start_padding_minutes: int = 3,
+    stop_padding_minutes: int = 10,
+    now: int | None = None,
+) -> tuple[int, int, bool]:
+    start = int(event.start) - max(0, int(start_padding_minutes or 0)) * 60
+    stop = int(event.stop) + max(0, int(stop_padding_minutes or 0)) * 60
+    now_value = int(now if now is not None else time.time())
+    clipped = False
+    if start < now_value:
+        start = now_value
+        clipped = True
+    if stop <= start:
+        stop = start + 60
+    return start, stop, clipped
+
+
+def create_tvh_dvr_recording(
+    base_url: str,
+    username: str,
+    password: str,
+    event: TvhEpgEvent,
+    dvr_config: TvhDvrConfig,
+    start_padding_minutes: int = 3,
+    stop_padding_minutes: int = 10,
+    now: int | None = None,
+    timeout: int = 10,
+) -> dict:
+    start, stop, _ = calculate_recording_window(
+        event,
+        start_padding_minutes=start_padding_minutes,
+        stop_padding_minutes=stop_padding_minutes,
+        now=now,
+    )
+    conf = {
+        "enabled": True,
+        "config_name": dvr_config.uuid,
+        "start": start,
+        "stop": stop,
+        "disp_title": event.title,
+        "disp_subtitle": event.subtitle or "",
+        "disp_extratext": event.summary or event.description or "",
+        "comment": "Created by MoviePilot TVH Helper",
+    }
+    if event.channel_uuid:
+        conf["channel"] = event.channel_uuid
+    elif event.channel_name:
+        conf["channelname"] = event.channel_name
+    else:
+        raise TvhError("节目缺少频道信息，无法创建录制。")
+
+    response = post_tvh_form(
+        base_url,
+        "/api/dvr/entry/create",
+        username,
+        password,
+        {"conf": json.dumps(conf, ensure_ascii=False, separators=(",", ":"))},
+        timeout=timeout,
+    )
+    return {
+        "uuid": response.get("uuid") or response.get("id") or response.get("uuidError"),
+        "response": response,
+        "start": start,
+        "stop": stop,
+        "config": dvr_config.name,
+    }
+
+
+def format_record_time_range(start: int, stop: int) -> str:
+    return f"{_format_clock(start)}-{_format_clock(stop)}"
+
+
+def format_record_datetime_range(start: int, stop: int) -> str:
+    return f"{_format_datetime(start)} - {_format_datetime(stop)}"
+
+
+def format_record_program_detail(event: TvhEpgEvent) -> str:
+    lines = [
+        f"频道: {event.channel_name or event.channel_uuid}",
+        f"节目: {event.title}",
+        f"时间: {format_record_datetime_range(event.start, event.stop)}",
+        f"时长: {max(1, int((event.stop - event.start) / 60))} 分钟",
+    ]
+    details = event.summary or event.description
+    if details:
+        lines.extend(["", f"简介: {_collapse_whitespace(details)}"])
+    return "\n".join(lines)
+
+
+def format_record_confirm_message(
+    event: TvhEpgEvent,
+    start_padding_minutes: int,
+    stop_padding_minutes: int,
+    now: int | None = None,
+) -> str:
+    start, stop, clipped = calculate_recording_window(event, start_padding_minutes, stop_padding_minutes, now=now)
+    lines = [
+        "确认创建 TVH 录制任务：",
+        "",
+        f"频道: {event.channel_name or event.channel_uuid}",
+        f"节目: {event.title}",
+        f"节目时间: {format_record_datetime_range(event.start, event.stop)}",
+        f"录制时间: {format_record_datetime_range(start, stop)}",
+        f"提前/延后: {start_padding_minutes}/{stop_padding_minutes} 分钟",
+    ]
+    if clipped:
+        lines.append("提示: 录制开始时间早于当前时间，已自动调整为立即开始。")
+    return "\n".join(lines)
+
+
+def format_record_created_message(result: dict, event: TvhEpgEvent) -> str:
+    lines = [
+        "已创建 TVH 录制任务",
+        "",
+        f"频道: {event.channel_name or event.channel_uuid}",
+        f"节目: {event.title}",
+        f"录制: {format_record_datetime_range(int(result['start']), int(result['stop']))}",
+    ]
+    if result.get("uuid"):
+        lines.append(f"任务ID: {result.get('uuid')}")
+    return "\n".join(lines)
+
+
+def cancel_tvh_dvr_entry(
+    base_url: str,
+    username: str,
+    password: str,
+    entry_uuid: str,
+    timeout: int = 10,
+) -> dict:
+    return post_tvh_form(
+        base_url,
+        "/api/dvr/entry/cancel",
+        username,
+        password,
+        {"uuid": json.dumps([entry_uuid], separators=(",", ":"))},
+        timeout=timeout,
+    )
+
+
+def remove_tvh_dvr_entry(
+    base_url: str,
+    username: str,
+    password: str,
+    entry_uuid: str,
+    timeout: int = 10,
+) -> dict:
+    return post_tvh_form(
+        base_url,
+        "/api/dvr/entry/remove",
+        username,
+        password,
+        {"uuid": json.dumps([entry_uuid], separators=(",", ":"))},
+        timeout=timeout,
+    )
+
+
+def stop_tvh_dvr_entry(
+    base_url: str,
+    username: str,
+    password: str,
+    entry_uuid: str,
+    timeout: int = 10,
+) -> dict:
+    return post_tvh_form(
+        base_url,
+        "/api/dvr/entry/stop",
+        username,
+        password,
+        {"uuid": json.dumps([entry_uuid], separators=(",", ":"))},
+        timeout=timeout,
+    )
+
+
+def adjust_tvh_dvr_entry_stop(
+    base_url: str,
+    username: str,
+    password: str,
+    entry: TvhDvrEntry,
+    delta_minutes: int,
+    timeout: int = 10,
+) -> dict:
+    delta_seconds = int(delta_minutes or 0) * 60
+    new_stop = int(entry.stop) + delta_seconds
+    min_stop = int(entry.start) + 60
+    if new_stop < min_stop:
+        new_stop = min_stop
+    node = [{
+        "uuid": entry.uuid,
+        "stop": new_stop,
+    }]
+    response = post_tvh_form(
+        base_url,
+        "/api/idnode/save",
+        username,
+        password,
+        {"node": json.dumps(node, ensure_ascii=False, separators=(",", ":"))},
+        timeout=timeout,
+    )
+    return {
+        "response": response,
+        "stop": new_stop,
+    }
+
+
+def filter_tvh_dvr_entries(entries: list[TvhDvrEntry], dvr_filter: str | None) -> list[TvhDvrEntry]:
+    filter_key = normalize_dvr_filter(dvr_filter)
+    if filter_key == "all":
+        return entries
+    return [entry for entry in entries if _dvr_filter_key(entry) == filter_key]
+
+
+def summarize_tvh_dvr_entries(entries: list[TvhDvrEntry] | None) -> TvhDvrSummary:
+    entries = entries or []
+    return TvhDvrSummary(
+        recording=len([entry for entry in entries if _dvr_filter_key(entry) == "recording"]),
+        failed=len([entry for entry in entries if _dvr_filter_key(entry) == "failed"]),
+    )
+
+
+def normalize_dvr_filter(value: str | None) -> str:
+    text = str(value or "all").strip().lower()
+    return text if text in ("all", "recording", "finished", "failed") else "all"
+
+
+def format_dvr_entries_message(
+    entries: list[TvhDvrEntry],
+    dvr_filter: str | None = None,
+    page: int = 0,
+    page_size: int = 8,
+) -> str:
+    filter_label = _dvr_filter_label(dvr_filter)
+    if not entries:
+        return f"筛选: {filter_label}\n\n当前没有符合条件的 TVH 录制任务。"
+    page_items, page, total_pages = _paginate(entries, page, page_size)
+    lines = [
+        f"筛选: {filter_label} | {page + 1}/{total_pages}",
+        "",
+        "请选择要查看的录制任务：",
+        "",
+    ]
+    start_index = page * page_size
+    for offset, entry in enumerate(page_items, start=1):
+        lines.append(
+            f"{start_index + offset}. {_dvr_status_label(entry)} | "
+            f"{format_record_datetime_range(entry.start_real or entry.start, entry.stop_real or entry.stop)} | "
+            f"{entry.channel or '-'} | {_format_file_size(getattr(entry, 'filesize', None))} | {entry.title}"
+        )
+    return "\n".join(lines)
+
+
+def format_dvr_entry_detail(entry: TvhDvrEntry, download_url: str | None = None) -> str:
+    filename = _format_dvr_filename(getattr(entry, "filename", None))
+    issue_reason = _dvr_issue_reason(entry)
+    lines = [
+        "TVH录制任务",
+        "",
+        f"状态: {_dvr_status_label(entry)}",
+        f"频道: {entry.channel or '-'}",
+        f"节目: {entry.title}",
+        f"节目时间: {format_record_datetime_range(entry.start, entry.stop)}",
+        f"计划录制: {format_record_datetime_range(entry.start_real or entry.start, entry.stop_real or entry.stop)}",
+        f"录制体积: {_format_file_size(getattr(entry, 'filesize', None))}",
+        f"下载: {'可用' if download_url else '未生成免登录链接'}",
+        f"任务ID: {entry.uuid}",
+    ]
+    if issue_reason:
+        lines.append(f"异常原因: {issue_reason}")
+    if filename:
+        lines.append(f"文件: {filename}")
+    if entry.comment:
+        lines.append(f"备注: {entry.comment}")
+    if entry.error and str(entry.error) not in ("0", "OK"):
+        lines.append(f"错误: {entry.error}")
+    return "\n".join(lines)
+
+
+def format_dvr_cancel_confirm_message(entry: TvhDvrEntry) -> str:
+    return (
+        "确认取消这个 TVH 录制任务？\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}\n"
+        f"计划录制: {format_record_datetime_range(entry.start_real or entry.start, entry.stop_real or entry.stop)}"
+    )
+
+
+def format_dvr_stop_confirm_message(entry: TvhDvrEntry) -> str:
+    return (
+        "确认停止这个 TVH 录制任务？\n\n"
+        "TVH 会尽量保存已经录到的文件。\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}\n"
+        f"计划录制: {format_record_datetime_range(entry.start_real or entry.start, entry.stop_real or entry.stop)}"
+    )
+
+
+def format_dvr_stopped_message(entry: TvhDvrEntry) -> str:
+    return (
+        "已请求停止 TVH 录制任务。\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}"
+    )
+
+
+def format_dvr_remove_confirm_message(entry: TvhDvrEntry) -> str:
+    return (
+        "确认删除这个 TVH 录制文件？\n\n"
+        "该操作会调用 TVH 删除录制文件接口。\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}\n"
+        f"录制体积: {_format_file_size(getattr(entry, 'filesize', None))}"
+    )
+
+
+def format_dvr_removed_message(entry: TvhDvrEntry) -> str:
+    return (
+        "已请求删除 TVH 录制文件。\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}"
+    )
+
+
+def format_dvr_adjusted_message(entry: TvhDvrEntry, new_stop: int) -> str:
+    return (
+        "已更新 TVH 录制任务结束时间。\n\n"
+        f"频道: {entry.channel or '-'}\n"
+        f"节目: {entry.title}\n"
+        f"新的节目结束: {_format_datetime(new_stop)}\n"
+        "请返回任务列表刷新确认 TVH 的实际计划录制时间。"
+    )
+
+
+def _dvr_status_label(entry: TvhDvrEntry) -> str:
+    status = (entry.sched_status or entry.rec_status or "").lower()
+    if "rerecord" in status:
+        return "需重录"
+    if "failed" in status or "error" in status:
+        return "失败"
+    if "warning" in status:
+        return "警告"
+    if "scheduled" in status:
+        return "等待录制"
+    if status.startswith("recording") or status == "recording":
+        return "录制中"
+    if "completed" in status or "complete" in status:
+        return "已完成"
+    return entry.sched_status or entry.rec_status or "未知"
+
+
+def is_recording_tvh_dvr_entry(entry: TvhDvrEntry) -> bool:
+    status = _dvr_status_text(entry)
+    if "scheduled" in status:
+        return False
+    return status == "recording" or status.startswith("recording")
+
+
+def can_remove_tvh_dvr_entry(entry: TvhDvrEntry) -> bool:
+    if _dvr_entry_can_adjust(entry):
+        return False
+    status = _dvr_status_text(entry)
+    return bool(
+        "completed" in status
+        or "complete" in status
+        or "failed" in status
+        or "error" in status
+        or getattr(entry, "filename", None)
+        or getattr(entry, "url", None)
+    )
+
+
+def build_tvh_dvr_download_url(base_url: str, entry: TvhDvrEntry) -> str | None:
+    entry_url = _string_or_none(getattr(entry, "url", None))
+    if entry_url and entry_url.startswith(("http://", "https://")):
+        return entry_url
+    base = normalize_base_url(base_url) if base_url else ""
+    if entry_url:
+        return f"{base}/{entry_url.lstrip('/')}" if base else entry_url
+    if getattr(entry, "filename", None):
+        path = f"dvrfile/{urllib.parse.quote(str(entry.uuid), safe='')}"
+        return f"{base}/{path}" if base else path
+    return None
+
+
+def fetch_tvh_dvr_ticket_download_url(
+    base_url: str,
+    username: str,
+    password: str,
+    dvr_uuid: str,
+    timeout: int = 10,
+) -> str | None:
+    if not dvr_uuid:
+        return None
+    quoted_uuid = urllib.parse.quote(str(dvr_uuid), safe="")
+    playlist = fetch_tvh_text(
+        base_url,
+        f"/play/ticket/dvrfile/{quoted_uuid}?playlist=m3u",
+        username,
+        password,
+        timeout=timeout,
+    )
+    expected_path = f"/dvrfile/{quoted_uuid}"
+    for line in playlist.splitlines():
+        item = line.strip()
+        if not item or item.startswith("#"):
+            continue
+        parsed = urllib.parse.urlsplit(item)
+        path = parsed.path or item.split("?", 1)[0]
+        if path.endswith(expected_path):
+            return _absolute_tvh_url(base_url, item)
+    return None
+
+
+def _dvr_entry_can_adjust(entry: TvhDvrEntry) -> bool:
+    status = _dvr_status_text(entry)
+    return "scheduled" in status or status == "recording" or status.startswith("recording")
+
+
+def _dvr_filter_key(entry: TvhDvrEntry) -> str:
+    status = _dvr_status_text(entry)
+    if "failed" in status or "error" in status or "rerecord" in status:
+        return "failed"
+    if "scheduled" in status:
+        return "all"
+    if "recording" in status:
+        return "recording"
+    if "completed" in status or "complete" in status:
+        return "finished"
+    return "all"
+
+
+def _dvr_filter_label(value: str | None) -> str:
+    return {
+        "all": "全部",
+        "recording": "录制中",
+        "finished": "已完成",
+        "failed": "失败",
+    }.get(normalize_dvr_filter(value), "全部")
+
+
+def _dvr_sort_group(entry: TvhDvrEntry) -> int:
+    status = _dvr_status_text(entry)
+    if "failed" in status or "error" in status or "rerecord" in status:
+        return 2
+    if "scheduled" in status:
+        return 1
+    if "recording" in status:
+        return 0
+    return 3
+
+
+def _dvr_status_text(entry: TvhDvrEntry) -> str:
+    return str(entry.sched_status or entry.rec_status or "").lower()
+
+
+def _dvr_issue_reason(entry: TvhDvrEntry) -> str | None:
+    raw_status = _string_or_none(getattr(entry, "status", None))
+    if raw_status:
+        translated = _translate_tvh_dvr_status(raw_status)
+        if translated:
+            return translated
+    error = _string_or_none(getattr(entry, "error", None))
+    if error and error.upper() != "OK" and error != "0":
+        return error
+    return None
+
+
+def _translate_tvh_dvr_status(value: str) -> str | None:
+    text = value.strip()
+    if not text or text.upper() == "OK":
+        return None
+    lower = text.lower()
+    normal_statuses = {
+        "scheduled for recording",
+        "recording",
+        "completed",
+        "completed ok",
+    }
+    if lower in normal_statuses:
+        return None
+    translations = {
+        "not enough disk space": "磁盘空间不足",
+        "time missed": "错过录制时间",
+        "file missing": "录制文件缺失",
+        "aborted by user": "用户中止",
+        "no input source available": "没有可用输入源",
+        "service not enabled": "服务未启用",
+    }
+    return translations.get(lower, text)
+
+
+def _subscription_dvr_title(subscription: TvhSubscription) -> str | None:
+    title = _string_or_none(subscription.title)
+    if not title:
+        return None
+    text = title.strip()
+    if text.lower().startswith("dvr:"):
+        return text.split(":", 1)[1].strip() or text
+    return None
+
+
+def _format_dvr_filename(value: str | None) -> str | None:
+    text = _string_or_none(value)
+    if not text:
+        return None
+    return os.path.basename(text.rstrip("/")) or text
+
+
+def _absolute_tvh_url(base_url: str, value: str) -> str:
+    if value.startswith(("http://", "https://")):
+        return value
+    return f"{normalize_base_url(base_url)}/{value.lstrip('/')}"
+
+
+def _format_file_size(value: int | None) -> str:
+    if not value or value <= 0:
+        return "未知"
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
 def enrich_tvh_webhook_program(
     payload: dict,
     base_url: str,
@@ -2066,6 +3164,14 @@ def post_tvh_body(
 
 
 def _open_tvh_json(request: urllib.request.Request, url: str, username: str, password: str, timeout: int) -> dict:
+    payload = _open_tvh_text(request, url, username, password, timeout)
+    try:
+        return json.loads(payload) if payload else {}
+    except json.JSONDecodeError as err:
+        raise TvhError(str(err)) from err
+
+
+def _open_tvh_text(request: urllib.request.Request, url: str, username: str, password: str, timeout: int) -> str:
     password_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
     password_manager.add_password(None, url, username, password)
     auth_handler = urllib.request.HTTPBasicAuthHandler(password_manager)
@@ -2073,9 +3179,8 @@ def _open_tvh_json(request: urllib.request.Request, url: str, username: str, pas
     opener = urllib.request.build_opener(auth_handler, digest_handler)
     try:
         with opener.open(request, timeout=timeout) as response:
-            payload = response.read().decode("utf-8")
-            return json.loads(payload) if payload else {}
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as err:
+            return response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, urllib.error.HTTPError) as err:
         raise TvhError(str(err)) from err
 
 
@@ -2158,11 +3263,23 @@ def fetch_tvh_status(base_url: str, username: str, password: str) -> TvhServerSt
         uptime_seconds = int(uptime) if uptime is not None else None
     except (TypeError, ValueError):
         uptime_seconds = None
+    system = payload.get("system") if isinstance(payload.get("system"), dict) else {}
+    network = payload.get("network") if isinstance(payload.get("network"), dict) else {}
+    storage = payload.get("recording_storage") if isinstance(payload.get("recording_storage"), dict) else {}
     return TvhServerStatus(
         ok=True,
         version=str(version) if version else None,
         start_time=start_time,
         uptime_seconds=uptime_seconds,
+        cpu_percent=_to_float_or_none(system.get("cpu_percent")),
+        memory_total=_to_int_or_none(system.get("memory_total")),
+        memory_available=_to_int_or_none(system.get("memory_available")),
+        memory_used_percent=_to_float_or_none(system.get("memory_used_percent")),
+        network_rx_bps=_to_int_or_none(network.get("rx_bps")),
+        network_tx_bps=_to_int_or_none(network.get("tx_bps")),
+        storage_total=_to_int_or_none(storage.get("total")),
+        storage_available=_to_int_or_none(storage.get("available") or storage.get("free")),
+        storage_used_percent=_to_float_or_none(storage.get("used_percent")),
     )
 
 

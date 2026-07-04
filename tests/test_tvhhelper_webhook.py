@@ -16,6 +16,10 @@ def install_moviepilot_stubs(monkeypatch):
     class NotificationType:
         Plugin = "Plugin"
 
+    class Notification:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     class EventType:
         PluginAction = "plugin.action"
         MessageAction = "message.action"
@@ -40,6 +44,11 @@ def install_moviepilot_stubs(monkeypatch):
         def __init__(self):
             self.config = {}
             self.messages = []
+            self.chain = types.SimpleNamespace(
+                post_message=lambda notification: self.messages.append(notification),
+                run_module=lambda *a, **k: False,
+                delete_message=lambda *a, **k: False,
+            )
 
         def update_config(self, config):
             self.config = config
@@ -50,7 +59,7 @@ def install_moviepilot_stubs(monkeypatch):
     app = types.ModuleType("app")
     schemas = types.ModuleType("app.schemas")
     schemas.Response = Response
-    schemas.Notification = object
+    schemas.Notification = Notification
     schemas.NotificationType = NotificationType
     app.schemas = schemas
 
@@ -116,6 +125,42 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
     assert plugin.messages[0]["mtype"] == "Plugin"
     assert plugin.messages[0]["title"] == "TVH开始播放"
     assert "频道: News" in plugin.messages[0]["text"]
+
+
+def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_ticket_download_url",
+        lambda *args, **kwargs: "https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1",
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-complete-1",
+            "timestamp": int(time.time()),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制完成"
+    assert plugin.messages[0]["buttons"] == [[
+        {"text": "下载录制文件", "url": "https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1"},
+    ]]
 
 
 def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypatch):
@@ -362,6 +407,124 @@ def test_button_text_is_not_appended(monkeypatch):
     ]])
 
     assert text == "请选择："
+
+
+def test_record_menu_callback_lists_channels(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_channels",
+        lambda *args, **kwargs: [
+            types.SimpleNamespace(uuid="ch-1", name="翡翠台", number="81"),
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "record_menu",
+        "channel": "telegram",
+        "user": "user-id",
+    }))
+
+    assert len(plugin.messages) == 1
+    message = plugin.messages[0].kwargs
+    assert message["title"] == "TVH预约录制"
+    assert "请选择要预约录制的频道" in message["text"]
+    assert message["buttons"][0][0]["text"] == "81 翡翠台"
+    assert message["buttons"][0][0]["callback_data"].startswith("[PLUGIN]tvhhelper|record_ch|")
+    assert len(message["buttons"][0][0]["callback_data"].encode("utf-8")) <= 64
+
+
+def test_record_confirm_clears_session_to_prevent_duplicate_create(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    created = []
+    event = types.SimpleNamespace(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="晚间新闻",
+        start=1893456000,
+        stop=1893457800,
+        subtitle=None,
+        summary=None,
+        description=None,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_configs",
+        lambda *args, **kwargs: [types.SimpleNamespace(uuid="cfg-1", name="Default")],
+    )
+
+    def fake_create(*args, **kwargs):
+        created.append((args, kwargs))
+        return {"uuid": "dvr-1", "start": event.start, "stop": event.stop}
+
+    monkeypatch.setattr(module, "create_tvh_dvr_recording", fake_create)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin._record_session_cache.set("session-1", {
+        "selected_event": event,
+        "start_padding": 3,
+        "stop_padding": 10,
+    })
+    callback_event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "record_confirm|session-1",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(callback_event)
+    plugin.handle_callback(callback_event)
+
+    assert len(created) == 1
+    assert plugin.messages[0].kwargs["title"] == "TVH预约录制已创建"
+    assert plugin.messages[1].kwargs["title"] == "TVH助手执行失败"
+    assert "会话已过期" in plugin.messages[1].kwargs["text"]
+
+
+def test_dvr_tasks_callback_lists_entries(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [
+            types.SimpleNamespace(
+                uuid="dvr-1",
+                title="晚间新闻",
+                channel="翡翠台",
+                start=1893456000,
+                stop=1893457800,
+                start_real=1893455940,
+                stop_real=1893458400,
+                sched_status="Scheduled for recording",
+                rec_status=None,
+                comment=None,
+                error=None,
+                filesize=916009132,
+            ),
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    }))
+
+    assert len(plugin.messages) == 1
+    message = plugin.messages[0].kwargs
+    assert message["title"] == "TVH录制任务"
+    assert "晚间新闻" in message["text"]
+    assert "873.6 MB" in message["text"]
+    assert message["buttons"][0][0]["callback_data"].startswith("[PLUGIN]tvhhelper|dvr_task|")
+    assert len(message["buttons"][0][0]["callback_data"].encode("utf-8")) <= 64
 
 
 def test_page_does_not_show_webhook_copy_template(monkeypatch):
