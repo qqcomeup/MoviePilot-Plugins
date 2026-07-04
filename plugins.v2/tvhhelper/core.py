@@ -156,6 +156,18 @@ class TvhDvrEntry:
     url: str | None = None
 
 
+@dataclass(frozen=True)
+class TvhDvrReliabilityIssue:
+    issue_type: str
+    entry: TvhDvrEntry
+    severity: str
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def key(self) -> str:
+        return f"{self.issue_type}:{self.entry.uuid}"
+
+
 class TvhError(Exception):
     pass
 
@@ -3132,6 +3144,149 @@ def summarize_tvh_dvr_entries(entries: list[TvhDvrEntry] | None) -> TvhDvrSummar
         recording=len([entry for entry in entries if _dvr_filter_key(entry) == "recording"]),
         failed=len([entry for entry in entries if _dvr_filter_key(entry) == "failed"]),
     )
+
+
+def analyze_tvh_dvr_reliability(
+    entries: list[TvhDvrEntry] | None,
+    status: TvhServerStatus | None,
+    inputs: list[str] | None,
+    expected_dvb_count: int = 0,
+    now: int | float | None = None,
+    precheck_window_seconds: int = 15 * 60,
+    start_grace_seconds: int = 120,
+    recent_complete_seconds: int = 24 * 60 * 60,
+    min_storage_bytes: int = 1024 * 1024 * 1024,
+    min_file_size_bytes: int = 50 * 1024 * 1024,
+    min_duration_ratio: float = 0.7,
+) -> list[TvhDvrReliabilityIssue]:
+    now_value = int(now if now is not None else time.time())
+    status = status or TvhServerStatus(ok=False)
+    inputs = inputs or []
+    issues: list[TvhDvrReliabilityIssue] = []
+    environment_reasons = _tvh_dvr_environment_reasons(
+        status,
+        inputs,
+        expected_dvb_count=expected_dvb_count,
+        min_storage_bytes=min_storage_bytes,
+    )
+
+    for entry in entries or []:
+        start = int(entry.start_real or entry.start)
+        stop = int(entry.stop_real or entry.stop)
+        status_key = _dvr_filter_key(entry)
+        status_text = _dvr_status_text(entry)
+
+        if status_key == "all" and "scheduled" in status_text:
+            if environment_reasons and 0 <= start - now_value <= precheck_window_seconds:
+                issues.append(TvhDvrReliabilityIssue(
+                    issue_type="precheck",
+                    entry=entry,
+                    severity="warning",
+                    reasons=tuple(environment_reasons),
+                ))
+            if start + max(0, int(start_grace_seconds)) <= now_value < stop:
+                issues.append(TvhDvrReliabilityIssue(
+                    issue_type="missed_start",
+                    entry=entry,
+                    severity="error",
+                    reasons=("任务已到计划开始时间，但 TVH 仍显示等待录制。",),
+                ))
+            continue
+
+        if status_key == "failed":
+            issue_reason = _dvr_issue_reason(entry) or "TVH 标记该录制任务失败。"
+            issues.append(TvhDvrReliabilityIssue(
+                issue_type="failed",
+                entry=entry,
+                severity="error",
+                reasons=(issue_reason,),
+            ))
+            continue
+
+        if status_key == "finished" and 0 <= now_value - stop <= recent_complete_seconds:
+            filesize = entry.filesize
+            if filesize is not None and filesize > 0 and filesize < min_file_size_bytes:
+                issues.append(TvhDvrReliabilityIssue(
+                    issue_type="completed_small",
+                    entry=entry,
+                    severity="warning",
+                    reasons=(f"录制文件只有 {_format_file_size(filesize)}，可能录制不完整。",),
+                ))
+            expected_duration = max(0, int(entry.stop) - int(entry.start))
+            actual_duration = _dvr_actual_duration_seconds(entry)
+            if (
+                expected_duration > 0
+                and actual_duration is not None
+                and actual_duration > 0
+                and actual_duration < expected_duration * float(min_duration_ratio)
+            ):
+                issues.append(TvhDvrReliabilityIssue(
+                    issue_type="completed_short",
+                    entry=entry,
+                    severity="warning",
+                    reasons=(
+                        f"录制时长 {_format_duration_minutes(actual_duration)}，"
+                        f"低于节目时长 {_format_duration_minutes(expected_duration)}。",
+                    ),
+                ))
+    return issues
+
+
+def format_tvh_dvr_reliability_issue(issue: TvhDvrReliabilityIssue) -> str:
+    title = {
+        "precheck": "录制开始前检查异常",
+        "missed_start": "到点未开始录制",
+        "failed": "录制任务失败",
+        "completed_small": "录制文件过小",
+        "completed_short": "录制时长明显偏短",
+    }.get(issue.issue_type, "录制可靠性提醒")
+    entry = issue.entry
+    lines = [
+        title,
+        "",
+        f"频道: {entry.channel or '-'}",
+        f"节目: {entry.title}",
+        f"计划: {format_record_datetime_range(entry.start_real or entry.start, entry.stop_real or entry.stop)}",
+    ]
+    if entry.filesize:
+        lines.append(f"体积: {_format_file_size(entry.filesize)}")
+    if issue.reasons:
+        lines.extend(["", "原因:"])
+        lines.extend([f"- {reason}" for reason in issue.reasons])
+    lines.extend([
+        "",
+        "建议:",
+        "- 先检查 TVH 状态、DVB 输入和录制空间。",
+        "- 如节目有重播，可点“查找重播”重新预约。",
+        "",
+        f"任务ID: {entry.uuid}",
+    ])
+    return "\n".join(lines)
+
+
+def _tvh_dvr_environment_reasons(
+    status: TvhServerStatus,
+    inputs: list[str],
+    expected_dvb_count: int = 0,
+    min_storage_bytes: int = 1024 * 1024 * 1024,
+) -> list[str]:
+    reasons: list[str] = []
+    if not status.ok:
+        reasons.append("TVH API 当前不可用。")
+    expected = max(0, int(expected_dvb_count or 0))
+    if expected and len(inputs) < expected:
+        reasons.append(f"DVB 可用 {len(inputs)}/{expected}，少于期望数量。")
+    if status.storage_available is not None and status.storage_available < min_storage_bytes:
+        reasons.append(f"录制空间不足，剩余 {_format_file_size(status.storage_available)}。")
+    return reasons
+
+
+def _dvr_actual_duration_seconds(entry: TvhDvrEntry) -> int | None:
+    if entry.start_real and entry.stop_real and entry.stop_real > entry.start_real:
+        return int(entry.stop_real - entry.start_real)
+    if entry.duration and entry.duration > 0:
+        return int(entry.duration)
+    return None
 
 
 def normalize_dvr_filter(value: str | None) -> str:

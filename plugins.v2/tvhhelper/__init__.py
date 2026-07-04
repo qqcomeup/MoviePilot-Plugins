@@ -21,6 +21,7 @@ from app.schemas.types import ChainEventType, EventType
 from .core import (
     DvbMonitor,
     TimedValueCache,
+    analyze_tvh_dvr_reliability,
     adjust_tvh_dvr_entry_stop,
     build_dvr_cancel_confirm_buttons,
     build_dvr_bulk_remove_buttons,
@@ -75,6 +76,7 @@ from .core import (
     format_record_created_message,
     format_record_merge_confirm_message,
     format_record_merged_message,
+    format_tvh_dvr_reliability_issue,
     format_dvr_adjusted_message,
     format_dvr_cancel_confirm_message,
     format_dvr_entries_message,
@@ -96,6 +98,7 @@ from .core import (
     lookup_ip_location_from_ip2region,
     merge_subscription_details,
     normalize_interval,
+    plugin_callback,
     playback_notification_key,
     detect_playback_events,
     enrich_tvh_webhook_program,
@@ -117,6 +120,7 @@ from .core import (
     summarize_tvh_dvr_entries,
     token_for_user,
     TvhDvrEntry,
+    TvhServerStatus,
     TvhUser,
 )
 
@@ -125,7 +129,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.78"
+    plugin_version = "0.1.79"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -165,9 +169,12 @@ class tvhhelper(_PluginBase):
     _tvh_users_cache: TimedValueCache | None = None
     _webhook_program_cache: TimedValueCache | None = None
     _record_session_cache: TimedValueCache | None = None
+    _dvr_reliability_alerts: TimedValueCache | None = None
     _tvh_data_cache: dict[str, tuple[float, Any]] = {}
     _playback_history: list[dict[str, Any]] = []
     _ipdb_update_running = False
+    _dvr_reliability_enabled = True
+    _dvr_reliability_interval = 60
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -189,6 +196,8 @@ class tvhhelper(_PluginBase):
             self._expected_dvb_count = self.__to_int(config.get("expected_dvb_count"), 1)
             self._check_interval = normalize_interval(config.get("check_interval"), 60, 30)
             self._play_notify_interval = normalize_interval(config.get("play_notify_interval"), 10, 5)
+            self._dvr_reliability_enabled = bool(config.get("dvr_reliability_enabled", True))
+            self._dvr_reliability_interval = normalize_interval(config.get("dvr_reliability_interval"), 60, 30)
             self._ip_lookup_enabled = bool(config.get("ip_lookup_enabled", True))
             self._ipdb_enabled = bool(config.get("ipdb_enabled", True))
             self._ipdb_auto_update = bool(config.get("ipdb_auto_update", True))
@@ -216,6 +225,7 @@ class tvhhelper(_PluginBase):
         self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
         self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._record_session_cache = TimedValueCache(ttl_seconds=900)
+        self._dvr_reliability_alerts = TimedValueCache(ttl_seconds=48 * 60 * 60)
         self._tvh_data_cache = {}
         self._play_notify_snapshot = None
         self._playback_history = []
@@ -252,6 +262,8 @@ class tvhhelper(_PluginBase):
         self._expected_dvb_count = 1
         self._check_interval = 60
         self._play_notify_interval = 10
+        self._dvr_reliability_enabled = True
+        self._dvr_reliability_interval = 60
         self._ip_lookup_enabled = True
         self._ipdb_enabled = True
         self._ipdb_auto_update = True
@@ -269,6 +281,7 @@ class tvhhelper(_PluginBase):
         self._tvh_users_cache = None
         self._webhook_program_cache = None
         self._record_session_cache = None
+        self._dvr_reliability_alerts = None
         self._tvh_data_cache = {}
         self._playback_history = []
         self._ipdb_update_running = False
@@ -326,6 +339,8 @@ class tvhhelper(_PluginBase):
             "expected_dvb_count": self._expected_dvb_count,
             "check_interval": self._check_interval,
             "play_notify_interval": self._play_notify_interval,
+            "dvr_reliability_enabled": self._dvr_reliability_enabled,
+            "dvr_reliability_interval": self._dvr_reliability_interval,
             "ip_lookup_enabled": self._ip_lookup_enabled,
             "ipdb_enabled": self._ipdb_enabled,
             "ipdb_auto_update": self._ipdb_auto_update,
@@ -469,6 +484,8 @@ class tvhhelper(_PluginBase):
                     self.__to_int(index_text, -1),
                     self.__to_int(minutes_text, 0),
                 )
+            elif payload.startswith("dvr_replay|"):
+                self.__show_dvr_replay_options(event, payload.split("|", 1)[1])
             elif payload.startswith("record_chs|"):
                 _, session_id, page_text = payload.split("|", 2)
                 self.__show_record_channels(event, page=self.__to_int(page_text, 0), session_id=session_id)
@@ -916,6 +933,58 @@ class tvhhelper(_PluginBase):
                 download_url,
             ),
         )
+
+    def __show_dvr_replay_options(self, event: Event, dvr_uuid: str):
+        entries = self.__tvh_dvr_entries(force_refresh=True)
+        entry = next((item for item in entries if item.uuid == dvr_uuid), None)
+        if not entry:
+            raise ValueError("未找到对应的 TVH 录制任务，请返回录制任务列表刷新。")
+        channels = self.__tvh_channels()
+        channel = next((item for item in channels if item.name == entry.channel), None)
+        if not channel:
+            raise ValueError(f"未找到频道 {entry.channel or '-'}，无法查找重播。")
+        events = self.__matching_replay_events(entry, self.__tvh_epg_events(channel))
+        if not events:
+            self.__edit_or_reply(
+                event,
+                "查找重播",
+                f"暂未在未来 24 小时 EPG 中找到同频道重播。\n\n频道: {entry.channel or '-'}\n节目: {entry.title}",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        session_id = self.__create_record_session({
+            "channel": channel,
+            "events": events,
+            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
+            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
+        })
+        self.__edit_or_reply(
+            event,
+            "查找重播",
+            f"频道: {channel.name}\n节目: {entry.title}\n请选择要重新预约的重播节目。",
+            buttons=build_record_program_buttons(self.__class__.__name__, session_id, events),
+        )
+
+    @staticmethod
+    def __matching_replay_events(entry: TvhDvrEntry, events: list[Any]) -> list[Any]:
+        target = tvhhelper.__normalize_replay_title(entry.title)
+        if not target:
+            return []
+        matched = []
+        for event in events or []:
+            title = tvhhelper.__normalize_replay_title(getattr(event, "title", ""))
+            if not title:
+                continue
+            if target in title or title in target:
+                matched.append(event)
+        return matched[:8]
+
+    @staticmethod
+    def __normalize_replay_title(value: str | None) -> str:
+        text = str(value or "").lower()
+        for marker in ("[", "【", "(", "（", "#"):
+            text = text.split(marker, 1)[0]
+        return "".join(char for char in text if char.isalnum())
 
     def __confirm_cancel_dvr_task(self, event: Event, session_id: str, entry_index: int):
         session = self.__record_session(session_id)
@@ -1459,6 +1528,65 @@ class tvhhelper(_PluginBase):
                 text=format_dvb_message(inputs, self._expected_dvb_count),
             )
 
+    def check_dvr_reliability(self):
+        if not self._enabled or not self._dvr_reliability_enabled:
+            return
+        try:
+            status = fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass)
+            inputs = self.__tvh_inputs()
+            entries = self.__tvh_dvr_entries(force_refresh=True)
+            issues = analyze_tvh_dvr_reliability(
+                entries,
+                status=status,
+                inputs=inputs,
+                expected_dvb_count=self._expected_dvb_count,
+                now=time.time(),
+            )
+        except Exception as err:
+            logger.error(f"TVH录制可靠性检查失败: {err}", exc_info=True)
+            return
+
+        for issue in issues:
+            if self.__dvr_reliability_alert_seen(issue.key):
+                continue
+            logger.warning(f"TVH录制可靠性提醒: {issue.issue_type} {issue.entry.channel} / {issue.entry.title}")
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=self.__dvr_reliability_title(issue.issue_type),
+                text=format_tvh_dvr_reliability_issue(issue),
+                buttons=self.__dvr_reliability_buttons(issue.entry),
+            )
+
+    def __dvr_reliability_alert_seen(self, key: str) -> bool:
+        if self._dvr_reliability_alerts is None:
+            self._dvr_reliability_alerts = TimedValueCache(ttl_seconds=48 * 60 * 60)
+        if self._dvr_reliability_alerts.get(key):
+            return True
+        self._dvr_reliability_alerts.set(key, True)
+        return False
+
+    def __dvr_reliability_buttons(self, entry: TvhDvrEntry) -> list[list[dict]]:
+        replay_payload = f"dvr_replay|{entry.uuid}"
+        buttons = []
+        replay_callback = plugin_callback(self.__class__.__name__, replay_payload)
+        if len(replay_callback.encode("utf-8")) <= 64:
+            buttons.append([{"text": "查找重播", "callback_data": replay_callback}])
+        buttons.append([
+            {"text": "录制任务", "callback_data": plugin_callback(self.__class__.__name__, "dvr_tasks")},
+            {"text": "关闭", "callback_data": plugin_callback(self.__class__.__name__, "dismiss")},
+        ])
+        return buttons
+
+    @staticmethod
+    def __dvr_reliability_title(issue_type: str) -> str:
+        return {
+            "precheck": "TVH录制检查异常",
+            "missed_start": "TVH录制未开始",
+            "failed": "TVH录制任务失败",
+            "completed_small": "TVH录制文件过小",
+            "completed_short": "TVH录制时长偏短",
+        }.get(issue_type, "TVH录制可靠性提醒")
+
     def check_playback(self):
         self.__sync_play_notify_config()
         if not self._enabled or not self._play_notify:
@@ -1558,6 +1686,14 @@ class tvhhelper(_PluginBase):
                 "name": "TVH播放通知",
                 "trigger": IntervalTrigger(seconds=self._play_notify_interval, timezone=settings.TZ),
                 "func": self.check_playback,
+                "kwargs": {},
+            })
+        if self._dvr_reliability_enabled:
+            services.append({
+                "id": "tvhhelper_dvr_reliability",
+                "name": "TVH录制可靠性监控",
+                "trigger": IntervalTrigger(seconds=self._dvr_reliability_interval, timezone=settings.TZ),
+                "func": self.check_dvr_reliability,
                 "kwargs": {},
             })
         if self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
@@ -1705,10 +1841,17 @@ class tvhhelper(_PluginBase):
         if not event.startswith("playback."):
             return True
         self.__sync_play_notify_config()
+        if not self._play_notify:
+            logger.info("跳过TVH播放Webhook通知: 播放通知总开关未启用")
+            return False
         if not self._play_notify_users:
-            return True
-        username = str(payload.get("user") or "")
-        return bool(username and self._play_notify_users.get(username))
+            logger.info("跳过TVH播放Webhook通知: 未开启任何用户播放通知")
+            return False
+        username = str(payload.get("user") or "").strip()
+        enabled = bool(username and self._play_notify_users.get(username))
+        if not enabled:
+            logger.info(f"跳过TVH播放Webhook通知: 用户 {username or '-'} 未开启播放通知")
+        return enabled
 
     def __enrich_webhook_program(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self._webhook_program_enrich and not self._webhook_logo_enrich:

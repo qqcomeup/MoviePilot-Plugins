@@ -108,6 +108,7 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
         "enabled": True,
         "webhook_notify": True,
         "webhook_secret": "secret",
+        "play_notify_users": {"ck": True},
     })
 
     response = plugin.receive_webhook(
@@ -313,6 +314,93 @@ def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypat
     assert plugin.messages == []
 
 
+def test_receive_webhook_suppresses_playback_when_no_users_enabled(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "play_notify": True,
+        "play_notify_users": {},
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "user": "ck",
+            "channel": "News",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin.messages == []
+
+
+def test_receive_webhook_suppresses_playback_when_play_notify_disabled(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "play_notify": False,
+        "play_notify_users": {"ck": True},
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "user": "ck",
+            "channel": "News",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin.messages == []
+
+
+def test_check_dvr_reliability_posts_once_for_failed_task(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_status",
+        lambda *args, **kwargs: module.TvhServerStatus(ok=True, storage_available=50 * 1024 * 1024 * 1024),
+    )
+    monkeypatch.setattr(module, "fetch_tvh_inputs", lambda *args, **kwargs: ["HDIC #0", "HDIC #2", "HDIC #3"])
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [
+            module.TvhDvrEntry(
+                uuid="dvr-1",
+                title="新闻",
+                channel="翡翠台",
+                start=1000,
+                stop=1600,
+                sched_status="completedError",
+                status="Not enough disk space",
+            )
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "dvr_reliability_enabled": True,
+        "expected_dvb_count": 3,
+    })
+
+    plugin.check_dvr_reliability()
+    plugin.check_dvr_reliability()
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制任务失败"
+    assert "磁盘空间不足" in plugin.messages[0]["text"]
+    assert plugin.messages[0]["buttons"][0][0]["text"] == "查找重播"
+
+
 def test_receive_webhook_enriches_ip_location(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(
@@ -326,6 +414,7 @@ def test_receive_webhook_enriches_ip_location(monkeypatch):
         "webhook_notify": True,
         "webhook_secret": "secret",
         "ip_lookup_enabled": True,
+        "play_notify_users": {"ck": True},
     })
     now = int(time.time())
 
@@ -415,6 +504,7 @@ def test_receive_webhook_enriches_program_and_image(monkeypatch):
         "webhook_secret": "secret",
         "webhook_program_enrich": True,
         "webhook_logo_enrich": True,
+        "play_notify_users": {"ck": True},
     })
 
     response = plugin.receive_webhook(
@@ -475,11 +565,13 @@ def test_receive_webhook_uses_payload_image_when_logo_enabled(monkeypatch):
         "webhook_program_enrich": False,
         "webhook_logo_enrich": True,
         "tvh_url": "https://m3u.example.com",
+        "play_notify_users": {"ck": True},
     })
 
     response = plugin.receive_webhook(
         payload={
             "event": "playback.start",
+            "user": "ck",
             "channel": "翡翠台",
             "program_title": "新聞提要",
             "channel_icon": "imagecache/12",
@@ -510,11 +602,13 @@ def test_receive_webhook_suppresses_image_when_logo_disabled(monkeypatch):
         "webhook_program_enrich": False,
         "webhook_logo_enrich": False,
         "tvh_url": "https://m3u.example.com",
+        "play_notify_users": {"ck": True},
     })
 
     response = plugin.receive_webhook(
         payload={
             "event": "playback.start",
+            "user": "ck",
             "channel": "翡翠台",
             "channel_icon": "imagecache/12",
         },
@@ -872,11 +966,13 @@ def test_receive_webhook_ignores_duplicate_event_id(monkeypatch):
         "enabled": True,
         "webhook_notify": True,
         "webhook_secret": "secret",
+        "play_notify_users": {"ck": True},
     })
     payload = {
         "event": "playback.start",
         "event_id": "same-event",
         "timestamp": int(time.time()),
+        "user": "ck",
     }
 
     first = plugin.receive_webhook(payload=dict(payload), x_tvh_token="secret")

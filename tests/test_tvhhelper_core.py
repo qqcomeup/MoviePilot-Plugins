@@ -103,6 +103,8 @@ from core import (
     parse_tvh_channels,
     parse_tvh_dvr_configs,
     parse_tvh_dvr_entries,
+    analyze_tvh_dvr_reliability,
+    format_tvh_dvr_reliability_issue,
     parse_tvh_epg_events,
     parse_tvh_subscriptions,
     parse_tvh_users,
@@ -2712,6 +2714,105 @@ def test_summarize_tvh_dvr_entries_counts_recording_and_failed():
     ])
 
     assert summary == TvhDvrSummary(recording=1, failed=1)
+
+
+def test_analyze_tvh_dvr_reliability_warns_before_start_when_environment_is_bad():
+    issues = analyze_tvh_dvr_reliability(
+        [
+            TvhDvrEntry(
+                uuid="dvr-1",
+                title="新闻",
+                channel="翡翠台",
+                start=2000,
+                stop=2600,
+                sched_status="scheduled",
+            )
+        ],
+        status=TvhServerStatus(ok=True, storage_available=500 * 1024 * 1024),
+        inputs=["HDIC #0"],
+        expected_dvb_count=3,
+        now=1500,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].issue_type == "precheck"
+    message = format_tvh_dvr_reliability_issue(issues[0])
+    assert "录制开始前检查异常" in message
+    assert "DVB 可用 1/3" in message
+    assert "录制空间不足" in message
+
+
+def test_analyze_tvh_dvr_reliability_warns_when_scheduled_task_did_not_start():
+    issues = analyze_tvh_dvr_reliability(
+        [
+            TvhDvrEntry(
+                uuid="dvr-1",
+                title="新闻",
+                channel="翡翠台",
+                start=2000,
+                stop=2600,
+                sched_status="scheduled",
+            )
+        ],
+        status=TvhServerStatus(ok=True, storage_available=50 * 1024 * 1024 * 1024),
+        inputs=["HDIC #0", "HDIC #2", "HDIC #3"],
+        expected_dvb_count=3,
+        now=2150,
+    )
+
+    assert [issue.issue_type for issue in issues] == ["missed_start"]
+    assert "到点未开始录制" in format_tvh_dvr_reliability_issue(issues[0])
+
+
+def test_analyze_tvh_dvr_reliability_warns_for_small_or_short_completed_file():
+    issues = analyze_tvh_dvr_reliability(
+        [
+            TvhDvrEntry(
+                uuid="dvr-1",
+                title="新闻",
+                channel="翡翠台",
+                start=1000,
+                stop=4600,
+                start_real=1000,
+                stop_real=1600,
+                filesize=10 * 1024 * 1024,
+                sched_status="completed",
+                status="Completed OK",
+            )
+        ],
+        status=TvhServerStatus(ok=True, storage_available=50 * 1024 * 1024 * 1024),
+        inputs=["HDIC #0", "HDIC #2", "HDIC #3"],
+        expected_dvb_count=3,
+        now=4700,
+    )
+
+    assert [issue.issue_type for issue in issues] == ["completed_small", "completed_short"]
+    message = "\n".join(format_tvh_dvr_reliability_issue(issue) for issue in issues)
+    assert "录制文件过小" in message
+    assert "录制时长明显偏短" in message
+
+
+def test_analyze_tvh_dvr_reliability_translates_failure_reason():
+    issues = analyze_tvh_dvr_reliability(
+        [
+            TvhDvrEntry(
+                uuid="dvr-1",
+                title="新闻",
+                channel="翡翠台",
+                start=1000,
+                stop=1600,
+                sched_status="completedError",
+                status="Not enough disk space",
+            )
+        ],
+        status=TvhServerStatus(ok=True),
+        inputs=[],
+        expected_dvb_count=0,
+        now=1700,
+    )
+
+    assert [issue.issue_type for issue in issues] == ["failed"]
+    assert "磁盘空间不足" in format_tvh_dvr_reliability_issue(issues[0])
 
 
 def test_subscription_details_merge_connection_ip_and_client():
