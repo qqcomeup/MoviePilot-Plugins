@@ -27,6 +27,7 @@ from core import (
     build_m3u_url,
     build_record_channel_buttons,
     build_record_confirm_buttons,
+    build_record_created_buttons,
     build_record_program_buttons,
     build_play_notify_user_buttons,
     build_user_confirm_buttons,
@@ -342,6 +343,7 @@ def test_record_buttons_fit_telegram_callback_limit():
         build_record_channel_buttons("tvhhelper", session_id, channels, page=1, page_size=8)
         + build_record_program_buttons("tvhhelper", session_id, events)
         + build_record_confirm_buttons("tvhhelper", session_id)
+        + build_record_created_buttons("tvhhelper", session_id)
     )
 
     callback_data = [
@@ -361,6 +363,15 @@ def test_record_confirm_buttons_confirm_and_cancel():
         [
             {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
             {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+        ],
+    ]
+
+
+def test_record_created_buttons_return_to_program_list():
+    assert build_record_created_buttons("tvhhelper", "session-1") == [
+        [
+            {"text": "继续选节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
         ],
     ]
 

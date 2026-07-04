@@ -32,6 +32,7 @@ from .core import (
     can_remove_tvh_dvr_entry,
     build_record_channel_buttons,
     build_record_confirm_buttons,
+    build_record_created_buttons,
     build_record_program_buttons,
     build_record_start_padding_buttons,
     build_record_stop_padding_buttons,
@@ -115,7 +116,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.66"
+    plugin_version = "0.1.67"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -1122,12 +1123,13 @@ class tvhhelper(_PluginBase):
         )
         if config_warning:
             result["warning"] = config_warning
-        self.__save_record_session(session_id, {})
+        session.pop("selected_event", None)
+        self.__save_record_session(session_id, session)
         self.__edit_or_reply(
             event,
             "TVH预约录制已创建",
             format_record_created_message(result, selected),
-            buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            buttons=build_record_created_buttons(self.__class__.__name__, session_id),
         )
 
     def __cancel_recording(self, event: Event, session_id: str):

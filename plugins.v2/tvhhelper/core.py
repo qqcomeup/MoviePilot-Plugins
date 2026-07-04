@@ -445,6 +445,15 @@ def build_record_confirm_buttons(plugin_id: str, session_id: str) -> list[list[d
     ]
 
 
+def build_record_created_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [
+            {"text": "继续选节目", "callback_data": plugin_callback(plugin_id, f"record_programs|{session_id}|0")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
 def build_dvr_entry_buttons(
     plugin_id: str,
     session_id: str,
