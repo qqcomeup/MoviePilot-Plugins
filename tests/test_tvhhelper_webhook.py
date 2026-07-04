@@ -630,6 +630,36 @@ def test_button_text_is_not_appended(monkeypatch):
     assert text == "请选择："
 
 
+def test_toggle_play_notify_all_callback_updates_all_users(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_users",
+        lambda *args, **kwargs: [
+            module.TvhUser(username="ck"),
+            module.TvhUser(username="mxy"),
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "play_notify_users": {}})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "toggle_play_notify_all|1",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+    assert plugin.config["play_notify_users"] == {"ck": True, "mxy": True}
+    assert plugin.messages[-1].kwargs["title"] == "TVH播放通知"
+    assert "已开启全部用户播放通知" in plugin.messages[-1].kwargs["text"]
+
+    event.event_data["text"] = "toggle_play_notify_all|0"
+    plugin.handle_callback(event)
+    assert plugin.config["play_notify_users"] == {}
+    assert "已关闭全部用户播放通知" in plugin.messages[-1].kwargs["text"]
+
+
 def test_record_menu_callback_lists_channels(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(

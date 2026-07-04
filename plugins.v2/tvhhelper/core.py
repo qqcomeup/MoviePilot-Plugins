@@ -348,7 +348,11 @@ def build_play_notify_user_buttons(
                 f"toggle_play_notify_menu|{target_enabled}|{encode_callback_value(user.username)}",
             ),
         })
-    return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
+    bulk_buttons = [[
+        {"text": "全部开启", "callback_data": plugin_callback(plugin_id, "toggle_play_notify_all|1")},
+        {"text": "全部关闭", "callback_data": plugin_callback(plugin_id, "toggle_play_notify_all|0")},
+    ]] if users else []
+    return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + bulk_buttons + build_secondary_nav_buttons(plugin_id)
 
 
 def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabled: bool | None = None) -> list[list[dict]]:

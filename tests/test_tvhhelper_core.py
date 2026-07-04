@@ -1285,6 +1285,10 @@ def test_play_notify_user_buttons_toggle_each_user():
             {"text": "test 已关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|1|test"},
         ],
         [
+            {"text": "全部开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|1"},
+            {"text": "全部关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|0"},
+        ],
+        [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
         ],

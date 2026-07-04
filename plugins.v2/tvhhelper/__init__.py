@@ -129,7 +129,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.79"
+    plugin_version = "0.1.80"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -564,6 +564,10 @@ class tvhhelper(_PluginBase):
                 self.__show_manage_user(event, username)
             elif payload == "play_notify_users":
                 self.__show_play_notify_users(event)
+            elif payload.startswith("toggle_play_notify_all|"):
+                enabled = payload.split("|", 1)[1] == "1"
+                self.__set_all_play_notify_users(enabled)
+                self.__show_play_notify_users(event, f"已{'开启' if enabled else '关闭'}全部用户播放通知")
             elif payload.startswith("toggle_play_notify_menu|"):
                 _, enabled_text, encoded_username = payload.split("|", 2)
                 username = decode_callback_value(encoded_username)
@@ -845,6 +849,20 @@ class tvhhelper(_PluginBase):
         else:
             self._play_notify_users.pop(username, None)
         self._play_notify_snapshot = None
+        self.__update_config()
+
+    def __set_all_play_notify_users(self, enabled: bool):
+        users = self.__tvh_users()
+        if enabled:
+            self._play_notify_users = {
+                user.username: True
+                for user in users
+                if user.username
+            }
+        else:
+            self._play_notify_users = {}
+        self._play_notify_snapshot = None
+        self._play_notify_pending_starts = {}
         self.__update_config()
 
     def __show_close_menu(self, event: Event, prefix: str | None = None):
