@@ -3355,7 +3355,7 @@ def _dvr_entry_can_adjust(entry: TvhDvrEntry) -> bool:
 
 def _dvr_filter_key(entry: TvhDvrEntry) -> str:
     status = _dvr_status_text(entry)
-    if "failed" in status or "error" in status or "rerecord" in status:
+    if "failed" in status or "error" in status:
         return "failed"
     if "scheduled" in status:
         return "all"
@@ -3377,7 +3377,7 @@ def _dvr_filter_label(value: str | None) -> str:
 
 def _dvr_sort_group(entry: TvhDvrEntry) -> int:
     status = _dvr_status_text(entry)
-    if "failed" in status or "error" in status or "rerecord" in status:
+    if "failed" in status or "error" in status:
         return 2
     if "scheduled" in status:
         return 1

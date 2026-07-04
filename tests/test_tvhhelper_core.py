@@ -681,8 +681,8 @@ def test_filter_tvh_dvr_entries_by_status():
     ]
 
     assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "recording")] == ["recording"]
-    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "finished")] == ["finished"]
-    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "failed")] == ["failed", "rerecord"]
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "finished")] == ["finished", "rerecord"]
+    assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "failed")] == ["failed"]
     assert [entry.uuid for entry in filter_tvh_dvr_entries(entries, "all")] == [
         "recording",
         "finished",
@@ -2688,7 +2688,7 @@ def test_summarize_tvh_dvr_entries_counts_recording_and_failed():
         TvhDvrEntry(uuid="rerecord", title="重录", channel="翡翠台", start=1, stop=2, sched_status="completedRerecord"),
     ])
 
-    assert summary == TvhDvrSummary(recording=1, failed=2)
+    assert summary == TvhDvrSummary(recording=1, failed=1)
 
 
 def test_subscription_details_merge_connection_ip_and_client():
