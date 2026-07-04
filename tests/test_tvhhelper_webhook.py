@@ -1,10 +1,15 @@
 import hashlib
 import hmac
 import importlib
+import os
 import sys
 import time
 import types
 from pathlib import Path
+
+os.environ["TZ"] = "Asia/Shanghai"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 
 def install_moviepilot_stubs(monkeypatch):
@@ -129,6 +134,26 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
     assert plugin.messages[0]["mtype"] == "Plugin"
     assert plugin.messages[0]["title"] == "TVH开始播放"
     assert "频道: News" in plugin.messages[0]["text"]
+
+
+def test_receive_webhook_records_last_health_state(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module.time, "time", lambda: 1782819002)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": False,
+        "webhook_secret": "secret",
+    })
+
+    response = plugin.receive_webhook(
+        payload={"event": "system.webhooktest", "message": "ok"},
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin._last_webhook_event == "system.webhooktest"
+    assert plugin._last_webhook_seen_at == 1782819002
 
 
 def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
@@ -780,6 +805,45 @@ def test_record_padding_delta_updates_same_confirm_page(monkeypatch):
     assert plugin.messages[-1].kwargs["buttons"][1][1]["text"] == "延后 +5"
 
 
+def test_record_confirm_page_shows_precheck_risk_without_blocking(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    event = types.SimpleNamespace(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="晚间新闻",
+        start=1893456000,
+        stop=1893457800,
+        subtitle=None,
+        summary=None,
+        description=None,
+    )
+    monkeypatch.setattr(module, "fetch_tvh_json", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("HTTP Error 502: Bad Gateway")))
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("DVR list should use cache only")))
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "expected_dvb_count": 2})
+    plugin._record_session_cache.set("session-1", {
+        "selected_event": event,
+        "events": [event],
+        "start_padding": 3,
+        "stop_padding": 10,
+    })
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "record_pad_delta|session-1|stop|5",
+        "channel": "telegram",
+        "user": "user-id",
+    }))
+
+    message = plugin.messages[-1].kwargs
+    assert message["title"] == "调整录制时间"
+    assert "录制前检查:" in message["text"]
+    assert "TVH API 当前不可用。" in message["text"]
+    flat_buttons = [button for row in message["buttons"] for button in row]
+    assert any(button["text"] == "确认录制" for button in flat_buttons)
+
+
 def test_dvr_tasks_callback_lists_entries(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(
@@ -819,6 +883,87 @@ def test_dvr_tasks_callback_lists_entries(monkeypatch):
     assert "873.6 MB" in message["text"]
     assert message["buttons"][0][0]["callback_data"].startswith("[PLUGIN]tvhhelper|dvr_task|")
     assert len(message["buttons"][0][0]["callback_data"].encode("utf-8")) <= 64
+
+
+def test_dvr_calendar_callback_shows_calendar_view(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [
+            module.TvhDvrEntry(
+                uuid="dvr-1",
+                title="午间新闻",
+                channel="翡翠台",
+                start=1783137600,
+                stop=1783139400,
+                sched_status="Scheduled for recording",
+            ),
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+    session_id = next(iter(plugin._record_session_cache._values.keys()))
+    event.event_data["text"] = f"dvr_calendar|{session_id}"
+    plugin.handle_callback(event)
+
+    message = plugin.messages[-1].kwargs
+    assert message["title"] == "TVH录制任务日历"
+    assert "日历视图" in message["text"]
+    assert "午间新闻" in message["text"]
+    assert any(button["text"] == "返回列表" for row in message["buttons"] for button in row)
+
+
+def test_dvr_calendar_filter_stays_in_calendar_view(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    entries = [
+        module.TvhDvrEntry(
+            uuid="scheduled",
+            title="等待节目",
+            channel="翡翠台",
+            start=1783137600,
+            stop=1783139400,
+            sched_status="Scheduled for recording",
+        ),
+        module.TvhDvrEntry(
+            uuid="failed",
+            title="失败节目",
+            channel="翡翠台",
+            start=1783139400,
+            stop=1783141200,
+            sched_status="failed",
+        ),
+    ]
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", lambda *args, **kwargs: entries)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+    session_id = next(iter(plugin._record_session_cache._values.keys()))
+    event.event_data["text"] = f"dvr_calendar|{session_id}"
+    plugin.handle_callback(event)
+    event.event_data["text"] = f"dvr_calendar_filter|{session_id}|failed"
+    plugin.handle_callback(event)
+
+    message = plugin.messages[-1].kwargs
+    assert message["title"] == "TVH录制任务日历"
+    assert "筛选: 失败" in message["text"]
+    assert "失败节目" in message["text"]
+    assert "等待节目" not in message["text"]
 
 
 def test_dvr_tasks_bulk_remove_deletes_only_removable_current_filter(monkeypatch):

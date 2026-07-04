@@ -1,7 +1,12 @@
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+os.environ["TZ"] = "Asia/Shanghai"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugins.v2" / "tvhhelper"))
 
@@ -22,6 +27,7 @@ from core import (
     build_dvr_entry_buttons,
     build_dvr_filter_buttons,
     build_dvr_bulk_remove_buttons,
+    build_dvr_calendar_buttons,
     build_epg_url,
     build_long_epg_url,
     build_long_m3u_url,
@@ -32,6 +38,7 @@ from core import (
     build_record_merge_choice_buttons,
     build_record_padding_adjust_buttons,
     build_record_program_buttons,
+    sort_record_channels_for_display,
     build_record_start_padding_buttons,
     build_record_stop_padding_buttons,
     build_play_notify_user_buttons,
@@ -71,6 +78,7 @@ from core import (
     format_record_merge_confirm_message,
     format_record_merged_message,
     format_dvr_entry_detail,
+    format_dvr_calendar_message,
     filter_tvh_dvr_entries,
     format_subscription_status_line,
     format_playback_notification,
@@ -103,6 +111,7 @@ from core import (
     parse_tvh_channels,
     parse_tvh_dvr_configs,
     parse_tvh_dvr_entries,
+    analyze_record_precheck,
     analyze_tvh_dvr_reliability,
     format_tvh_dvr_reliability_issue,
     parse_tvh_epg_events,
@@ -314,6 +323,57 @@ def test_record_channel_buttons_page_channels():
     assert buttons[0][0]["text"] == "9 频道9"
     assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_ch|session-1|8"
     assert buttons[1][0]["text"] == "上一页"
+
+
+def test_sort_record_channels_for_display_pins_default_channels_and_preserves_others():
+    channels = [
+        TvhChannel(uuid="ch-a", name="频道A", number="1"),
+        TvhChannel(uuid="ch-hoy", name="HOY TV", number="77"),
+        TvhChannel(uuid="ch-pearl", name="明珠台", number="84"),
+        TvhChannel(uuid="ch-b", name="频道B", number="2"),
+        TvhChannel(uuid="ch-jade", name="翡翠台", number="81"),
+        TvhChannel(uuid="ch-c", name="频道C", number="3"),
+    ]
+
+    sorted_channels = sort_record_channels_for_display(channels)
+
+    assert [channel.name for channel in sorted_channels] == [
+        "翡翠台",
+        "明珠台",
+        "HOY TV",
+        "频道A",
+        "频道B",
+        "频道C",
+    ]
+
+
+def test_sort_record_channels_for_display_ignores_missing_pinned_channels():
+    channels = [
+        TvhChannel(uuid="ch-a", name="频道A", number="1"),
+        TvhChannel(uuid="ch-pinned", name="置顶频道", number="2"),
+        TvhChannel(uuid="ch-b", name="频道B", number="3"),
+    ]
+
+    sorted_channels = sort_record_channels_for_display(
+        channels,
+        pinned_names=("不存在", "置顶频道"),
+    )
+
+    assert [channel.name for channel in sorted_channels] == ["置顶频道", "频道A", "频道B"]
+
+
+def test_record_channel_buttons_pin_default_channels_before_pagination():
+    channels = [
+        TvhChannel(uuid="ch-a", name="频道A", number="1"),
+        TvhChannel(uuid="ch-b", name="频道B", number="2"),
+        TvhChannel(uuid="ch-jade", name="翡翠台", number="81"),
+    ]
+
+    buttons = build_record_channel_buttons("tvhhelper", "session-1", channels, page=0, page_size=2)
+
+    assert buttons[0][0]["text"] == "81 翡翠台"
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_ch|session-1|2"
+    assert buttons[0][1]["text"] == "1 频道A"
 
 
 def test_record_program_buttons_use_session_and_event_id():
@@ -664,6 +724,37 @@ def test_dvr_filter_buttons_fit_telegram_callback_limit():
 
     assert callback_data
     assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+    assert any(button["text"] == "日历视图" for row in buttons for button in row)
+
+
+def test_dvr_calendar_message_groups_entries_by_day():
+    entries = [
+        TvhDvrEntry(
+            uuid="dvr-1",
+            title="午间新闻",
+            channel="翡翠台",
+            start=1783137600,
+            stop=1783139400,
+            sched_status="Scheduled for recording",
+        ),
+        TvhDvrEntry(
+            uuid="dvr-2",
+            title="晚间新闻",
+            channel="翡翠台",
+            start=1783224000,
+            stop=1783225800,
+            sched_status="completed",
+        ),
+    ]
+
+    message = format_dvr_calendar_message(entries, "all")
+    buttons = build_dvr_calendar_buttons("tvhhelper", "session-1")
+
+    assert message.startswith("日历视图\n筛选: 全部")
+    assert "2026-07-04" in message
+    assert "2026-07-05" in message
+    assert "12:00-12:30 | 等待录制 | 翡翠台 | 午间新闻" in message
+    assert buttons[-2][0]["text"] == "返回列表"
 
 
 def test_dvr_bulk_remove_buttons_only_show_for_removable_entries():
@@ -776,13 +867,54 @@ def test_dvr_entry_detail_marks_completed_rerecord():
         start=2000,
         stop=2600,
         sched_status="completedRerecord",
-        status="Not enough disk space",
+        status="Completed OK",
+        data_errors=93,
+        errorcode=0,
     )
 
     message = format_dvr_entry_detail(entry)
 
-    assert "状态: 需重录" in message
-    assert "异常原因: 磁盘空间不足" in message
+    assert "状态: 已完成，建议重录" in message
+    assert "TVH状态: Completed OK" in message
+    assert "误码: 93" in message
+    assert "判定: TVH 标记该录制已完成，但误码超过重录阈值，文件通常仍可播放。" in message
+    assert "异常原因:" not in message
+
+
+def test_parse_tvh_dvr_entries_keeps_recording_error_counts_separate():
+    entries = parse_tvh_dvr_entries({
+        "entries": [
+            {
+                "uuid": "dvr-1",
+                "disp_title": "AlipayHK 呈獻:唱錢[粵]",
+                "channelname": "翡翠台",
+                "start": 1783168200,
+                "stop": 1783171800,
+                "sched_status": "completedRerecord",
+                "status": "Completed OK",
+                "errorcode": 0,
+                "errors": 0,
+                "data_errors": 93,
+                "filesize": 5737886524,
+            }
+        ]
+    })
+
+    assert entries == [
+        TvhDvrEntry(
+            uuid="dvr-1",
+            title="AlipayHK 呈獻:唱錢[粵]",
+            channel="翡翠台",
+            start=1783168200,
+            stop=1783171800,
+            sched_status="completedRerecord",
+            status="Completed OK",
+            errorcode=0,
+            recording_errors=0,
+            data_errors=93,
+            filesize=5737886524,
+        )
+    ]
 
 
 def test_dvr_download_url_uses_tvh_relative_url():
@@ -902,6 +1034,66 @@ def test_record_confirm_message_mentions_clipped_start():
     assert "提前/延后: 3/10 分钟" in message
     assert "TVH 会提前约 60 秒预热调谐" in message
     assert "已自动调整为立即开始" in message
+
+
+def test_record_confirm_message_includes_optional_precheck_risks():
+    event = TvhEpgEvent(
+        event_id="100",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="新闻",
+        start=2000,
+        stop=2600,
+    )
+
+    message = format_record_confirm_message(
+        event,
+        3,
+        10,
+        now=1900,
+        precheck_reasons=["TVH API 当前不可用。", "DVB 可用 1/2，少于期望数量。"],
+    )
+
+    assert "录制前检查:" in message
+    assert "- TVH API 当前不可用。" in message
+    assert "- DVB 可用 1/2，少于期望数量。" in message
+
+
+def test_analyze_record_precheck_reports_environment_and_same_channel_risks():
+    event = TvhEpgEvent(
+        event_id="101",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="天气报告",
+        start=1893457800,
+        stop=1893459600,
+    )
+    existing = TvhDvrEntry(
+        uuid="dvr-1",
+        title="午间新闻",
+        channel="翡翠台",
+        start=1893456000,
+        stop=1893457800,
+        start_extra=3,
+        stop_extra=10,
+        sched_status="Scheduled for recording",
+    )
+
+    reasons = analyze_record_precheck(
+        event,
+        status=TvhServerStatus(ok=False, storage_available=100 * 1024 * 1024),
+        inputs=["HDIC #0"],
+        entries=[existing],
+        expected_dvb_count=2,
+        start_padding_minutes=3,
+        stop_padding_minutes=10,
+        now=1893450000,
+    )
+
+    assert "TVH API 当前不可用。" in reasons
+    assert "DVB 可用 1/2，少于期望数量。" in reasons
+    assert "录制空间不足，剩余 100.0 MB。" in reasons
+    assert any("同频道连续或重叠任务" in reason and "午间新闻" in reason for reason in reasons)
 
 
 def test_recording_window_defaults_use_ten_minute_padding():
@@ -1448,6 +1640,39 @@ def test_playback_switch_notification_combines_stop_and_start_blocks():
     assert "开始: 2026-07-01 23:45:10" in text
 
 
+def test_playback_switch_notification_uses_recording_and_download_labels():
+    previous = TvhSubscription(
+        subscription_id="dvr",
+        username="ck",
+        channel="ViuTV",
+        title="DVR: FIFA世界盃2026世界盃Happy Hour #24",
+        service="HDIC HD2312 #3 : DVB-T #0 / HKDTMB / 602MHz / ViuTV",
+        profile="pass",
+        state="Running",
+        started="2026-07-04 22:19:00",
+    )
+    current = TvhSubscription(
+        subscription_id="download",
+        username="ck",
+        channel="HTTP",
+        peer="223.73.31.105",
+        service="file: / recordings / AlipayHK 呈獻_唱錢[粵]-翡翠台-2026-07-04-12-30.ts",
+        user_agent="Mozilla/5.0",
+        state="Idle",
+        started="2026-07-04 23:10:35",
+    )
+
+    title, text = format_playback_switch_notification(previous, current, event_time="2026-07-04 23:10:40")
+
+    assert title == "TVH活动切换"
+    assert text.startswith("完成录制\n```text\n")
+    assert "\n\n开始下载\n```text\n" in text
+    assert "停止播放\n" not in text
+    assert "开始播放\n" not in text
+    assert "类型: 完成录制" in text
+    assert "服务: file: / recordings / AlipayHK 呈獻_唱錢[粵]-翡翠台-2026-07-04-12-30.ts" in text
+
+
 def test_playback_notifications_delay_new_channel_until_old_channel_stops():
     old_channel = TvhSubscription(subscription_id="old", username="ck", channel="TVB Plus")
     new_channel = TvhSubscription(subscription_id="new", username="ck", channel="翡翠台")
@@ -1611,6 +1836,78 @@ def test_playback_stop_notification_includes_stop_time_and_total_duration():
     assert "时长: 00:15:10" in text
 
 
+def test_playback_notification_labels_dvr_stop_as_recording_complete():
+    subscription = TvhSubscription(
+        subscription_id="9",
+        username="ck",
+        channel="翡翠台",
+        title="dvr: AlipayHK 呈獻:唱錢[粵]",
+        service="HDIC HD2312 #2 : DVB-T #0/HKDTMB/602MHz/Jade",
+        profile="pass",
+        state="Running",
+        started="2026-07-04 20:24:00",
+        errors="93",
+        input_kbps="1290000",
+        output_kbps="1290000",
+    )
+
+    title, text = format_playback_notification("stop", subscription, event_time="2026-07-04 21:40:04")
+
+    assert title == "TVH完成录制"
+    assert "ck / 翡翠台" in text
+    assert "类型: 完成录制" in text
+    assert "节目: AlipayHK 呈獻:唱錢[粵]" in text
+    assert "来源: TVH录制任务" in text
+    assert "错误: 93 | 输入/输出: 1.29/1.29 Mb/s" in text
+    assert "时长: 01:16:04" in text
+
+
+def test_playback_notification_labels_recording_file_start_as_download():
+    subscription = TvhSubscription(
+        subscription_id="10",
+        username="ck",
+        channel="HTTP",
+        peer="223.73.31.105",
+        location="广东 东莞",
+        isp="China Mobile Communications Group Co., Ltd.",
+        service="file: /recordings/東張西望[粵]-翡翠台-2026-07-04-11-35.ts",
+        state="Idle",
+        user_agent="Mozilla/5.0",
+        started="2026-07-04 21:43:23",
+    )
+
+    title, text = format_playback_notification("start", subscription, event_time="2026-07-04 21:43:27")
+
+    assert title == "TVH开始下载"
+    assert "ck / HTTP" in text
+    assert "IP: 223.73.31.105 (广东 东莞 / 中国移动)" in text
+    assert "客户端: Mozilla/5.0 | Idle" in text
+    assert "服务: file: / recordings / 東張西望[粵]-翡翠台-2026-07-04-11-35.ts" in text
+    assert "时长: 00:00:04" in text
+
+
+def test_playback_notification_labels_recording_file_stop_as_download():
+    subscription = TvhSubscription(
+        subscription_id="10",
+        username="ck",
+        channel="HTTP",
+        peer="223.73.31.105",
+        service="file: /recordings/東張西望[粵]-翡翠台-2026-07-04-11-35.ts",
+        state="Idle",
+        user_agent="Mozilla/5.0",
+        started="2026-07-04 21:43:23",
+        input_kbps="134200000",
+        output_kbps="134200000",
+    )
+
+    title, text = format_playback_notification("stop", subscription, event_time="2026-07-04 21:46:54")
+
+    assert title == "TVH停止下载"
+    assert "停止: 2026-07-04 21:46:54" in text
+    assert "时长: 00:03:31" in text
+    assert "输入/输出: 134.2/134.2 Mb/s" in text
+
+
 def test_tvh_webhook_message_formats_test_event():
     title, text = format_tvh_webhook_message({
         "event": "system.webhooktest",
@@ -1693,8 +1990,8 @@ def test_tvh_webhook_message_formats_program_content_and_duration():
     assert "节目内容: 張遮設局找出栽贓之人" in text
 
 
-def test_tvh_webhook_message_formats_dvr_complete_filesize():
-    title, text = format_tvh_webhook_message({
+def _dvr_complete_payload(**overrides):
+    payload = {
         "event": "dvr.complete",
         "timestamp": 1782819002,
         "title": "東方表行 Take Your Time 呈獻:自然系女子旅行",
@@ -1709,10 +2006,46 @@ def test_tvh_webhook_message_formats_dvr_complete_filesize():
         "stop": 1783141200,
         "start_real": 1783139040,
         "stop_real": 1783141500,
-    })
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_tvh_webhook_message_formats_dvr_complete_file_card():
+    title, text = format_tvh_webhook_message(_dvr_complete_payload())
 
     assert title == "TVH录制完成"
-    assert "文件\n/recordings/show.ts\n录制体积: 873.6 MB\n节目时长: 30 分钟\n录制时长: 41 分钟" in text
+    assert "节目: 東方表行 Take Your Time 呈獻:自然系女子旅行" in text
+    assert "频道: TVB Plus" in text
+    assert "用户: ck" in text
+    assert "结果: FINISHED" in text
+    assert "完成时间: 2026-06-30 19:30:02" in text
+    assert (
+        "文件\n"
+        "文件路径: /recordings/show.ts\n"
+        "录制体积: 873.6 MB\n"
+        "节目时长: 30 分钟\n"
+        "录制时长: 41 分钟\n"
+        "可靠性: 正常"
+    ) in text
+
+
+def test_tvh_webhook_message_marks_dvr_complete_file_too_small():
+    _, text = format_tvh_webhook_message(_dvr_complete_payload(filesize=12 * 1024 * 1024))
+
+    assert "录制体积: 12.0 MB" in text
+    assert "可靠性: 文件过小" in text
+
+
+def test_tvh_webhook_message_marks_dvr_complete_recording_duration_short():
+    _, text = format_tvh_webhook_message(_dvr_complete_payload(
+        start_real=1783139400,
+        stop_real=1783140300,
+    ))
+
+    assert "节目时长: 30 分钟" in text
+    assert "录制时长: 15 分钟" in text
+    assert "可靠性: 录制时长偏短" in text
 
 
 def test_tvh_webhook_message_does_not_show_duration_for_dvr_start():
@@ -1928,6 +2261,8 @@ def test_tvh_webhook_message_formats_dvr_error_event():
     assert "排程状态: MISSEDTM" in text
     assert "录制状态: ERROR" in text
     assert "错误: No input source available" in text
+    assert "文件\n/recordings/movie.ts" in text
+    assert "文件路径:" not in text
 
 
 def test_play_notify_settings_use_persisted_config_over_runtime_state():
@@ -2158,6 +2493,23 @@ def test_status_message_adds_normalized_china_isp_to_ip_line():
     assert "ISP: CNC Group CHINA169 Guangdong Province Network" in message
     assert normalize_isp_carrier("China Mobile communications corporation") == "中国移动"
     assert normalize_isp_carrier("Chinanet Guangdong Province Network") == "中国电信"
+
+
+def test_status_message_includes_notification_health():
+    message = format_status_message(
+        True,
+        "4.3",
+        [],
+        0,
+        [],
+        play_notify_enabled=True,
+        play_notify_user_count=2,
+        webhook_notify_enabled=True,
+        webhook_last_event="playback.start",
+        webhook_last_seen_at=1782819002,
+    )
+
+    assert "通知: 播放 已开2人 | Webhook 已启用，最近 playback.start 2026-06-30 19:30:02" in message
 
 
 def test_ip_location_cache_reuses_recent_lookup():

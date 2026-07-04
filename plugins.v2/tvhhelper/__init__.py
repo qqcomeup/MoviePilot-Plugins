@@ -21,9 +21,11 @@ from app.schemas.types import ChainEventType, EventType
 from .core import (
     DvbMonitor,
     TimedValueCache,
+    analyze_record_precheck,
     analyze_tvh_dvr_reliability,
     adjust_tvh_dvr_entry_stop,
     build_dvr_cancel_confirm_buttons,
+    build_dvr_calendar_buttons,
     build_dvr_bulk_remove_buttons,
     build_dvr_entry_action_buttons,
     build_dvr_entry_buttons,
@@ -65,6 +67,7 @@ from .core import (
     fetch_tvh_dvr_ticket_download_url,
     fetch_tvh_epg_events,
     fetch_tvh_inputs,
+    fetch_tvh_json,
     fetch_tvh_status,
     fetch_tvh_status_bundle,
     fetch_tvh_subscriptions,
@@ -78,6 +81,7 @@ from .core import (
     format_record_merged_message,
     format_tvh_dvr_reliability_issue,
     format_dvr_adjusted_message,
+    format_dvr_calendar_message,
     format_dvr_cancel_confirm_message,
     format_dvr_entries_message,
     format_dvr_entry_detail,
@@ -103,6 +107,7 @@ from .core import (
     detect_playback_events,
     enrich_tvh_webhook_program,
     ensure_tvhhelper_dvr_config,
+    parse_tvh_inputs,
     plan_playback_notifications,
     resolve_play_notify_settings,
     normalize_dvr_filter,
@@ -129,7 +134,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.80"
+    plugin_version = "0.1.84"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -172,6 +177,8 @@ class tvhhelper(_PluginBase):
     _dvr_reliability_alerts: TimedValueCache | None = None
     _tvh_data_cache: dict[str, tuple[float, Any]] = {}
     _playback_history: list[dict[str, Any]] = []
+    _last_webhook_event = ""
+    _last_webhook_seen_at: float | None = None
     _ipdb_update_running = False
     _dvr_reliability_enabled = True
     _dvr_reliability_interval = 60
@@ -229,6 +236,8 @@ class tvhhelper(_PluginBase):
         self._tvh_data_cache = {}
         self._play_notify_snapshot = None
         self._playback_history = []
+        self._last_webhook_event = ""
+        self._last_webhook_seen_at = None
         if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
             self.__start_ipdb_update_async()
         self.__update_config()
@@ -284,6 +293,8 @@ class tvhhelper(_PluginBase):
         self._dvr_reliability_alerts = None
         self._tvh_data_cache = {}
         self._playback_history = []
+        self._last_webhook_event = ""
+        self._last_webhook_seen_at = None
         self._ipdb_update_running = False
 
     @staticmethod
@@ -451,6 +462,11 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("dvr_tasks_page|"):
                 _, session_id, page_text = payload.split("|", 2)
                 self.__show_dvr_tasks(event, page=self.__to_int(page_text, 0), session_id=session_id)
+            elif payload.startswith("dvr_calendar|"):
+                self.__show_dvr_calendar(event, payload.split("|", 1)[1])
+            elif payload.startswith("dvr_calendar_filter|"):
+                _, session_id, dvr_filter = payload.split("|", 2)
+                self.__show_dvr_calendar(event, session_id, dvr_filter=dvr_filter)
             elif payload.startswith("dvr_task|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__show_dvr_task_detail(event, session_id, self.__to_int(index_text, -1))
@@ -763,6 +779,7 @@ class tvhhelper(_PluginBase):
         )
 
     def __load_status_text(self) -> str:
+        self.__sync_play_notify_config()
         status, inputs, subscriptions = fetch_tvh_status_bundle(
             lambda: fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass),
             self.__tvh_inputs,
@@ -787,6 +804,11 @@ class tvhhelper(_PluginBase):
             uptime_seconds=status.uptime_seconds,
             status=status,
             dvr_summary=dvr_summary,
+            play_notify_enabled=self._play_notify,
+            play_notify_user_count=len([value for value in self._play_notify_users.values() if value]),
+            webhook_notify_enabled=self._webhook_notify,
+            webhook_last_event=self._last_webhook_event,
+            webhook_last_seen_at=self._last_webhook_seen_at,
         )
 
     def __online_users_text(self, subscriptions) -> str:
@@ -824,7 +846,12 @@ class tvhhelper(_PluginBase):
 
     def __show_play_notify_users(self, event: Event, prefix: str | None = None):
         users = self.__tvh_users()
-        text = "请选择要开启/关闭播放通知的 TVH 用户。"
+        enabled_count = len([user for user in users if self.__is_play_notify_user_enabled(user.username)])
+        text = (
+            "播放通知只对已开启的 TVH 用户生效。\n"
+            f"当前: 总开关{'已开启' if self._play_notify else '已关闭'}，已开启 {enabled_count}/{len(users)} 个用户。\n\n"
+            "请选择要开启/关闭播放通知的 TVH 用户。"
+        )
         if not self._play_notify:
             text = "播放通知总开关未启用，请先在插件设置中开启。\n\n" + text
         if prefix:
@@ -932,6 +959,22 @@ class tvhhelper(_PluginBase):
             "TVH录制任务",
             text,
             buttons=buttons,
+        )
+
+    def __show_dvr_calendar(self, event: Event, session_id: str, dvr_filter: str | None = None):
+        session = self.__record_session(session_id)
+        current_filter = normalize_dvr_filter(dvr_filter or session.get("dvr_filter"))
+        all_entries = session.get("dvr_entries_all") or self.__tvh_dvr_entries()
+        entries = filter_tvh_dvr_entries(all_entries, current_filter)
+        session["dvr_entries_all"] = all_entries
+        session["dvr_entries"] = entries
+        session["dvr_filter"] = current_filter
+        self.__save_record_session(session_id, session)
+        self.__edit_or_reply(
+            event,
+            "TVH录制任务日历",
+            format_dvr_calendar_message(entries or [], current_filter),
+            buttons=build_dvr_calendar_buttons(self.__class__.__name__, session_id),
         )
 
     def __show_dvr_task_detail(self, event: Event, session_id: str, entry_index: int):
@@ -1265,16 +1308,86 @@ class tvhhelper(_PluginBase):
         selected = session.get("selected_event")
         if not selected:
             raise ValueError("预约录制会话已过期，请重新选择节目。")
+        start_padding = session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES)
+        stop_padding = session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES)
         self.__edit_or_reply(
             event,
             "调整录制时间",
             format_record_confirm_message(
                 selected,
-                session.get("start_padding", DEFAULT_RECORD_START_PADDING_MINUTES),
-                session.get("stop_padding", DEFAULT_RECORD_STOP_PADDING_MINUTES),
+                start_padding,
+                stop_padding,
+                precheck_reasons=self.__record_precheck_reasons(selected, start_padding, stop_padding),
             ),
             buttons=build_record_padding_adjust_buttons(self.__class__.__name__, session_id),
         )
+
+    def __record_precheck_reasons(self, selected, start_padding: int, stop_padding: int) -> list[str]:
+        try:
+            status = self.__cached_tvh_data(
+                "record_precheck_status",
+                10,
+                self.__fetch_record_precheck_status,
+            )
+        except Exception as err:
+            return [f"TVH API 检查失败: {err}"]
+        try:
+            inputs = self.__cached_tvh_data("record_precheck_inputs", 10, self.__fetch_record_precheck_inputs)
+        except Exception as err:
+            logger.debug(f"TVH预约录制DVB检查失败: {err}")
+            inputs = []
+        try:
+            entries = self.__cached_tvh_data_value("dvr_entries") or []
+        except Exception as err:
+            logger.debug(f"TVH预约录制任务检查失败: {err}")
+            entries = []
+        return analyze_record_precheck(
+            selected,
+            status=status,
+            inputs=inputs,
+            entries=entries,
+            expected_dvb_count=self._expected_dvb_count,
+            start_padding_minutes=start_padding,
+            stop_padding_minutes=stop_padding,
+            now=time.time(),
+        )
+
+    def __fetch_record_precheck_status(self) -> TvhServerStatus:
+        try:
+            payload = fetch_tvh_json(self._tvh_url, "/api/serverinfo", self._tvh_user, self._tvh_pass, timeout=2)
+        except Exception:
+            return TvhServerStatus(ok=False)
+        storage = (payload.get("recording_storage") or {}) if isinstance(payload, dict) else {}
+        storage_available = self.__optional_int(storage.get("available") or storage.get("free"))
+        return TvhServerStatus(
+            ok=True,
+            storage_available=storage_available,
+        )
+
+    def __fetch_record_precheck_inputs(self) -> list[str]:
+        try:
+            payload = fetch_tvh_json(self._tvh_url, "/api/status/inputs", self._tvh_user, self._tvh_pass, timeout=2)
+        except Exception:
+            return []
+        return parse_tvh_inputs(payload)
+
+    def __cached_tvh_data_value(self, key: str):
+        cache_key = "|".join([self._tvh_url, self._tvh_user, key])
+        item = self._tvh_data_cache.get(cache_key)
+        if not item:
+            return None
+        expires_at, value = item
+        if expires_at <= time.time():
+            self._tvh_data_cache.pop(cache_key, None)
+            return None
+        return value
+
+    @staticmethod
+    def __optional_int(value) -> int | None:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
 
     def __adjust_record_padding(self, event: Event, session_id: str, target: str, delta_minutes: int):
         session = self.__record_session(session_id)
@@ -1768,6 +1881,8 @@ class tvhhelper(_PluginBase):
                 return schemas.Response(success=True, message="Webhook重复事件已忽略")
             self._webhook_seen_events.set(event_id, True)
 
+        self._last_webhook_event = event or "未知事件"
+        self._last_webhook_seen_at = time.time()
         payload = self.__enrich_webhook_program(payload)
         payload = self.__enrich_webhook_dvr(payload)
         ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))

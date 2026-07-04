@@ -19,6 +19,15 @@ DEFAULT_IPDB_ASN_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/d
 DEFAULT_IP2REGION_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb"
 DEFAULT_RECORD_START_PADDING_MINUTES = 10
 DEFAULT_RECORD_STOP_PADDING_MINUTES = 10
+DEFAULT_PINNED_RECORD_CHANNELS = (
+    "翡翠台",
+    "TVB Plus",
+    "無綫新聞台",
+    "明珠台",
+    "ViuTV",
+    "HOY TV",
+    "HOY 國際財經台",
+)
 TVH_HELPER_DVR_CONFIG_NAME = "MoviePilot TVH Helper"
 TVH_HELPER_DVR_WARM_TIME_SECONDS = 60
 LEGACY_IPDB_COUNTRY_URLS = {
@@ -151,6 +160,9 @@ class TvhDvrEntry:
     status: str | None = None
     comment: str | None = None
     error: str | None = None
+    errorcode: int | None = None
+    recording_errors: int | None = None
+    data_errors: int | None = None
     filesize: int | None = None
     filename: str | None = None
     url: str | None = None
@@ -410,13 +422,14 @@ def build_record_channel_buttons(
     page: int = 0,
     page_size: int = 8,
 ) -> list[list[dict]]:
-    page_items, page, total_pages = _paginate(channels, page, page_size)
+    display_channels = _sort_indexed_record_channels_for_display(channels)
+    page_items, page, total_pages = _paginate(display_channels, page, page_size)
     buttons = [
         {
             "text": _record_channel_label(channel),
-            "callback_data": plugin_callback(plugin_id, f"record_ch|{session_id}|{page * page_size + offset}"),
+            "callback_data": plugin_callback(plugin_id, f"record_ch|{session_id}|{channel_index}"),
         }
-        for offset, channel in enumerate(page_items)
+        for channel_index, channel in page_items
     ]
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     nav = _record_page_nav(plugin_id, f"record_chs|{session_id}", page, total_pages)
@@ -523,6 +536,21 @@ def build_dvr_entry_buttons(
     return rows + nav + build_dvr_filter_buttons(plugin_id, session_id) + build_dvr_bulk_remove_buttons(plugin_id, session_id, entries) + build_secondary_nav_buttons(plugin_id)
 
 
+def build_dvr_calendar_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [
+            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|all")},
+            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|recording")},
+        ],
+        [
+            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|finished")},
+            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|failed")},
+        ],
+    ] + [
+        [{"text": "返回列表", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_page|{session_id}|0")}],
+    ] + build_secondary_nav_buttons(plugin_id)
+
+
 def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
     return [
         [
@@ -532,6 +560,9 @@ def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]
         [
             {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|finished")},
             {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|failed")},
+        ],
+        [
+            {"text": "日历视图", "callback_data": plugin_callback(plugin_id, f"dvr_calendar|{session_id}")},
         ],
     ]
 
@@ -650,6 +681,30 @@ def _paginate(items: list, page: int, page_size: int) -> tuple[list, int, int]:
     page = min(max(0, int(page or 0)), total_pages - 1)
     start = page * page_size
     return items[start:start + page_size], page, total_pages
+
+
+def sort_record_channels_for_display(
+    channels: list[TvhChannel],
+    pinned_names: Iterable[str] | None = None,
+) -> list[TvhChannel]:
+    return [
+        channel
+        for _, channel in _sort_indexed_record_channels_for_display(channels, pinned_names)
+    ]
+
+
+def _sort_indexed_record_channels_for_display(
+    channels: list[TvhChannel],
+    pinned_names: Iterable[str] | None = None,
+) -> list[tuple[int, TvhChannel]]:
+    pinned_order: dict[str, int] = {}
+    for index, name in enumerate(pinned_names or DEFAULT_PINNED_RECORD_CHANNELS):
+        pinned_order.setdefault(name, index)
+    unpinned_order = len(pinned_order)
+    return sorted(
+        enumerate(channels),
+        key=lambda item: (pinned_order.get(item[1].name, unpinned_order), item[0]),
+    )
 
 
 def _record_page_nav(plugin_id: str, prefix: str, page: int, total_pages: int) -> list[list[dict]]:
@@ -954,6 +1009,11 @@ def format_status_message(
     uptime_seconds: int | None = None,
     status: TvhServerStatus | None = None,
     dvr_summary: TvhDvrSummary | None = None,
+    play_notify_enabled: bool | None = None,
+    play_notify_user_count: int | None = None,
+    webhook_notify_enabled: bool | None = None,
+    webhook_last_event: str | None = None,
+    webhook_last_seen_at: int | float | str | None = None,
 ) -> str:
     status_label = "OK" if tvh_ok else "失败"
     subscriptions = subscriptions or []
@@ -980,6 +1040,15 @@ def format_status_message(
     if network_line:
         summary_lines.append(network_line)
     summary_lines.extend(recording_lines)
+    notify_line = _format_notify_health_line(
+        play_notify_enabled,
+        play_notify_user_count,
+        webhook_notify_enabled,
+        webhook_last_event,
+        webhook_last_seen_at,
+    )
+    if notify_line:
+        summary_lines.append(notify_line)
     lines = [
         f"```text\n{chr(10).join(summary_lines)}\n```",
         "",
@@ -989,7 +1058,33 @@ def format_status_message(
     return "\n".join(lines)
 
 
-def format_subscription_status_line(subscription: TvhSubscription) -> str:
+def _format_notify_health_line(
+    play_notify_enabled: bool | None,
+    play_notify_user_count: int | None,
+    webhook_notify_enabled: bool | None,
+    webhook_last_event: str | None,
+    webhook_last_seen_at,
+) -> str | None:
+    parts = []
+    if play_notify_enabled is not None or play_notify_user_count is not None:
+        if play_notify_enabled is False:
+            parts.append("播放 总开关关闭")
+        else:
+            count = max(0, int(play_notify_user_count or 0))
+            parts.append(f"播放 已开{count}人" if count else "播放 未开用户")
+    if webhook_notify_enabled is not None:
+        webhook = "Webhook 已启用" if webhook_notify_enabled else "Webhook 仅接收"
+        last_seen = _format_timestamp(webhook_last_seen_at)
+        if last_seen:
+            event = webhook_last_event or "未知事件"
+            webhook = f"{webhook}，最近 {event} {last_seen}"
+        else:
+            webhook = f"{webhook}，最近未收到"
+        parts.append(webhook)
+    return "通知: " + " | ".join(parts) if parts else None
+
+
+def format_subscription_status_line(subscription: TvhSubscription, dvr_type_label: str | None = None) -> str:
     endpoint = subscription.peer or subscription.hostname
     endpoint_meta = _endpoint_meta(subscription.location, subscription.isp)
     endpoint_text = f"{endpoint} ({endpoint_meta})" if endpoint and endpoint_meta else endpoint
@@ -1009,7 +1104,7 @@ def format_subscription_status_line(subscription: TvhSubscription) -> str:
         f"{subscription.username} / {subscription.channel}",
     ]
     if dvr_title:
-        details.append("类型: 正在录制")
+        details.append(f"类型: {dvr_type_label or '正在录制'}")
         details.append(f"节目: {dvr_title}")
     if endpoint_text:
         details.append(f"IP: {endpoint_text}")
@@ -1164,6 +1259,7 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     filesize = _to_int_or_none(payload.get("filesize") or payload.get("data_size")) if show_recording_file_details else None
     program_duration = _format_webhook_dvr_program_duration(payload) if show_recording_file_details else None
     recording_duration = _format_webhook_dvr_recording_duration(payload) if show_recording_file_details else None
+    reliability = _webhook_dvr_complete_reliability(payload, filesize) if show_recording_file_details else None
     if event == "dvr.error" and error_text:
         result = error_text
     main_lines = _compact_lines([
@@ -1171,13 +1267,18 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
         f"频道: {payload.get('channel')}" if payload.get("channel") else None,
         f"用户: {payload.get('user')}" if payload.get("user") else None,
         f"结果: {result}" if result else None,
-        f"时间: {event_time}",
+        f"{'完成时间' if show_recording_file_details else '时间'}: {event_time}",
     ])
     file_lines = _compact_lines([
-        str(payload.get("filename")) if payload.get("filename") else None,
+        (
+            f"文件路径: {payload.get('filename')}"
+            if show_recording_file_details
+            else str(payload.get("filename"))
+        ) if payload.get("filename") else None,
         f"录制体积: {_format_file_size(filesize)}" if filesize else None,
         f"节目时长: {program_duration}" if program_duration else None,
         f"录制时长: {recording_duration}" if recording_duration else None,
+        f"可靠性: {reliability}" if reliability else None,
     ])
     tech_lines = _compact_lines([
         f"录制ID: {payload.get('dvr_uuid')}" if payload.get("dvr_uuid") else None,
@@ -1207,13 +1308,39 @@ def _format_webhook_dvr_recording_duration(payload: dict) -> str | None:
     return None
 
 
-def _format_duration_minutes_between(start, stop) -> str | None:
+def _webhook_dvr_complete_reliability(
+    payload: dict,
+    filesize: int | None,
+    min_file_size_bytes: int = 50 * 1024 * 1024,
+    min_duration_ratio: float = 0.7,
+) -> str:
+    program_seconds = _duration_seconds_between(payload.get("start"), payload.get("stop"))
+    recording_seconds = _duration_seconds_between(payload.get("start_real"), payload.get("stop_real"))
+    if recording_seconds is None:
+        duration_seconds = _to_int_or_none(payload.get("duration"))
+        if duration_seconds is not None and duration_seconds > 0:
+            recording_seconds = duration_seconds
+    if not filesize or program_seconds is None or recording_seconds is None:
+        return "文件信息不足"
+    if filesize < min_file_size_bytes:
+        return "文件过小"
+    if recording_seconds < program_seconds * float(min_duration_ratio):
+        return "录制时长偏短"
+    return "正常"
+
+
+def _duration_seconds_between(start, stop) -> int | None:
     start_dt = _coerce_datetime(start)
     stop_dt = _coerce_datetime(stop)
     if not start_dt or not stop_dt:
         return None
     seconds = int((stop_dt - start_dt).total_seconds())
-    if seconds <= 0:
+    return seconds if seconds > 0 else None
+
+
+def _format_duration_minutes_between(start, stop) -> str | None:
+    seconds = _duration_seconds_between(start, stop)
+    if seconds is None:
         return None
     return _format_duration_minutes(seconds)
 
@@ -1501,10 +1628,13 @@ def format_playback_notification(
     subscription: TvhSubscription,
     event_time: datetime | str | None = None,
 ) -> tuple[str, str]:
-    action = "开始播放" if event == "start" else "停止播放"
+    action = _playback_notification_action(event, subscription)
     event_dt = _coerce_datetime(event_time) or datetime.now()
     event_text = _format_datetime_text(event_dt)
-    lines = format_subscription_status_line(subscription).splitlines()
+    lines = format_subscription_status_line(
+        subscription,
+        dvr_type_label="完成录制" if event == "stop" and _subscription_dvr_title(subscription) else None,
+    ).splitlines()
     started_text = subscription.started or "未知"
     lines.append(f"开始: {started_text}")
     if event == "stop":
@@ -1513,6 +1643,14 @@ def format_playback_notification(
     if duration:
         lines.append(f"时长: {duration}")
     return f"TVH{action}", f"```text\n{chr(10).join(lines)}\n```"
+
+
+def _playback_notification_action(event: str, subscription: TvhSubscription) -> str:
+    if _subscription_dvr_title(subscription):
+        return "开始录制" if event == "start" else "完成录制"
+    if _is_recording_file_download(subscription):
+        return "开始下载" if event == "start" else "停止下载"
+    return "开始播放" if event == "start" else "停止播放"
 
 
 def is_playback_switch_pair(
@@ -1624,7 +1762,10 @@ def format_playback_switch_notification(
 ) -> tuple[str, str]:
     _, stop_text = format_playback_notification("stop", previous, event_time=event_time)
     _, start_text = format_playback_notification("start", current, event_time=event_time)
-    return "TVH切换频道", f"停止播放\n{stop_text}\n\n开始播放\n{start_text}"
+    stop_action = _playback_notification_action("stop", previous)
+    start_action = _playback_notification_action("start", current)
+    title = "TVH切换频道" if (stop_action, start_action) == ("停止播放", "开始播放") else "TVH活动切换"
+    return title, f"{stop_action}\n{stop_text}\n\n{start_action}\n{start_text}"
 
 
 def _coerce_datetime(value) -> datetime | None:
@@ -1796,6 +1937,13 @@ def _format_clock(value: str | int | float | None) -> str:
 def _format_datetime(value: str | int | float | None) -> str:
     formatted = _format_timestamp(value)
     return formatted or ""
+
+
+def _format_date(value: str | int | float | None) -> str:
+    try:
+        return datetime.fromtimestamp(int(value)).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, TypeError, ValueError):
+        return str(value or "")
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -2485,7 +2633,10 @@ def parse_tvh_dvr_entries(payload: dict) -> list[TvhDvrEntry]:
             rec_status=_string_or_none(entry.get("rec_status") or entry.get("recording_state")),
             status=_string_or_none(entry.get("status")),
             comment=_string_or_none(entry.get("comment")),
-            error=_string_or_none(entry.get("error") or entry.get("errors") or entry.get("last_error")),
+            error=_string_or_none(entry.get("error") or entry.get("last_error")),
+            errorcode=_to_int_or_none(entry.get("errorcode")),
+            recording_errors=_to_int_or_none(entry.get("errors")),
+            data_errors=_to_int_or_none(entry.get("data_errors")),
             filesize=_to_int_or_none(entry.get("filesize") or entry.get("data_size")),
             filename=_string_or_none(entry.get("filename") or entry.get("files") or entry.get("file")),
             url=_string_or_none(entry.get("url") or entry.get("play_url") or entry.get("download_url")),
@@ -2981,6 +3132,7 @@ def format_record_confirm_message(
     start_padding_minutes: int,
     stop_padding_minutes: int,
     now: int | None = None,
+    precheck_reasons: list[str] | None = None,
 ) -> str:
     start, stop, clipped = calculate_recording_window(event, start_padding_minutes, stop_padding_minutes, now=now)
     lines = [
@@ -2995,7 +3147,48 @@ def format_record_confirm_message(
     ]
     if clipped:
         lines.append("提示: 录制开始时间早于当前时间，已自动调整为立即开始。")
+    if precheck_reasons:
+        lines.extend(["", "录制前检查:"])
+        lines.extend([f"- {reason}" for reason in precheck_reasons if reason])
     return "\n".join(lines)
+
+
+def analyze_record_precheck(
+    event: TvhEpgEvent,
+    status: TvhServerStatus | None,
+    inputs: list[str] | None,
+    entries: list[TvhDvrEntry] | None,
+    expected_dvb_count: int = 0,
+    start_padding_minutes: int = DEFAULT_RECORD_START_PADDING_MINUTES,
+    stop_padding_minutes: int = DEFAULT_RECORD_STOP_PADDING_MINUTES,
+    now: int | float | None = None,
+    min_storage_bytes: int = 1024 * 1024 * 1024,
+) -> list[str]:
+    reasons = _tvh_dvr_environment_reasons(
+        status or TvhServerStatus(ok=False),
+        inputs or [],
+        expected_dvb_count=expected_dvb_count,
+        min_storage_bytes=min_storage_bytes,
+    )
+    start, stop, _ = calculate_recording_window(
+        event,
+        start_padding_minutes=start_padding_minutes,
+        stop_padding_minutes=stop_padding_minutes,
+        now=now,
+    )
+    for entry in entries or []:
+        if not _is_mergeable_dvr_entry(entry):
+            continue
+        if _normalize_match_text(entry.channel) != _normalize_match_text(event.channel_name):
+            continue
+        entry_start, entry_stop = _dvr_entry_recording_window(entry)
+        if entry_start <= stop and start <= entry_stop:
+            reasons.append(
+                f"同频道连续或重叠任务：{entry.title} "
+                f"{format_record_datetime_range(entry_start, entry_stop)}。"
+            )
+            break
+    return reasons
 
 
 def format_record_merge_confirm_message(
@@ -3324,6 +3517,42 @@ def format_dvr_entries_message(
     return "\n".join(lines)
 
 
+def format_dvr_calendar_message(
+    entries: list[TvhDvrEntry],
+    dvr_filter: str | None = None,
+    max_items: int = 20,
+) -> str:
+    filter_label = _dvr_filter_label(dvr_filter)
+    if not entries:
+        return f"日历视图\n筛选: {filter_label}\n\n当前没有符合条件的 TVH 录制任务。"
+    lines = [
+        "日历视图",
+        f"筛选: {filter_label}",
+        "",
+    ]
+    ordered_entries = sorted(
+        entries,
+        key=lambda item: (int(item.start_real or item.start), int(item.stop_real or item.stop), item.channel, item.title),
+    )
+    current_day = None
+    for entry in ordered_entries[:max(1, int(max_items or 20))]:
+        start = int(entry.start_real or entry.start)
+        stop = int(entry.stop_real or entry.stop)
+        day = _format_date(start)
+        if day != current_day:
+            if current_day is not None:
+                lines.append("")
+            lines.append(day)
+            current_day = day
+        lines.append(
+            f"{format_record_time_range(start, stop)} | {_dvr_status_label(entry)} | "
+            f"{entry.channel or '-'} | {entry.title}"
+        )
+    if len(ordered_entries) > max_items:
+        lines.extend(["", f"还有 {len(ordered_entries) - max_items} 个任务未显示，请返回列表分页查看。"])
+    return "\n".join(lines)
+
+
 def format_dvr_entry_detail(entry: TvhDvrEntry, download_url: str | None = None) -> str:
     filename = _format_dvr_filename(getattr(entry, "filename", None))
     issue_reason = _dvr_issue_reason(entry)
@@ -3331,6 +3560,17 @@ def format_dvr_entry_detail(entry: TvhDvrEntry, download_url: str | None = None)
         "TVH录制任务",
         "",
         f"状态: {_dvr_status_label(entry)}",
+    ]
+    tvh_status = _string_or_none(getattr(entry, "status", None))
+    if tvh_status:
+        lines.append(f"TVH状态: {tvh_status}")
+    quality_lines = _dvr_quality_lines(entry)
+    if quality_lines:
+        lines.extend(quality_lines)
+    judgement = _dvr_judgement_line(entry)
+    if judgement:
+        lines.append(judgement)
+    lines.extend([
         f"频道: {entry.channel or '-'}",
         f"节目: {entry.title}",
         f"节目时间: {format_record_datetime_range(entry.start, entry.stop)}",
@@ -3338,7 +3578,7 @@ def format_dvr_entry_detail(entry: TvhDvrEntry, download_url: str | None = None)
         f"录制体积: {_format_file_size(getattr(entry, 'filesize', None))}",
         f"下载: {'可用' if download_url else '未生成免登录链接'}",
         f"任务ID: {entry.uuid}",
-    ]
+    ])
     if issue_reason:
         lines.append(f"异常原因: {issue_reason}")
     if filename:
@@ -3428,7 +3668,7 @@ def format_dvr_adjusted_message(entry: TvhDvrEntry, new_stop: int) -> str:
 def _dvr_status_label(entry: TvhDvrEntry) -> str:
     status = (entry.sched_status or entry.rec_status or "").lower()
     if "rerecord" in status:
-        return "需重录"
+        return "已完成，建议重录"
     if "failed" in status or "error" in status:
         return "失败"
     if "warning" in status:
@@ -3440,6 +3680,24 @@ def _dvr_status_label(entry: TvhDvrEntry) -> str:
     if "completed" in status or "complete" in status:
         return "已完成"
     return entry.sched_status or entry.rec_status or "未知"
+
+
+def _dvr_quality_lines(entry: TvhDvrEntry) -> list[str]:
+    lines: list[str] = []
+    recording_errors = getattr(entry, "recording_errors", None)
+    data_errors = getattr(entry, "data_errors", None)
+    if recording_errors is not None:
+        lines.append(f"录制错误: {recording_errors}")
+    if data_errors is not None:
+        lines.append(f"误码: {data_errors}")
+    return lines
+
+
+def _dvr_judgement_line(entry: TvhDvrEntry) -> str | None:
+    status = _dvr_status_text(entry)
+    if "rerecord" in status:
+        return "判定: TVH 标记该录制已完成，但误码超过重录阈值，文件通常仍可播放。"
+    return None
 
 
 def is_recording_tvh_dvr_entry(entry: TvhDvrEntry) -> bool:
@@ -3595,6 +3853,14 @@ def _subscription_dvr_title(subscription: TvhSubscription) -> str | None:
     if text.lower().startswith("dvr:"):
         return text.split(":", 1)[1].strip() or text
     return None
+
+
+def _is_recording_file_download(subscription: TvhSubscription) -> bool:
+    service = _string_or_none(subscription.service)
+    if not service:
+        return False
+    text = " ".join(service.strip().split()).lower()
+    return text.startswith("file:")
 
 
 def _format_dvr_filename(value: str | None) -> str | None:
