@@ -28,6 +28,7 @@ from core import (
     build_record_channel_buttons,
     build_record_confirm_buttons,
     build_record_created_buttons,
+    build_record_merge_choice_buttons,
     build_record_program_buttons,
     build_play_notify_user_buttons,
     build_user_confirm_buttons,
@@ -56,11 +57,15 @@ from core import (
     fetch_tvh_status_bundle,
     calculate_recording_window,
     create_tvh_dvr_recording,
+    find_record_merge_candidate,
+    merge_tvh_dvr_entry_recording,
     cancel_tvh_dvr_entry,
     remove_tvh_dvr_entry,
     stop_tvh_dvr_entry,
     detect_playback_events,
     format_record_confirm_message,
+    format_record_merge_confirm_message,
+    format_record_merged_message,
     format_dvr_entry_detail,
     filter_tvh_dvr_entries,
     format_subscription_status_line,
@@ -372,6 +377,16 @@ def test_record_created_buttons_return_to_program_list():
         [
             {"text": "继续选节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
+def test_record_merge_choice_buttons_offer_merge_separate_and_cancel():
+    assert build_record_merge_choice_buttons("tvhhelper", "session-1") == [
+        [{"text": "合并录制", "callback_data": "[PLUGIN]tvhhelper|record_merge|session-1|merge"}],
+        [
+            {"text": "仍分开录制", "callback_data": "[PLUGIN]tvhhelper|record_merge|session-1|separate"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
         ],
     ]
 
@@ -831,6 +846,154 @@ def test_record_confirm_message_mentions_clipped_start():
     assert "提前/延后: 3/10 分钟" in message
     assert "TVH 会提前约 60 秒预热调谐" in message
     assert "已自动调整为立即开始" in message
+
+
+def test_find_record_merge_candidate_matches_adjacent_same_channel():
+    existing = TvhDvrEntry(
+        uuid="dvr-1",
+        title="午间新闻",
+        channel="翡翠台",
+        start=1893456000,
+        stop=1893457800,
+        start_extra=3,
+        stop_extra=10,
+        sched_status="Scheduled for recording",
+    )
+    event = TvhEpgEvent(
+        event_id="101",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="天气报告",
+        start=1893457800,
+        stop=1893459600,
+    )
+
+    assert find_record_merge_candidate([existing], event, now=1893450000) == existing
+
+
+def test_find_record_merge_candidate_ignores_different_channel_and_finished_entries():
+    event = TvhEpgEvent(
+        event_id="101",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="天气报告",
+        start=1893457800,
+        stop=1893459600,
+    )
+    entries = [
+        TvhDvrEntry(
+            uuid="other-channel",
+            title="午间新闻",
+            channel="明珠台",
+            start=1893456000,
+            stop=1893457800,
+            start_extra=3,
+            stop_extra=10,
+            sched_status="Scheduled for recording",
+        ),
+        TvhDvrEntry(
+            uuid="completed",
+            title="午间新闻",
+            channel="翡翠台",
+            start=1893456000,
+            stop=1893457800,
+            start_extra=3,
+            stop_extra=10,
+            sched_status="completed",
+        ),
+    ]
+
+    assert find_record_merge_candidate(entries, event, now=1893450000) is None
+
+
+def test_merge_tvh_dvr_entry_recording_updates_existing_dvr_task(monkeypatch):
+    calls = []
+
+    def fake_post(base_url, path, username, password, data, timeout=10):
+        calls.append((base_url, path, username, password, data, timeout))
+        return {"success": True}
+
+    monkeypatch.setattr(core, "post_tvh_form", fake_post)
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="午间新闻",
+        channel="翡翠台",
+        start=1893456000,
+        stop=1893457800,
+        start_extra=3,
+        stop_extra=10,
+        sched_status="Scheduled for recording",
+    )
+    event = TvhEpgEvent(
+        event_id="101",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="天气报告",
+        start=1893457800,
+        stop=1893459600,
+        summary="节目简介",
+    )
+
+    result = merge_tvh_dvr_entry_recording(
+        "https://tvh.example.com",
+        "admin",
+        "pass",
+        entry,
+        event,
+        start_padding_minutes=3,
+        stop_padding_minutes=10,
+    )
+
+    assert calls[0][1] == "/api/idnode/save"
+    node = json.loads(calls[0][4]["node"])[0]
+    assert node["uuid"] == "dvr-1"
+    assert node["start"] == 1893456000
+    assert node["stop"] == 1893459600
+    assert node["start_extra"] == 3
+    assert node["stop_extra"] == 10
+    assert node["disp_title"] == "午间新闻 + 天气报告"
+    assert "合并录制" in node["disp_extratext"]
+    assert "节目简介" in node["disp_extratext"]
+    assert result["uuid"] == "dvr-1"
+    assert result["start"] == 1893455820
+    assert result["stop"] == 1893460200
+
+
+def test_record_merge_confirm_and_merged_messages_are_user_readable():
+    entry = TvhDvrEntry(
+        uuid="dvr-1",
+        title="午间新闻",
+        channel="翡翠台",
+        start=1893456000,
+        stop=1893457800,
+        start_extra=3,
+        stop_extra=10,
+        sched_status="Scheduled for recording",
+    )
+    event = TvhEpgEvent(
+        event_id="101",
+        channel_uuid="ch-1",
+        channel_name="翡翠台",
+        title="天气报告",
+        start=1893457800,
+        stop=1893459600,
+    )
+
+    confirm = format_record_merge_confirm_message(entry, event, 3, 10, now=1893450000)
+    merged = format_record_merged_message({
+        "uuid": "dvr-1",
+        "title": "午间新闻 + 天气报告",
+        "start": 1893455820,
+        "stop": 1893460200,
+        "merged_with": "午间新闻",
+    }, event)
+
+    assert "检测到同频道连续或重叠录制" in confirm
+    assert "已有: 午间新闻" in confirm
+    assert "新增: 天气报告" in confirm
+    assert "建议合并录制" in confirm
+    assert "已合并 TVH 录制任务" in merged
+    assert "合并已有: 午间新闻" in merged
 
 
 def test_create_tvh_dvr_recording_posts_conf_json(monkeypatch):
@@ -1455,6 +1618,24 @@ def test_tvh_webhook_message_formats_program_content_and_duration():
     assert "节目: 交易現場[粵]" in text
     assert "节目时长: 65 分钟" in text
     assert "节目内容: 張遮設局找出栽贓之人" in text
+
+
+def test_tvh_webhook_message_formats_dvr_complete_filesize():
+    title, text = format_tvh_webhook_message({
+        "event": "dvr.complete",
+        "timestamp": 1782819002,
+        "title": "東方表行 Take Your Time 呈獻:自然系女子旅行",
+        "channel": "TVB Plus",
+        "user": "ck",
+        "dvr_uuid": "dvr-1",
+        "sched_state": "COMPLETED",
+        "recording_state": "FINISHED",
+        "filename": "/recordings/show.ts",
+        "filesize": 916009132,
+    })
+
+    assert title == "TVH录制完成"
+    assert "文件\n/recordings/show.ts\n录制体积: 873.6 MB" in text
 
 
 def test_tvh_webhook_message_separates_program_content_from_user():

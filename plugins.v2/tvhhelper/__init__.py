@@ -33,6 +33,7 @@ from .core import (
     build_record_channel_buttons,
     build_record_confirm_buttons,
     build_record_created_buttons,
+    build_record_merge_choice_buttons,
     build_record_program_buttons,
     build_record_start_padding_buttons,
     build_record_stop_padding_buttons,
@@ -71,6 +72,8 @@ from .core import (
     format_playback_switch_notification,
     format_record_confirm_message,
     format_record_created_message,
+    format_record_merge_confirm_message,
+    format_record_merged_message,
     format_record_program_detail,
     format_dvr_adjusted_message,
     format_dvr_cancel_confirm_message,
@@ -98,9 +101,11 @@ from .core import (
     plan_playback_notifications,
     resolve_play_notify_settings,
     normalize_dvr_filter,
+    find_record_merge_candidate,
     reset_tvh_user_token,
     cancel_tvh_dvr_entry,
     create_tvh_dvr_recording,
+    merge_tvh_dvr_entry_recording,
     remove_tvh_dvr_entry,
     stop_tvh_dvr_entry,
     restart_tvh_server,
@@ -108,6 +113,7 @@ from .core import (
     set_tvh_user_enabled,
     summarize_tvh_dvr_entries,
     token_for_user,
+    TvhDvrEntry,
     TvhUser,
 )
 
@@ -116,7 +122,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.67"
+    plugin_version = "0.1.69"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -453,6 +459,9 @@ class tvhhelper(_PluginBase):
                 self.__select_record_stop_padding(event, session_id, self.__to_int(minutes_text, 10))
             elif payload.startswith("record_confirm|"):
                 self.__confirm_recording(event, payload.split("|", 1)[1])
+            elif payload.startswith("record_merge|"):
+                _, session_id, action = payload.split("|", 2)
+                self.__confirm_recording(event, session_id, merge_action=action)
             elif payload.startswith("record_cancel|"):
                 self.__cancel_recording(event, payload.split("|", 1)[1])
             elif payload == "confirm_restart":
@@ -1100,11 +1109,34 @@ class tvhhelper(_PluginBase):
             buttons=build_record_confirm_buttons(self.__class__.__name__, session_id),
         )
 
-    def __confirm_recording(self, event: Event, session_id: str):
+    def __confirm_recording(self, event: Event, session_id: str, merge_action: str | None = None):
         session = self.__record_session(session_id)
         selected = session.get("selected_event")
         if not selected:
             raise ValueError("预约录制会话已过期，请重新选择节目。")
+        if merge_action == "merge":
+            self.__merge_recording(event, session_id, session, selected)
+            return
+        if merge_action != "separate":
+            candidate = self.__record_merge_candidate(session, selected)
+            if candidate:
+                session["merge_candidate"] = candidate
+                self.__save_record_session(session_id, session)
+                self.__edit_or_reply(
+                    event,
+                    "确认合并录制",
+                    format_record_merge_confirm_message(
+                        candidate,
+                        selected,
+                        session.get("start_padding", 3),
+                        session.get("stop_padding", 10),
+                    ),
+                    buttons=build_record_merge_choice_buttons(self.__class__.__name__, session_id),
+                )
+                return
+        self.__create_separate_recording(event, session_id, session, selected)
+
+    def __create_separate_recording(self, event: Event, session_id: str, session: dict[str, Any], selected):
         configs = fetch_tvh_dvr_configs(self._tvh_url, self._tvh_user, self._tvh_pass)
         dvr_config, config_warning = ensure_tvhhelper_dvr_config(
             self._tvh_url,
@@ -1124,12 +1156,52 @@ class tvhhelper(_PluginBase):
         if config_warning:
             result["warning"] = config_warning
         session.pop("selected_event", None)
+        session.pop("merge_candidate", None)
         self.__save_record_session(session_id, session)
         self.__edit_or_reply(
             event,
             "TVH预约录制已创建",
             format_record_created_message(result, selected),
             buttons=build_record_created_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __merge_recording(self, event: Event, session_id: str, session: dict[str, Any], selected):
+        candidate = session.get("merge_candidate")
+        if not isinstance(candidate, TvhDvrEntry):
+            candidate = self.__record_merge_candidate(session, selected)
+        if not candidate:
+            self.__create_separate_recording(event, session_id, session, selected)
+            return
+        result = merge_tvh_dvr_entry_recording(
+            self._tvh_url,
+            self._tvh_user,
+            self._tvh_pass,
+            candidate,
+            selected,
+            start_padding_minutes=session.get("start_padding", 3),
+            stop_padding_minutes=session.get("stop_padding", 10),
+        )
+        session.pop("selected_event", None)
+        session.pop("merge_candidate", None)
+        self.__save_record_session(session_id, session)
+        self.__edit_or_reply(
+            event,
+            "TVH预约录制已合并",
+            format_record_merged_message(result, selected),
+            buttons=build_record_created_buttons(self.__class__.__name__, session_id),
+        )
+
+    def __record_merge_candidate(self, session: dict[str, Any], selected) -> TvhDvrEntry | None:
+        try:
+            entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+        except Exception as err:
+            logger.debug(f"TVH预约录制合并检测失败: {err}")
+            return None
+        return find_record_merge_candidate(
+            entries,
+            selected,
+            start_padding_minutes=session.get("start_padding", 3),
+            stop_padding_minutes=session.get("stop_padding", 10),
         )
 
     def __cancel_recording(self, event: Event, session_id: str):
@@ -1400,6 +1472,7 @@ class tvhhelper(_PluginBase):
             self._webhook_seen_events.set(event_id, True)
 
         payload = self.__enrich_webhook_program(payload)
+        payload = self.__enrich_webhook_dvr(payload)
         ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
         self.__record_playback_history_from_webhook(payload, ip_location, ip_isp)
         title, text = format_tvh_webhook_message(
@@ -1454,6 +1527,31 @@ class tvhhelper(_PluginBase):
         except Exception as err:
             logger.warning(f"TVH录制完成通知下载ticket生成失败: {err}")
             return None
+
+    def __enrich_webhook_dvr(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        event = str(payload.get("event") or "")
+        if not event.startswith("dvr."):
+            return payload
+        dvr_uuid = str(payload.get("dvr_uuid") or payload.get("uuid") or payload.get("id") or "").strip()
+        if not dvr_uuid:
+            return payload
+        if payload.get("filesize") or payload.get("data_size"):
+            return payload
+        try:
+            entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+        except Exception as err:
+            logger.debug(f"TVH Webhook DVR信息补全失败: {err}")
+            return payload
+        for entry in entries:
+            if str(entry.uuid) != dvr_uuid:
+                continue
+            enriched = dict(payload)
+            if entry.filesize and not enriched.get("filesize"):
+                enriched["filesize"] = entry.filesize
+            if entry.filename and not enriched.get("filename"):
+                enriched["filename"] = entry.filename
+            return enriched
+        return payload
 
     def __should_send_webhook_notification(self, payload: Dict[str, Any]) -> bool:
         event = str(payload.get("event") or "")

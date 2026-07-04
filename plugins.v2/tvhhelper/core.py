@@ -141,6 +141,8 @@ class TvhDvrEntry:
     stop: int
     start_real: int | None = None
     stop_real: int | None = None
+    start_extra: int | None = None
+    stop_extra: int | None = None
     sched_status: str | None = None
     rec_status: str | None = None
     status: str | None = None
@@ -450,6 +452,16 @@ def build_record_created_buttons(plugin_id: str, session_id: str) -> list[list[d
         [
             {"text": "继续选节目", "callback_data": plugin_callback(plugin_id, f"record_programs|{session_id}|0")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_record_merge_choice_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
+    return [
+        [{"text": "合并录制", "callback_data": plugin_callback(plugin_id, f"record_merge|{session_id}|merge")}],
+        [
+            {"text": "仍分开录制", "callback_data": plugin_callback(plugin_id, f"record_merge|{session_id}|separate")},
+            {"text": "取消", "callback_data": plugin_callback(plugin_id, f"record_cancel|{session_id}")},
         ],
     ]
 
@@ -1101,6 +1113,7 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     event_time = _format_timestamp(payload.get("timestamp")) or "未知"
     error_text = payload.get("last_error_text")
     result = payload.get("recording_state") or payload.get("sched_state")
+    filesize = _to_int_or_none(payload.get("filesize") or payload.get("data_size"))
     if event == "dvr.error" and error_text:
         result = error_text
     main_lines = _compact_lines([
@@ -1112,6 +1125,7 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     ])
     file_lines = _compact_lines([
         str(payload.get("filename")) if payload.get("filename") else None,
+        f"录制体积: {_format_file_size(filesize)}" if filesize else None,
     ])
     tech_lines = _compact_lines([
         f"录制ID: {payload.get('dvr_uuid')}" if payload.get("dvr_uuid") else None,
@@ -2377,6 +2391,8 @@ def parse_tvh_dvr_entries(payload: dict) -> list[TvhDvrEntry]:
             stop=stop,
             start_real=_to_int_or_none(entry.get("start_real")),
             stop_real=_to_int_or_none(entry.get("stop_real")),
+            start_extra=_to_int_or_none(entry.get("start_extra")),
+            stop_extra=_to_int_or_none(entry.get("stop_extra")),
             sched_status=_string_or_none(entry.get("sched_status") or entry.get("sched_state")),
             rec_status=_string_or_none(entry.get("rec_status") or entry.get("recording_state")),
             status=_string_or_none(entry.get("status")),
@@ -2642,6 +2658,156 @@ def calculate_recording_window(
     return start, stop, clipped
 
 
+def find_record_merge_candidate(
+    entries: list[TvhDvrEntry],
+    event: TvhEpgEvent,
+    start_padding_minutes: int = 3,
+    stop_padding_minutes: int = 10,
+    threshold_seconds: int = 120,
+    now: int | None = None,
+) -> TvhDvrEntry | None:
+    new_start, new_stop, _ = calculate_recording_window(
+        event,
+        start_padding_minutes=start_padding_minutes,
+        stop_padding_minutes=stop_padding_minutes,
+        now=now,
+    )
+    candidates: list[tuple[int, TvhDvrEntry]] = []
+    for entry in entries:
+        if not _is_mergeable_dvr_entry(entry):
+            continue
+        if _normalize_match_text(entry.channel) != _normalize_match_text(event.channel_name):
+            continue
+        entry_start, entry_stop = _dvr_entry_recording_window(entry)
+        if entry_start <= new_stop + threshold_seconds and new_start <= entry_stop + threshold_seconds:
+            distance = 0 if entry_start <= new_stop and new_start <= entry_stop else min(
+                abs(entry_stop - new_start),
+                abs(new_stop - entry_start),
+            )
+            candidates.append((distance, entry))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (item[0], item[1].start, item[1].stop, item[1].title))[0][1]
+
+
+def merge_tvh_dvr_entry_recording(
+    base_url: str,
+    username: str,
+    password: str,
+    entry: TvhDvrEntry,
+    event: TvhEpgEvent,
+    start_padding_minutes: int = 3,
+    stop_padding_minutes: int = 10,
+    timeout: int = 10,
+) -> dict:
+    merged_start = min(int(entry.start), int(event.start))
+    merged_stop = max(int(entry.stop), int(event.stop))
+    start_extra = _merged_start_extra(entry, event, start_padding_minutes, merged_start)
+    stop_extra = _merged_stop_extra(entry, event, stop_padding_minutes, merged_stop)
+    title = _merged_recording_title(entry.title, event.title)
+    details = _merged_recording_details(entry, event)
+    node = [{
+        "uuid": entry.uuid,
+        "start": merged_start,
+        "stop": merged_stop,
+        "start_extra": start_extra,
+        "stop_extra": stop_extra,
+        "disp_title": title,
+        "disp_extratext": details,
+    }]
+    response = post_tvh_form(
+        base_url,
+        "/api/idnode/save",
+        username,
+        password,
+        {"node": json.dumps(node, ensure_ascii=False, separators=(",", ":"))},
+        timeout=timeout,
+    )
+    display_start = merged_start - start_extra * 60
+    display_stop = merged_stop + stop_extra * 60
+    return {
+        "uuid": entry.uuid,
+        "response": response,
+        "start": display_start,
+        "stop": display_stop,
+        "event_start": merged_start,
+        "event_stop": merged_stop,
+        "start_extra": start_extra,
+        "stop_extra": stop_extra,
+        "title": title,
+        "merged": True,
+        "merged_with": entry.title,
+    }
+
+
+def _is_mergeable_dvr_entry(entry: TvhDvrEntry) -> bool:
+    status = _normalize_match_text(" ".join([
+        entry.sched_status or "",
+        entry.rec_status or "",
+        entry.status or "",
+    ]))
+    blocked = ["completed", "finished", "failed", "removed", "missed", "invalid"]
+    return not any(item in status for item in blocked)
+
+
+def _dvr_entry_recording_window(entry: TvhDvrEntry) -> tuple[int, int]:
+    start_extra = max(0, int(entry.start_extra or 0))
+    stop_extra = max(0, int(entry.stop_extra or 0))
+    start = int(entry.start) - start_extra * 60
+    stop = int(entry.stop) + stop_extra * 60
+    if entry.start_real is not None:
+        start = min(start, int(entry.start_real))
+    if entry.stop_real is not None:
+        stop = max(stop, int(entry.stop_real))
+    if stop <= start:
+        stop = start + 60
+    return start, stop
+
+
+def _merged_start_extra(entry: TvhDvrEntry, event: TvhEpgEvent, start_padding_minutes: int, merged_start: int) -> int:
+    entry_extra = max(0, int(entry.start_extra or 0))
+    new_extra = max(0, int(start_padding_minutes or 0))
+    values = []
+    if int(entry.start) == merged_start:
+        values.append(entry_extra)
+    if int(event.start) == merged_start:
+        values.append(new_extra)
+    return max(values or [entry_extra, new_extra])
+
+
+def _merged_stop_extra(entry: TvhDvrEntry, event: TvhEpgEvent, stop_padding_minutes: int, merged_stop: int) -> int:
+    entry_extra = max(0, int(entry.stop_extra or 0))
+    new_extra = max(0, int(stop_padding_minutes or 0))
+    values = []
+    if int(entry.stop) == merged_stop:
+        values.append(entry_extra)
+    if int(event.stop) == merged_stop:
+        values.append(new_extra)
+    return max(values or [entry_extra, new_extra])
+
+
+def _merged_recording_title(existing_title: str, new_title: str) -> str:
+    existing = _collapse_whitespace(existing_title)
+    new = _collapse_whitespace(new_title)
+    if not existing:
+        return new
+    if not new or _normalize_match_text(new) in _normalize_match_text(existing):
+        return existing
+    return f"{existing} + {new}"
+
+
+def _merged_recording_details(entry: TvhDvrEntry, event: TvhEpgEvent) -> str:
+    lines = [
+        "合并录制：",
+        f"{entry.title} {format_record_time_range(entry.start, entry.stop)}",
+        f"{event.title} {format_record_time_range(event.start, event.stop)}",
+    ]
+    details = event.summary or event.description
+    if details:
+        lines.extend(["", _collapse_whitespace(details)])
+    return "\n".join(lines)
+
+
 def create_tvh_dvr_recording(
     base_url: str,
     username: str,
@@ -2744,6 +2910,31 @@ def format_record_confirm_message(
     return "\n".join(lines)
 
 
+def format_record_merge_confirm_message(
+    existing: TvhDvrEntry,
+    event: TvhEpgEvent,
+    start_padding_minutes: int,
+    stop_padding_minutes: int,
+    now: int | None = None,
+) -> str:
+    new_start, new_stop, _ = calculate_recording_window(event, start_padding_minutes, stop_padding_minutes, now=now)
+    existing_start, existing_stop = _dvr_entry_recording_window(existing)
+    merged_start = min(existing_start, new_start)
+    merged_stop = max(existing_stop, new_stop)
+    return "\n".join([
+        "检测到同频道连续或重叠录制：",
+        "",
+        f"已有: {existing.title}",
+        f"时间: {format_record_datetime_range(existing.start, existing.stop)}",
+        "",
+        f"新增: {event.title}",
+        f"时间: {format_record_datetime_range(event.start, event.stop)}",
+        "",
+        f"建议合并录制: {format_record_datetime_range(merged_start, merged_stop)}",
+        "合并后会更新已有 DVR 任务，避免重复写入重叠片段。",
+    ])
+
+
 def format_record_created_message(result: dict, event: TvhEpgEvent) -> str:
     lines = [
         "已创建 TVH 录制任务",
@@ -2756,6 +2947,21 @@ def format_record_created_message(result: dict, event: TvhEpgEvent) -> str:
         lines.append(f"任务ID: {result.get('uuid')}")
     if result.get("warning"):
         lines.extend(["", f"提示: {result.get('warning')}"])
+    return "\n".join(lines)
+
+
+def format_record_merged_message(result: dict, event: TvhEpgEvent) -> str:
+    lines = [
+        "已合并 TVH 录制任务",
+        "",
+        f"频道: {event.channel_name or event.channel_uuid}",
+        f"节目: {result.get('title') or event.title}",
+        f"录制: {format_record_datetime_range(int(result['start']), int(result['stop']))}",
+    ]
+    if result.get("uuid"):
+        lines.append(f"任务ID: {result.get('uuid')}")
+    if result.get("merged_with"):
+        lines.append(f"合并已有: {result.get('merged_with')}")
     return "\n".join(lines)
 
 

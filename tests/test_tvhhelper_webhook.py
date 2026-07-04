@@ -163,6 +163,50 @@ def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
     ]]
 
 
+def test_receive_webhook_dvr_complete_enriches_filesize_from_dvr_entry(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [
+            module.TvhDvrEntry(
+                uuid="dvr-1",
+                title="晚间新闻",
+                channel="翡翠台",
+                start=1,
+                stop=2,
+                filesize=916009132,
+                filename="/recordings/晚间新闻.ts",
+            )
+        ],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-complete-size-1",
+            "timestamp": int(time.time()),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert len(plugin.messages) == 1
+    assert "录制体积: 873.6 MB" in plugin.messages[0]["text"]
+
+
 def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()
