@@ -21,6 +21,7 @@ from core import (
     build_dvr_entry_action_buttons,
     build_dvr_entry_buttons,
     build_dvr_filter_buttons,
+    build_dvr_bulk_remove_buttons,
     build_epg_url,
     build_long_epg_url,
     build_long_m3u_url,
@@ -625,6 +626,23 @@ def test_dvr_filter_buttons_fit_telegram_callback_limit():
 
     assert callback_data
     assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+
+
+def test_dvr_bulk_remove_buttons_only_show_for_removable_entries():
+    entries = [
+        TvhDvrEntry(uuid="recording", title="录制中", channel="翡翠台", start=1, stop=2, sched_status="recording"),
+        TvhDvrEntry(uuid="finished", title="已完成", channel="翡翠台", start=1, stop=2, sched_status="completed"),
+        TvhDvrEntry(uuid="failed", title="失败", channel="翡翠台", start=1, stop=2, sched_status="failed"),
+    ]
+
+    buttons = build_dvr_bulk_remove_buttons("tvhhelper", "session-1", entries)
+    flat = [button for row in buttons for button in row]
+
+    assert flat == [
+        {"text": "一键删除可删", "callback_data": "[PLUGIN]tvhhelper|dvr_remove_all_confirm|session-1"}
+    ]
+    assert len(flat[0]["callback_data"].encode("utf-8")) <= 64
+    assert build_dvr_bulk_remove_buttons("tvhhelper", "session-1", entries[:1]) == []
 
 
 def test_filter_tvh_dvr_entries_by_status():
@@ -1642,6 +1660,27 @@ def test_tvh_webhook_message_formats_dvr_complete_filesize():
     assert "文件\n/recordings/show.ts\n录制体积: 873.6 MB\n节目时长: 30 分钟\n录制时长: 41 分钟" in text
 
 
+def test_tvh_webhook_message_does_not_show_duration_for_dvr_start():
+    title, text = format_tvh_webhook_message({
+        "event": "dvr.start",
+        "timestamp": 1782819002,
+        "title": "一個好人[粵]",
+        "channel": "翡翠台",
+        "dvr_uuid": "dvr-1",
+        "sched_state": "RECORDING",
+        "recording_state": "PENDING",
+        "start": 1783139400,
+        "stop": 1783141200,
+        "start_real": 1783139040,
+        "stop_real": 1783141500,
+    })
+
+    assert title == "TVH开始录制"
+    assert "节目时长:" not in text
+    assert "录制时长:" not in text
+    assert "\n文件\n" not in text
+
+
 def test_tvh_webhook_message_separates_program_content_from_user():
     _, text = format_tvh_webhook_message({
         "event": "playback.start",
@@ -2011,6 +2050,7 @@ def test_status_summary_is_copyable_code_block():
         "TVH: OK | DVB: 3/3 | 在线: 0\n"
         "系统: CPU - | 内存 -\n"
         "运行: 1天 01:01:01\n"
+        "启动: 2026-06-15 11:34:39\n"
         "```\n"
         "\n"
         "在线: 0\n"
@@ -2542,7 +2582,7 @@ def test_status_message_can_show_tvh_start_time_and_uptime():
         uptime_seconds=90061,
     )
 
-    assert "系统: CPU - | 内存 -\n运行: 1天 01:01:01" in message
+    assert "系统: CPU - | 内存 -\n运行: 1天 01:01:01\n启动: 2026-07-01 12:00:00" in message
 
 
 def test_status_message_can_show_tvh_health_summary():

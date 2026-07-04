@@ -53,6 +53,9 @@ def install_moviepilot_stubs(monkeypatch):
         def update_config(self, config):
             self.config = config
 
+        def get_config(self, plugin_id=None):
+            return self.config
+
         def post_message(self, **kwargs):
             self.messages.append(kwargs)
 
@@ -75,7 +78,7 @@ def install_moviepilot_stubs(monkeypatch):
         "app.core.event": types.SimpleNamespace(eventmanager=EventManager(), Event=Event),
         "app.db": types.ModuleType("app.db"),
         "app.db.systemconfig_oper": types.SimpleNamespace(SystemConfigOper=lambda: types.SimpleNamespace(delete=lambda key: None, get=lambda key: {})),
-        "app.log": types.SimpleNamespace(logger=types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None, debug=lambda *a, **k: None)),
+        "app.log": types.SimpleNamespace(logger=types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None, warning=lambda *a, **k: None, debug=lambda *a, **k: None)),
         "app.plugins": types.SimpleNamespace(_PluginBase=PluginBase),
         "app.schemas.types": types.SimpleNamespace(ChainEventType=ChainEventType, EventType=EventType),
         "fastapi": types.SimpleNamespace(Body=lambda default=None: default, Header=lambda default=None: default),
@@ -209,6 +212,82 @@ def test_receive_webhook_dvr_complete_enriches_filesize_from_dvr_entry(monkeypat
     assert "录制体积: 873.6 MB" in plugin.messages[0]["text"]
     assert "节目时长: 30 分钟" in plugin.messages[0]["text"]
     assert "录制时长: 41 分钟" in plugin.messages[0]["text"]
+
+
+def test_tvh_data_cache_reuses_loader_and_supports_force_refresh(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    calls = []
+
+    def loader():
+        calls.append(len(calls) + 1)
+        return f"value-{len(calls)}"
+
+    first = plugin._tvhhelper__cached_tvh_data("sample", 60, loader)
+    second = plugin._tvhhelper__cached_tvh_data("sample", 60, loader)
+    refreshed = plugin._tvhhelper__cached_tvh_data("sample", 60, loader, force_refresh=True)
+
+    assert first == "value-1"
+    assert second == "value-1"
+    assert refreshed == "value-2"
+    assert calls == [1, 2]
+
+
+def test_init_plugin_merges_partial_config_with_existing_config(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.config = {
+        "enabled": True,
+        "tvh_url": "https://tvh.example.com",
+        "tvh_user": "admin",
+        "tvh_pass": "secret",
+        "public_base_url": "https://tvh.example.com",
+        "expected_dvb_count": 3,
+    }
+
+    plugin.init_plugin({"enabled": True})
+
+    assert plugin.config["tvh_url"] == "https://tvh.example.com"
+    assert plugin.config["tvh_user"] == "admin"
+    assert plugin.config["tvh_pass"] == "secret"
+    assert plugin.config["expected_dvb_count"] == 3
+
+
+def test_show_dvr_tasks_reuses_session_entries_for_filter_changes(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    calls = []
+
+    def fake_fetch(*args, **kwargs):
+        calls.append(1)
+        return [
+            module.TvhDvrEntry(
+                uuid="dvr-1",
+                title="录制中",
+                channel="翡翠台",
+                start=1,
+                stop=2,
+                sched_status="recording",
+            )
+        ]
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fake_fetch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    callback_event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(callback_event)
+    session_id = next(iter(plugin._record_session_cache._values.keys()))
+    callback_event.event_data["text"] = f"dvr_tasks_filter|{session_id}|recording"
+    plugin.handle_callback(callback_event)
+
+    assert len(calls) == 1
+    assert len(plugin.messages) == 2
 
 
 def test_receive_webhook_filters_playback_notification_by_enabled_user(monkeypatch):
@@ -573,6 +652,76 @@ def test_dvr_tasks_callback_lists_entries(monkeypatch):
     assert "873.6 MB" in message["text"]
     assert message["buttons"][0][0]["callback_data"].startswith("[PLUGIN]tvhhelper|dvr_task|")
     assert len(message["buttons"][0][0]["callback_data"].encode("utf-8")) <= 64
+
+
+def test_dvr_tasks_bulk_remove_deletes_only_removable_current_filter(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    removed = []
+    entries = [
+        module.TvhDvrEntry(uuid="recording", title="录制中", channel="翡翠台", start=1, stop=2, sched_status="recording"),
+        module.TvhDvrEntry(uuid="finished", title="已完成", channel="翡翠台", start=1, stop=2, sched_status="completed"),
+        module.TvhDvrEntry(uuid="failed", title="失败", channel="翡翠台", start=1, stop=2, sched_status="failed"),
+    ]
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", lambda *args, **kwargs: entries)
+    monkeypatch.setattr(module, "remove_tvh_dvr_entry", lambda *args, **kwargs: removed.append(args[3]) or {})
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+    session_id = next(iter(plugin._record_session_cache._values.keys()))
+    event.event_data["text"] = f"dvr_tasks_filter|{session_id}|failed"
+    plugin.handle_callback(event)
+    event.event_data["text"] = f"dvr_remove_all_confirm|{session_id}"
+    plugin.handle_callback(event)
+    event.event_data["text"] = f"dvr_remove_all|{session_id}"
+    plugin.handle_callback(event)
+
+    assert removed == ["failed"]
+    assert plugin.messages[-2].kwargs["title"] == "确认批量删除录制文件"
+    assert "将删除 1 个可删除录制文件" in plugin.messages[-2].kwargs["text"]
+    assert plugin.messages[-1].kwargs["title"] == "TVH录制任务"
+    assert "已请求批量删除 TVH 录制文件：成功 1 个，失败 0 个。" in plugin.messages[-1].kwargs["text"]
+
+
+def test_dvr_tasks_bulk_remove_reports_result_when_refresh_fails(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    entries = [
+        module.TvhDvrEntry(uuid="failed", title="失败", channel="翡翠台", start=1, stop=2, sched_status="failed"),
+    ]
+    fetch_calls = []
+
+    def fake_fetch(*args, **kwargs):
+        fetch_calls.append(1)
+        if len(fetch_calls) > 1:
+            raise RuntimeError("HTTP Error 502: Bad Gateway")
+        return entries
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fake_fetch)
+    monkeypatch.setattr(module, "remove_tvh_dvr_entry", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("HTTP Error 502: Bad Gateway")))
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "dvr_tasks",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+    session_id = next(iter(plugin._record_session_cache._values.keys()))
+    event.event_data["text"] = f"dvr_remove_all|{session_id}"
+    plugin.handle_callback(event)
+
+    assert plugin.messages[-1].kwargs["title"] == "TVH录制任务"
+    assert "已请求批量删除 TVH 录制文件：成功 0 个，失败 1 个。" in plugin.messages[-1].kwargs["text"]
+    assert "刷新录制任务失败: HTTP Error 502: Bad Gateway" in plugin.messages[-1].kwargs["text"]
+    assert all(message.kwargs["title"] != "TVH助手执行失败" for message in plugin.messages)
 
 
 def test_page_does_not_show_webhook_copy_template(monkeypatch):

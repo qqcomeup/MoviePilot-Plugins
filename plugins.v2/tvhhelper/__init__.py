@@ -23,6 +23,7 @@ from .core import (
     TimedValueCache,
     adjust_tvh_dvr_entry_stop,
     build_dvr_cancel_confirm_buttons,
+    build_dvr_bulk_remove_buttons,
     build_dvr_entry_action_buttons,
     build_dvr_entry_buttons,
     build_dvr_filter_buttons,
@@ -79,6 +80,8 @@ from .core import (
     format_dvr_cancel_confirm_message,
     format_dvr_entries_message,
     format_dvr_entry_detail,
+    format_dvr_bulk_remove_confirm_message,
+    format_dvr_bulk_removed_message,
     format_dvr_remove_confirm_message,
     format_dvr_removed_message,
     format_dvr_stop_confirm_message,
@@ -107,6 +110,7 @@ from .core import (
     create_tvh_dvr_recording,
     merge_tvh_dvr_entry_recording,
     remove_tvh_dvr_entry,
+    removable_tvh_dvr_entries,
     stop_tvh_dvr_entry,
     restart_tvh_server,
     select_tvh_webhook_image,
@@ -122,7 +126,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.70"
+    plugin_version = "0.1.74"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -162,11 +166,13 @@ class tvhhelper(_PluginBase):
     _tvh_users_cache: TimedValueCache | None = None
     _webhook_program_cache: TimedValueCache | None = None
     _record_session_cache: TimedValueCache | None = None
+    _tvh_data_cache: dict[str, tuple[float, Any]] = {}
     _playback_history: list[dict[str, Any]] = []
     _ipdb_update_running = False
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
+        config = self.__merge_existing_config(config)
         self.__reset_runtime_defaults()
         if config:
             self._enabled = bool(config.get("enabled"))
@@ -211,11 +217,25 @@ class tvhhelper(_PluginBase):
         self._webhook_seen_events = TimedValueCache(ttl_seconds=600)
         self._webhook_program_cache = TimedValueCache(ttl_seconds=60)
         self._record_session_cache = TimedValueCache(ttl_seconds=900)
+        self._tvh_data_cache = {}
         self._play_notify_snapshot = None
         self._playback_history = []
         if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
             self.__start_ipdb_update_async()
         self.__update_config()
+
+    def __merge_existing_config(self, config: dict | None) -> dict | None:
+        if not config:
+            return config
+        try:
+            existing = self.get_config()
+        except Exception:
+            existing = None
+        if not isinstance(existing, dict) or not existing:
+            return config
+        merged = dict(existing)
+        merged.update(config)
+        return merged
 
     def __reset_runtime_defaults(self):
         self._enabled = False
@@ -250,6 +270,7 @@ class tvhhelper(_PluginBase):
         self._tvh_users_cache = None
         self._webhook_program_cache = None
         self._record_session_cache = None
+        self._tvh_data_cache = {}
         self._playback_history = []
         self._ipdb_update_running = False
 
@@ -265,6 +286,29 @@ class tvhhelper(_PluginBase):
             return self.__to_int(payload.split("|")[index], default)
         except (IndexError, AttributeError):
             return default
+
+    def __cached_tvh_data(self, key: str, ttl_seconds: int, loader, force_refresh: bool = False):
+        cache_key = "|".join([self._tvh_url, self._tvh_user, key])
+        now = time.time()
+        if not force_refresh:
+            item = self._tvh_data_cache.get(cache_key)
+            if item:
+                expires_at, value = item
+                if expires_at > now:
+                    return value
+                self._tvh_data_cache.pop(cache_key, None)
+        value = loader()
+        self._tvh_data_cache[cache_key] = (now + max(0, int(ttl_seconds or 0)), value)
+        return value
+
+    def __clear_tvh_data_cache(self, prefix: str | None = None) -> None:
+        if not prefix:
+            self._tvh_data_cache.clear()
+            return
+        marker = f"|{prefix}"
+        for key in list(self._tvh_data_cache.keys()):
+            if marker in key:
+                self._tvh_data_cache.pop(key, None)
 
     def __update_config(self):
         self.update_config({
@@ -371,7 +415,7 @@ class tvhhelper(_PluginBase):
                 self.__edit_or_reply_copy(
                     event,
                     "TVH状态",
-                    self.__status_text(),
+                    self.__status_text(force_refresh=True),
                     buttons=build_main_buttons(self.__class__.__name__),
                 )
             elif payload == "main_menu":
@@ -411,6 +455,10 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("dvr_remove_confirm|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__confirm_remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dvr_remove_all_confirm|"):
+                self.__confirm_remove_all_dvr_tasks(event, payload.split("|", 1)[1])
+            elif payload.startswith("dvr_remove_all|"):
+                self.__remove_all_dvr_tasks(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_remove|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
@@ -683,7 +731,15 @@ class tvhhelper(_PluginBase):
             logger.debug(f"TVH助手删除原消息失败: {err}")
             return False
 
-    def __status_text(self) -> str:
+    def __status_text(self, force_refresh: bool = False) -> str:
+        return self.__cached_tvh_data(
+            "status_text",
+            30,
+            self.__load_status_text,
+            force_refresh=force_refresh,
+        )
+
+    def __load_status_text(self) -> str:
         status, inputs, subscriptions = fetch_tvh_status_bundle(
             lambda: fetch_tvh_status(self._tvh_url, self._tvh_user, self._tvh_pass),
             self.__tvh_inputs,
@@ -803,17 +859,22 @@ class tvhhelper(_PluginBase):
         prefix: str | None = None,
         session_id: str | None = None,
         dvr_filter: str | None = None,
+        force_refresh: bool = False,
     ):
-        entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+        entries = None
         if session_id:
             session = self.__record_session(session_id)
             current_filter = normalize_dvr_filter(dvr_filter or session.get("dvr_filter"))
+            entries = None if force_refresh else session.get("dvr_entries_all")
+            if entries is None:
+                entries = self.__tvh_dvr_entries(force_refresh=force_refresh)
             session["dvr_entries_all"] = entries
             session["dvr_entries"] = filter_tvh_dvr_entries(entries, current_filter)
             session["dvr_filter"] = current_filter
             self.__save_record_session(session_id, session)
         else:
             current_filter = normalize_dvr_filter(dvr_filter)
+            entries = self.__tvh_dvr_entries(force_refresh=force_refresh)
             session_id = self.__create_record_session({
                 "dvr_entries_all": entries,
                 "dvr_entries": filter_tvh_dvr_entries(entries, current_filter),
@@ -827,7 +888,7 @@ class tvhhelper(_PluginBase):
             text = f"{prefix}\n\n{text}"
         buttons = (
             build_dvr_entry_buttons(self.__class__.__name__, session_id, visible_entries, page=page)
-            if visible_entries else build_dvr_filter_buttons(self.__class__.__name__, session_id) + build_secondary_nav_buttons(self.__class__.__name__)
+            if visible_entries else build_dvr_filter_buttons(self.__class__.__name__, session_id) + build_dvr_bulk_remove_buttons(self.__class__.__name__, session_id, visible_entries) + build_secondary_nav_buttons(self.__class__.__name__)
         )
         self.__edit_or_reply(
             event,
@@ -870,7 +931,8 @@ class tvhhelper(_PluginBase):
         entries = session.get("dvr_entries") or []
         entry = self.__dvr_entry_from_session(entries, entry_index)
         cancel_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
-        self.__show_dvr_tasks(event, prefix=f"已请求取消录制任务：{entry.title}", session_id=session_id)
+        self.__clear_tvh_data_cache("dvr_entries")
+        self.__show_dvr_tasks(event, prefix=f"已请求取消录制任务：{entry.title}", session_id=session_id, force_refresh=True)
 
     def __confirm_stop_dvr_task(self, event: Event, session_id: str, entry_index: int):
         session = self.__record_session(session_id)
@@ -888,7 +950,8 @@ class tvhhelper(_PluginBase):
         entries = session.get("dvr_entries") or []
         entry = self.__dvr_entry_from_session(entries, entry_index)
         stop_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
-        self.__show_dvr_tasks(event, prefix=format_dvr_stopped_message(entry), session_id=session_id)
+        self.__clear_tvh_data_cache("dvr_entries")
+        self.__show_dvr_tasks(event, prefix=format_dvr_stopped_message(entry), session_id=session_id, force_refresh=True)
 
     def __confirm_remove_dvr_task(self, event: Event, session_id: str, entry_index: int):
         session = self.__record_session(session_id)
@@ -910,7 +973,60 @@ class tvhhelper(_PluginBase):
         if not can_remove_tvh_dvr_entry(entry):
             raise ValueError("该录制任务仍在等待或录制中，不能删除录制文件。")
         remove_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
-        self.__show_dvr_tasks(event, prefix=format_dvr_removed_message(entry), session_id=session_id)
+        self.__clear_tvh_data_cache("dvr_entries")
+        self.__show_dvr_tasks(event, prefix=format_dvr_removed_message(entry), session_id=session_id, force_refresh=True)
+
+    def __confirm_remove_all_dvr_tasks(self, event: Event, session_id: str):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        removable = removable_tvh_dvr_entries(entries)
+        if not removable:
+            raise ValueError("当前筛选下没有可删除的录制文件。")
+        self.__edit_or_reply(
+            event,
+            "确认批量删除录制文件",
+            format_dvr_bulk_remove_confirm_message(entries, session.get("dvr_filter")),
+            buttons=[
+                [{"text": f"确认删除{len(removable)}个", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dvr_remove_all|{session_id}"}],
+                [
+                    {"text": "返回任务", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dvr_tasks_page|{session_id}|0"},
+                    {"text": "关闭", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dismiss"},
+                ],
+            ],
+        )
+
+    def __remove_all_dvr_tasks(self, event: Event, session_id: str):
+        session = self.__record_session(session_id)
+        entries = session.get("dvr_entries") or []
+        removable = removable_tvh_dvr_entries(entries)
+        if not removable:
+            raise ValueError("当前筛选下没有可删除的录制文件。")
+        success_count = 0
+        failed_count = 0
+        for entry in removable:
+            try:
+                remove_tvh_dvr_entry(self._tvh_url, self._tvh_user, self._tvh_pass, entry.uuid)
+                success_count += 1
+            except Exception as err:
+                failed_count += 1
+                logger.warning(f"TVH助手批量删除录制文件失败: {entry.uuid} {err}")
+        self.__clear_tvh_data_cache("dvr_entries")
+        result_text = format_dvr_bulk_removed_message(success_count, failed_count)
+        try:
+            self.__show_dvr_tasks(
+                event,
+                prefix=result_text,
+                session_id=session_id,
+                force_refresh=True,
+            )
+        except Exception as err:
+            logger.warning(f"TVH助手批量删除后刷新录制任务失败: {err}")
+            self.__edit_or_reply(
+                event,
+                "TVH录制任务",
+                f"{result_text}\n\n刷新录制任务失败: {err}\n请稍后重新进入录制任务查看最新状态。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
 
     def __adjust_dvr_task_stop(self, event: Event, session_id: str, entry_index: int, delta_minutes: int):
         session = self.__record_session(session_id)
@@ -923,10 +1039,12 @@ class tvhhelper(_PluginBase):
             entry,
             delta_minutes,
         )
+        self.__clear_tvh_data_cache("dvr_entries")
         self.__show_dvr_tasks(
             event,
             prefix=format_dvr_adjusted_message(entry, int(result["stop"])),
             session_id=session_id,
+            force_refresh=True,
         )
 
     def __show_record_channels(
@@ -940,7 +1058,7 @@ class tvhhelper(_PluginBase):
             session = self.__record_session(session_id)
             channels = session.get("channels") or []
         else:
-            channels = fetch_tvh_channels(self._tvh_url, self._tvh_user, self._tvh_pass)
+            channels = self.__tvh_channels()
             session_id = self.__create_record_session({"channels": channels})
         if not channels:
             text = "未读取到 TVH 频道，无法预约录制。"
@@ -964,7 +1082,7 @@ class tvhhelper(_PluginBase):
         )
 
     def __show_record_programs(self, event: Event, channel_id: str, page: int = 0):
-        channels = fetch_tvh_channels(self._tvh_url, self._tvh_user, self._tvh_pass)
+        channels = self.__tvh_channels()
         channel = next(
             (
                 item for item in channels
@@ -974,14 +1092,7 @@ class tvhhelper(_PluginBase):
         )
         if not channel:
             raise ValueError("未找到选择的 TVH 频道，请返回后重新选择。")
-        events = fetch_tvh_epg_events(
-            self._tvh_url,
-            self._tvh_user,
-            self._tvh_pass,
-            channel_uuid=channel.uuid,
-            channel_name=channel.name,
-            hours=24,
-        )
+        events = self.__tvh_epg_events(channel)
         if not events:
             self.__edit_or_reply(
                 event,
@@ -1010,14 +1121,7 @@ class tvhhelper(_PluginBase):
         if channel_index < 0 or channel_index >= len(channels):
             raise ValueError("未找到选择的 TVH 频道，请返回后重新选择。")
         channel = channels[channel_index]
-        events = fetch_tvh_epg_events(
-            self._tvh_url,
-            self._tvh_user,
-            self._tvh_pass,
-            channel_uuid=channel.uuid,
-            channel_name=channel.name,
-            hours=24,
-        )
+        events = self.__tvh_epg_events(channel)
         if not events:
             self.__edit_or_reply(
                 event,
@@ -1137,7 +1241,7 @@ class tvhhelper(_PluginBase):
         self.__create_separate_recording(event, session_id, session, selected)
 
     def __create_separate_recording(self, event: Event, session_id: str, session: dict[str, Any], selected):
-        configs = fetch_tvh_dvr_configs(self._tvh_url, self._tvh_user, self._tvh_pass)
+        configs = self.__tvh_dvr_configs()
         dvr_config, config_warning = ensure_tvhhelper_dvr_config(
             self._tvh_url,
             self._tvh_user,
@@ -1261,6 +1365,44 @@ class tvhhelper(_PluginBase):
 
     def __tvh_connections(self):
         return fetch_tvh_connections(self._tvh_url, self._tvh_user, self._tvh_pass)
+
+    def __tvh_channels(self):
+        return self.__cached_tvh_data(
+            "channels",
+            300,
+            lambda: fetch_tvh_channels(self._tvh_url, self._tvh_user, self._tvh_pass),
+        )
+
+    def __tvh_epg_events(self, channel) -> list[Any]:
+        channel_uuid = getattr(channel, "uuid", "") or ""
+        channel_name = getattr(channel, "name", "") or ""
+        return self.__cached_tvh_data(
+            f"epg|{channel_uuid}|{channel_name}|24",
+            60,
+            lambda: fetch_tvh_epg_events(
+                self._tvh_url,
+                self._tvh_user,
+                self._tvh_pass,
+                channel_uuid=channel_uuid,
+                channel_name=channel_name,
+                hours=24,
+            ),
+        )
+
+    def __tvh_dvr_entries(self, force_refresh: bool = False):
+        return self.__cached_tvh_data(
+            "dvr_entries",
+            10,
+            lambda: fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass),
+            force_refresh=force_refresh,
+        )
+
+    def __tvh_dvr_configs(self):
+        return self.__cached_tvh_data(
+            "dvr_configs",
+            600,
+            lambda: fetch_tvh_dvr_configs(self._tvh_url, self._tvh_user, self._tvh_pass),
+        )
 
     def __tvh_users(self) -> list[TvhUser]:
         cache_key = f"{self._tvh_url}|{self._tvh_user}"

@@ -484,7 +484,7 @@ def build_dvr_entry_buttons(
     ]
     rows = [[button] for button in buttons]
     nav = _record_page_nav(plugin_id, f"dvr_tasks_page|{session_id}", page, total_pages)
-    return rows + nav + build_dvr_filter_buttons(plugin_id, session_id) + build_secondary_nav_buttons(plugin_id)
+    return rows + nav + build_dvr_filter_buttons(plugin_id, session_id) + build_dvr_bulk_remove_buttons(plugin_id, session_id, entries) + build_secondary_nav_buttons(plugin_id)
 
 
 def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
@@ -498,6 +498,14 @@ def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]
             {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|failed")},
         ],
     ]
+
+
+def build_dvr_bulk_remove_buttons(plugin_id: str, session_id: str, entries: list[TvhDvrEntry]) -> list[list[dict]]:
+    if not removable_tvh_dvr_entries(entries):
+        return []
+    return [[
+        {"text": "一键删除可删", "callback_data": plugin_callback(plugin_id, f"dvr_remove_all_confirm|{session_id}")},
+    ]]
 
 
 def build_dvr_entry_action_buttons(
@@ -929,6 +937,8 @@ def format_status_message(
     recording_lines = _format_recording_health_lines(status, dvr_summary)
     if system_lines:
         summary_lines.extend(system_lines)
+        if start_time:
+            summary_lines.append(f"启动: {start_time}")
     elif start_time:
         summary_lines.append(f"启动于: {start_time}")
     if network_line:
@@ -1114,9 +1124,10 @@ def _format_tvh_dvr_webhook(payload: dict) -> str:
     event_time = _format_timestamp(payload.get("timestamp")) or "未知"
     error_text = payload.get("last_error_text")
     result = payload.get("recording_state") or payload.get("sched_state")
-    filesize = _to_int_or_none(payload.get("filesize") or payload.get("data_size"))
-    program_duration = _format_webhook_dvr_program_duration(payload)
-    recording_duration = _format_webhook_dvr_recording_duration(payload)
+    show_recording_file_details = event == "dvr.complete"
+    filesize = _to_int_or_none(payload.get("filesize") or payload.get("data_size")) if show_recording_file_details else None
+    program_duration = _format_webhook_dvr_program_duration(payload) if show_recording_file_details else None
+    recording_duration = _format_webhook_dvr_recording_duration(payload) if show_recording_file_details else None
     if event == "dvr.error" and error_text:
         result = error_text
     main_lines = _compact_lines([
@@ -3197,6 +3208,26 @@ def format_dvr_remove_confirm_message(entry: TvhDvrEntry) -> str:
     )
 
 
+def format_dvr_bulk_remove_confirm_message(entries: list[TvhDvrEntry], dvr_filter: str | None = None) -> str:
+    removable = removable_tvh_dvr_entries(entries)
+    skipped = max(0, len(entries) - len(removable))
+    preview = "\n".join([f"- {entry.channel or '-'} | {entry.title}" for entry in removable[:5]])
+    if len(removable) > 5:
+        preview += f"\n- 还有 {len(removable) - 5} 个..."
+    return (
+        "确认批量删除当前筛选下的 TVH 录制文件？\n\n"
+        "该操作会调用 TVH 删除录制文件接口。\n\n"
+        f"筛选: {_dvr_filter_label(dvr_filter)}\n"
+        f"将删除 {len(removable)} 个可删除录制文件\n"
+        f"跳过 {skipped} 个等待中/录制中任务\n\n"
+        f"{preview or '无可删除任务'}"
+    )
+
+
+def format_dvr_bulk_removed_message(success_count: int, failed_count: int) -> str:
+    return f"已请求批量删除 TVH 录制文件：成功 {success_count} 个，失败 {failed_count} 个。"
+
+
 def format_dvr_removed_message(entry: TvhDvrEntry) -> str:
     return (
         "已请求删除 TVH 录制文件。\n\n"
@@ -3251,6 +3282,10 @@ def can_remove_tvh_dvr_entry(entry: TvhDvrEntry) -> bool:
         or getattr(entry, "filename", None)
         or getattr(entry, "url", None)
     )
+
+
+def removable_tvh_dvr_entries(entries: list[TvhDvrEntry] | None) -> list[TvhDvrEntry]:
+    return [entry for entry in (entries or []) if can_remove_tvh_dvr_entry(entry)]
 
 
 def build_tvh_dvr_download_url(base_url: str, entry: TvhDvrEntry) -> str | None:
