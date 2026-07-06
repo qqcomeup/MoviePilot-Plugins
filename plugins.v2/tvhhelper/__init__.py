@@ -134,7 +134,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.86"
+    plugin_version = "0.1.87"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -2464,12 +2464,19 @@ class tvhhelper(_PluginBase):
         def row(*items: dict) -> dict:
             return {"component": "VRow", "content": list(items)}
 
-        def panel(title: str, *rows: dict) -> dict:
+        def tab(value: str, title: str) -> dict:
             return {
-                "component": "VExpansionPanel",
+                "component": "VTab",
+                "props": {"value": value},
+                "text": title,
+            }
+
+        def window_item(value: str, *rows: dict) -> dict:
+            return {
+                "component": "VWindowItem",
+                "props": {"value": value},
                 "content": [
-                    {"component": "VExpansionPanelTitle", "text": title},
-                    {"component": "VExpansionPanelText", "content": list(rows)},
+                    {"component": "VContainer", "props": {"fluid": True}, "content": list(rows)},
                 ],
             }
 
@@ -2484,11 +2491,21 @@ class tvhhelper(_PluginBase):
                 "component": "VForm",
                 "content": [
                     {
-                        "component": "VExpansionPanels",
-                        "props": {"multiple": True, "modelValue": [0, 1]},
+                        "component": "VTabs",
+                        "props": {"model": "settings_tab", "density": "comfortable"},
                         "content": [
-                            panel(
-                                "基础配置",
+                            tab("basic", "基础配置"),
+                            tab("notify", "通知配置"),
+                            tab("advanced", "高级配置"),
+                            tab("ipdb", "IP归属地配置"),
+                        ],
+                    },
+                    {
+                        "component": "VWindow",
+                        "props": {"model": "settings_tab"},
+                        "content": [
+                            window_item(
+                                "basic",
                                 row(
                                     switch("enabled", "启用插件"),
                                     field("tvh_url", "TVH地址", placeholder="http://127.0.0.1:9981"),
@@ -2500,8 +2517,8 @@ class tvhhelper(_PluginBase):
                                     field("expected_dvb_count", "预期DVB数量", md=4, type="number"),
                                 ),
                             ),
-                            panel(
-                                "通知配置",
+                            window_item(
+                                "notify",
                                 row(
                                     switch("notify", "DVB掉线通知"),
                                     switch("play_notify", "播放通知"),
@@ -2521,8 +2538,8 @@ class tvhhelper(_PluginBase):
                                     },
                                 },
                             ),
-                            panel(
-                                "高级配置",
+                            window_item(
+                                "advanced",
                                 row(
                                     field("dvb_path", "DVB路径", placeholder="/dev/dvb"),
                                     field("check_interval", "检查间隔秒", type="number"),
@@ -2543,8 +2560,8 @@ class tvhhelper(_PluginBase):
                                     ),
                                 ),
                             ),
-                            panel(
-                                "IP归属地配置",
+                            window_item(
+                                "ipdb",
                                 row(
                                     switch("ip_lookup_enabled", "IP归属地查询"),
                                     switch("ipdb_enabled", "本地IP库优先"),
@@ -2599,4 +2616,5 @@ class tvhhelper(_PluginBase):
             "play_notify": True,
             "play_notify_source": "auto",
             "play_notify_users": {},
+            "settings_tab": "basic",
         }

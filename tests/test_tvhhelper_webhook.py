@@ -1146,16 +1146,26 @@ def _walk_components(node):
             yield from _walk_components(child)
 
 
-def test_form_groups_settings_into_expansion_panels(monkeypatch):
+def test_form_groups_settings_into_tabs(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()
 
     form, defaults = plugin.get_form()
     components = list(_walk_components(form))
-    titles = [
-        component.get("text")
+    tabs = [
+        component
         for component in components
-        if component.get("component") == "VExpansionPanelTitle"
+        if component.get("component") == "VTab"
+    ]
+    windows = [
+        component
+        for component in components
+        if component.get("component") == "VWindow"
+    ]
+    window_items = [
+        component
+        for component in components
+        if component.get("component") == "VWindowItem"
     ]
     models = {
         component.get("props", {}).get("model")
@@ -1163,8 +1173,14 @@ def test_form_groups_settings_into_expansion_panels(monkeypatch):
         if component.get("props", {}).get("model")
     }
 
-    assert titles == ["基础配置", "通知配置", "高级配置", "IP归属地配置"]
+    assert [tab.get("text") for tab in tabs] == ["基础配置", "通知配置", "高级配置", "IP归属地配置"]
+    assert [tab.get("props", {}).get("value") for tab in tabs] == ["basic", "notify", "advanced", "ipdb"]
+    assert len(windows) == 1
+    assert windows[0]["props"]["model"] == "settings_tab"
+    assert [item.get("props", {}).get("value") for item in window_items] == ["basic", "notify", "advanced", "ipdb"]
     assert {"tvh_url", "play_notify_source", "webhook_secret", "ipdb_country_url"} <= models
+    assert "settings_tab" in models
+    assert defaults["settings_tab"] == "basic"
     assert defaults["play_notify_source"] == "auto"
 
 
