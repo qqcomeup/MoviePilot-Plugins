@@ -347,6 +347,7 @@ def build_play_notify_user_buttons(
     plugin_id: str,
     users: list[TvhUser],
     enabled_users: dict[str, bool],
+    source: str = "auto",
 ) -> list[list[dict]]:
     buttons = []
     for user in users:
@@ -364,7 +365,31 @@ def build_play_notify_user_buttons(
         {"text": "全部开启", "callback_data": plugin_callback(plugin_id, "toggle_play_notify_all|1")},
         {"text": "全部关闭", "callback_data": plugin_callback(plugin_id, "toggle_play_notify_all|0")},
     ]] if users else []
-    return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + bulk_buttons + build_secondary_nav_buttons(plugin_id)
+    source = source if source in {"auto", "webhook", "polling"} else "auto"
+    source_buttons = [
+        [
+            {
+                "text": "自动 ✓" if source == "auto" else "自动",
+                "callback_data": plugin_callback(plugin_id, "set_play_notify_source|auto"),
+            },
+            {
+                "text": "仅Webhook ✓" if source == "webhook" else "仅Webhook",
+                "callback_data": plugin_callback(plugin_id, "set_play_notify_source|webhook"),
+            },
+        ],
+        [
+            {
+                "text": "仅轮询 ✓" if source == "polling" else "仅轮询",
+                "callback_data": plugin_callback(plugin_id, "set_play_notify_source|polling"),
+            },
+        ],
+    ]
+    return (
+        [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        + bulk_buttons
+        + source_buttons
+        + build_secondary_nav_buttons(plugin_id)
+    )
 
 
 def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabled: bool | None = None) -> list[list[dict]]:

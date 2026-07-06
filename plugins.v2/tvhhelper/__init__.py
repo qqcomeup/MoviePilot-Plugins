@@ -134,7 +134,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.84"
+    plugin_version = "0.1.85"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -166,6 +166,7 @@ class tvhhelper(_PluginBase):
     _ipdb_asn_url = DEFAULT_IPDB_ASN_URL
     _ip2region_url = DEFAULT_IP2REGION_URL
     _play_notify = True
+    _play_notify_source = "auto"
     _play_notify_users: dict[str, bool] = {}
     _play_notify_snapshot: dict[str, Any] | None = None
     _play_notify_pending_starts: dict[str, tuple[float, Any]] = {}
@@ -221,6 +222,7 @@ class tvhhelper(_PluginBase):
                 LEGACY_IPDB_ASN_URLS,
             )
             self._ip2region_url = config.get("ip2region_url") or DEFAULT_IP2REGION_URL
+            self._play_notify_source = self.__normalize_play_notify_source(config.get("play_notify_source"))
             self._play_notify, self._play_notify_users = resolve_play_notify_settings(
                 self._play_notify,
                 self._play_notify_users,
@@ -282,6 +284,7 @@ class tvhhelper(_PluginBase):
         self._ipdb_asn_url = DEFAULT_IPDB_ASN_URL
         self._ip2region_url = DEFAULT_IP2REGION_URL
         self._play_notify = True
+        self._play_notify_source = "auto"
         self._play_notify_users = {}
         self._play_notify_snapshot = None
         self._play_notify_pending_starts = {}
@@ -361,6 +364,7 @@ class tvhhelper(_PluginBase):
             "ipdb_asn_url": self._ipdb_asn_url,
             "ip2region_url": self._ip2region_url,
             "play_notify": self._play_notify,
+            "play_notify_source": self._play_notify_source,
             "play_notify_users": self._play_notify_users,
         })
 
@@ -375,6 +379,31 @@ class tvhhelper(_PluginBase):
         if not url or url in legacy_urls:
             return default
         return url
+
+    @staticmethod
+    def __normalize_play_notify_source(value: Any) -> str:
+        source = str(value or "auto").strip().lower()
+        return source if source in {"auto", "webhook", "polling"} else "auto"
+
+    @staticmethod
+    def __play_notify_source_label(source: str) -> str:
+        return {
+            "auto": "自动",
+            "webhook": "仅Webhook",
+            "polling": "仅轮询",
+        }.get(source, "自动")
+
+    def __should_poll_playback(self) -> bool:
+        if not self._play_notify:
+            return False
+        if self._play_notify_source == "polling":
+            return True
+        if self._play_notify_source == "webhook":
+            return False
+        return not self._webhook_notify
+
+    def __should_send_playback_webhook(self) -> bool:
+        return self._play_notify_source != "polling"
 
     def get_state(self) -> bool:
         return self._enabled
@@ -580,6 +609,10 @@ class tvhhelper(_PluginBase):
                 self.__show_manage_user(event, username)
             elif payload == "play_notify_users":
                 self.__show_play_notify_users(event)
+            elif payload.startswith("set_play_notify_source|"):
+                source = self.__normalize_play_notify_source(payload.split("|", 1)[1])
+                self.__set_play_notify_source(source)
+                self.__show_play_notify_users(event, f"播放通知来源已切换为 {self.__play_notify_source_label(source)}")
             elif payload.startswith("toggle_play_notify_all|"):
                 enabled = payload.split("|", 1)[1] == "1"
                 self.__set_all_play_notify_users(enabled)
@@ -850,7 +883,9 @@ class tvhhelper(_PluginBase):
         text = (
             "播放通知只对已开启的 TVH 用户生效。\n"
             f"当前: 总开关{'已开启' if self._play_notify else '已关闭'}，已开启 {enabled_count}/{len(users)} 个用户。\n\n"
-            "请选择要开启/关闭播放通知的 TVH 用户。"
+            f"来源: {self.__play_notify_source_label(self._play_notify_source)}"
+            f"（{self.__play_notify_source_desc(self._play_notify_source)}）。\n\n"
+            "请选择要开启/关闭播放通知的 TVH 用户，或切换播放通知来源。"
         )
         if not self._play_notify:
             text = "播放通知总开关未启用，请先在插件设置中开启。\n\n" + text
@@ -864,6 +899,7 @@ class tvhhelper(_PluginBase):
                 self.__class__.__name__,
                 users,
                 self._play_notify_users,
+                self._play_notify_source,
             ),
         )
 
@@ -888,6 +924,20 @@ class tvhhelper(_PluginBase):
             }
         else:
             self._play_notify_users = {}
+        self._play_notify_snapshot = None
+        self._play_notify_pending_starts = {}
+        self.__update_config()
+
+    @staticmethod
+    def __play_notify_source_desc(source: str) -> str:
+        return {
+            "auto": "Webhook开启时停轮询，Webhook关闭时轮询兜底",
+            "webhook": "只接收TVH Webhook播放事件",
+            "polling": "只使用插件轮询，忽略Webhook播放事件",
+        }.get(source, "Webhook开启时停轮询，Webhook关闭时轮询兜底")
+
+    def __set_play_notify_source(self, source: str):
+        self._play_notify_source = self.__normalize_play_notify_source(source)
         self._play_notify_snapshot = None
         self._play_notify_pending_starts = {}
         self.__update_config()
@@ -1720,7 +1770,7 @@ class tvhhelper(_PluginBase):
 
     def check_playback(self):
         self.__sync_play_notify_config()
-        if not self._enabled or not self._play_notify:
+        if not self._enabled or not self.__should_poll_playback():
             return
         if not any(self._play_notify_users.values()):
             self._play_notify_snapshot = None
@@ -1788,15 +1838,25 @@ class tvhhelper(_PluginBase):
         except Exception as err:
             logger.debug(f"TVH播放通知配置同步失败: {err}")
             return
+        play_notify_source = self.__normalize_play_notify_source(
+            config.get("play_notify_source", self._play_notify_source)
+            if isinstance(config, dict)
+            else self._play_notify_source
+        )
         play_notify, play_notify_users = resolve_play_notify_settings(
             self._play_notify,
             self._play_notify_users,
             config,
         )
-        if play_notify != self._play_notify or play_notify_users != self._play_notify_users:
+        if (
+            play_notify != self._play_notify
+            or play_notify_users != self._play_notify_users
+            or play_notify_source != self._play_notify_source
+        ):
             self._play_notify_snapshot = None
             self._play_notify_pending_starts = {}
         self._play_notify = play_notify
+        self._play_notify_source = play_notify_source
         self._play_notify_users = play_notify_users
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -1811,7 +1871,7 @@ class tvhhelper(_PluginBase):
                 "func": self.check_dvb,
                 "kwargs": {},
             })
-        if self._play_notify:
+        if self.__should_poll_playback():
             services.append({
                 "id": "tvhhelper_playback_monitor",
                 "name": "TVH播放通知",
@@ -1976,6 +2036,9 @@ class tvhhelper(_PluginBase):
         self.__sync_play_notify_config()
         if not self._play_notify:
             logger.info("跳过TVH播放Webhook通知: 播放通知总开关未启用")
+            return False
+        if not self.__should_send_playback_webhook():
+            logger.info("跳过TVH播放Webhook通知: 当前播放通知来源为仅轮询")
             return False
         if not self._play_notify_users:
             logger.info("跳过TVH播放Webhook通知: 未开启任何用户播放通知")
@@ -2455,6 +2518,22 @@ class tvhhelper(_PluginBase):
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
                                 "content": [{
+                                    "component": "VSelect",
+                                    "props": {
+                                        "model": "play_notify_source",
+                                        "label": "播放通知来源",
+                                        "items": [
+                                            {"title": "自动：Webhook优先，轮询兜底", "value": "auto"},
+                                            {"title": "仅Webhook：增强版TVH", "value": "webhook"},
+                                            {"title": "仅轮询：原版TVH", "value": "polling"},
+                                        ],
+                                    },
+                                }],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [{
                                     "component": "VTextField",
                                     "props": {"model": "expected_dvb_count", "label": "预期DVB数量", "type": "number"},
                                 }],
@@ -2613,7 +2692,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。增强版TVH建议只开启Webhook通知并关闭播放通知；原版TVH保留播放通知轮询。IP归属优先查本地IP库，未命中才在线兜底。",
+                            "text": "命令: /tvh 打开功能菜单。播放通知来源建议使用自动：Webhook通知开启时停用轮询，Webhook通知关闭时使用轮询兜底；也可手动选择仅Webhook或仅轮询。IP归属优先查本地IP库，未命中才在线兜底。",
                         },
                     },
                 ],
@@ -2643,5 +2722,6 @@ class tvhhelper(_PluginBase):
             "ipdb_asn_url": DEFAULT_IPDB_ASN_URL,
             "ip2region_url": DEFAULT_IP2REGION_URL,
             "play_notify": True,
+            "play_notify_source": "auto",
             "play_notify_users": {},
         }

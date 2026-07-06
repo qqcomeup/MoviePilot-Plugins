@@ -23,6 +23,7 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 - 支持按 TVH 用户开启播放开始/停止通知，通知内容使用等宽在线状态格式，并展示开始时间、停止时间和播放时长。
 - 同一连接内切换频道时，合并为一条切换通知，先展示旧频道停止播放，再展示新频道开始播放。
 - 如果 TVH 切台时短暂同时保留旧频道和新频道，插件会暂存新频道开始事件，等待旧频道停止后再合并通知。
+- 播放通知来源支持自动、仅 Webhook、仅轮询。自动模式下，Webhook 通知开启时停用轮询，避免增强版 TVH 重复通知；Webhook 关闭时使用轮询兼容原版 TVH。
 - 播放通知会过滤 TVH 连接表里的 HTTP/IP 连接行，避免误报 `用户 / IP` 这类非频道播放。
 - 播放通知使用稳定播放身份判断，避免 TVH 临时连接 ID 变化时重复发送开始/停止。
 - 支持通过机器人二次确认后重启 TVHeadend。
@@ -38,6 +39,7 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 - 预期 DVB 数量：用于 DVB 掉线检测。
 - DVB 掉线通知：启用后按检查间隔监控 TVH 输入设备数量。
 - 播放通知：启用后可在 `/tvh` 菜单里按用户开启或关闭播放开始/停止通知。
+- 播放通知来源：默认自动；可手动选择仅 Webhook 或仅轮询。增强版 TVH 推荐自动或仅 Webhook，原版 TVH 使用仅轮询。
 - IP 归属地查询：启用后会对在线播放用户 IP 查询归属地和运营商信息。
 - 检查间隔秒：DVB 定时检查间隔，最低 30 秒。
 - 播放通知间隔秒：播放开始、停止和切台检测间隔，默认 10 秒，最低 5 秒；IP 归属地信息会走插件缓存，避免每次轮询重复查询。
@@ -47,4 +49,3 @@ https://github.com/qqcomeup/tvheadend/tree/bata
 TVH 本身在 MoviePilot 插件生态里属于相对冷门的 IPTV/电视直播管理场景。本插件主要用于把 MoviePilot 机器人和 TVHeadend 连接起来，方便管理 TVH 用户链接、在线连接和 DVB 状态。
 
 如果使用的是作者维护的 TVHeadend 汉化/增强版本，建议配合 `qqcomeup/tvheadend` 的 `bata` 分支镜像和配置测试。
-

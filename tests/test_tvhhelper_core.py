@@ -1471,6 +1471,7 @@ def test_play_notify_user_buttons_toggle_each_user():
         "tvhhelper",
         [TvhUser(username="ck"), TvhUser(username="test")],
         {"ck": True},
+        "auto",
     ) == [
         [
             {"text": "ck 已开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|0|ck"},
@@ -1479,6 +1480,13 @@ def test_play_notify_user_buttons_toggle_each_user():
         [
             {"text": "全部开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|1"},
             {"text": "全部关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|0"},
+        ],
+        [
+            {"text": "自动 ✓", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|auto"},
+            {"text": "仅Webhook", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|webhook"},
+        ],
+        [
+            {"text": "仅轮询", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|polling"},
         ],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},

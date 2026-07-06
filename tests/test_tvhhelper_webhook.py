@@ -156,6 +156,97 @@ def test_receive_webhook_records_last_health_state(monkeypatch):
     assert plugin._last_webhook_seen_at == 1782819002
 
 
+def test_auto_playback_notify_source_skips_polling_when_webhook_enabled(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "notify": False,
+        "webhook_notify": True,
+        "play_notify": True,
+        "play_notify_source": "auto",
+    })
+
+    services = plugin.get_service()
+
+    assert all(service["id"] != "tvhhelper_playback_monitor" for service in services)
+
+
+def test_polling_playback_notify_source_registers_polling_monitor(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "notify": False,
+        "webhook_notify": True,
+        "play_notify": True,
+        "play_notify_source": "polling",
+    })
+
+    services = plugin.get_service()
+
+    assert any(service["id"] == "tvhhelper_playback_monitor" for service in services)
+
+
+def test_auto_playback_notify_source_uses_polling_when_webhook_disabled(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "notify": False,
+        "webhook_notify": False,
+        "play_notify": True,
+        "play_notify_source": "auto",
+    })
+
+    services = plugin.get_service()
+
+    assert any(service["id"] == "tvhhelper_playback_monitor" for service in services)
+
+
+def test_polling_playback_notify_source_ignores_playback_webhook(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "play_notify": True,
+        "play_notify_source": "polling",
+        "play_notify_users": {"ck": True},
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.stop",
+            "user": "ck",
+            "channel": "翡翠台",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin.messages == []
+
+
+def test_set_playback_notify_source_callback_updates_config(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_users", lambda *args, **kwargs: [module.TvhUser(username="ck")])
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "play_notify_source": "auto"})
+    event = types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "set_play_notify_source|webhook",
+        "channel": "telegram",
+        "user": "user-id",
+    })
+
+    plugin.handle_callback(event)
+
+    assert plugin.config["play_notify_source"] == "webhook"
+    assert "播放通知来源已切换为 仅Webhook" in plugin.messages[-1].kwargs["text"]
+
+
 def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     monkeypatch.setattr(
