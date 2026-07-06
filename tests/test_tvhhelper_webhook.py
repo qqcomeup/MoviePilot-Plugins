@@ -1136,6 +1136,38 @@ def test_page_does_not_show_webhook_copy_template(monkeypatch):
     assert all(item.get("component") != "VTextarea" for item in page)
 
 
+def _walk_components(node):
+    if isinstance(node, dict):
+        yield node
+        for child in node.get("content") or []:
+            yield from _walk_components(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _walk_components(child)
+
+
+def test_form_groups_settings_into_expansion_panels(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+
+    form, defaults = plugin.get_form()
+    components = list(_walk_components(form))
+    titles = [
+        component.get("text")
+        for component in components
+        if component.get("component") == "VExpansionPanelTitle"
+    ]
+    models = {
+        component.get("props", {}).get("model")
+        for component in components
+        if component.get("props", {}).get("model")
+    }
+
+    assert titles == ["基础配置", "通知配置", "高级配置", "IP归属地配置"]
+    assert {"tvh_url", "play_notify_source", "webhook_secret", "ipdb_country_url"} <= models
+    assert defaults["play_notify_source"] == "auto"
+
+
 def test_receive_webhook_rejects_bad_secret(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     plugin = module.tvhhelper()

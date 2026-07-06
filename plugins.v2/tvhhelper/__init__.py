@@ -134,7 +134,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.85"
+    plugin_version = "0.1.86"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -2435,256 +2435,131 @@ class tvhhelper(_PluginBase):
         pass
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        def field(model: str, label: str, cols: int = 12, md: int = 6, **props) -> dict:
+            field_props = {"model": model, "label": label}
+            field_props.update(props)
+            return {
+                "component": "VCol",
+                "props": {"cols": cols, "md": md},
+                "content": [{"component": "VTextField", "props": field_props}],
+            }
+
+        def switch(model: str, label: str, cols: int = 12, md: int = 4) -> dict:
+            return {
+                "component": "VCol",
+                "props": {"cols": cols, "md": md},
+                "content": [{"component": "VSwitch", "props": {"model": model, "label": label}}],
+            }
+
+        def select(model: str, label: str, items: list[dict], cols: int = 12, md: int = 4) -> dict:
+            return {
+                "component": "VCol",
+                "props": {"cols": cols, "md": md},
+                "content": [{
+                    "component": "VSelect",
+                    "props": {"model": model, "label": label, "items": items},
+                }],
+            }
+
+        def row(*items: dict) -> dict:
+            return {"component": "VRow", "content": list(items)}
+
+        def panel(title: str, *rows: dict) -> dict:
+            return {
+                "component": "VExpansionPanel",
+                "content": [
+                    {"component": "VExpansionPanelTitle", "text": title},
+                    {"component": "VExpansionPanelText", "content": list(rows)},
+                ],
+            }
+
+        play_notify_source_items = [
+            {"title": "自动：Webhook优先，轮询兜底", "value": "auto"},
+            {"title": "仅Webhook：增强版TVH", "value": "webhook"},
+            {"title": "仅轮询：原版TVH", "value": "polling"},
+        ]
+
         return [
             {
                 "component": "VForm",
                 "content": [
                     {
-                        "component": "VRow",
+                        "component": "VExpansionPanels",
+                        "props": {"multiple": True, "modelValue": [0, 1]},
                         "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "enabled", "label": "启用插件"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "notify", "label": "DVB掉线通知"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "ip_lookup_enabled", "label": "IP归属地查询"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "ipdb_enabled", "label": "本地IP库优先"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "ipdb_auto_update", "label": "自动更新IP库"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "play_notify", "label": "播放通知"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "webhook_notify", "label": "Webhook通知"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "webhook_program_enrich", "label": "Webhook节目补全"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSwitch",
-                                    "props": {"model": "webhook_logo_enrich", "label": "Webhook LOGO图片"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VSelect",
+                            panel(
+                                "基础配置",
+                                row(
+                                    switch("enabled", "启用插件"),
+                                    field("tvh_url", "TVH地址", placeholder="http://127.0.0.1:9981"),
+                                    field("public_base_url", "公网播放域名", placeholder="https://m3u.example.com"),
+                                ),
+                                row(
+                                    field("tvh_user", "TVH管理员账号"),
+                                    field("tvh_pass", "TVH管理员密码", type="password"),
+                                    field("expected_dvb_count", "预期DVB数量", md=4, type="number"),
+                                ),
+                            ),
+                            panel(
+                                "通知配置",
+                                row(
+                                    switch("notify", "DVB掉线通知"),
+                                    switch("play_notify", "播放通知"),
+                                    select("play_notify_source", "播放通知来源", play_notify_source_items),
+                                ),
+                                row(
+                                    switch("webhook_notify", "Webhook通知"),
+                                    switch("webhook_program_enrich", "Webhook节目补全"),
+                                    switch("webhook_logo_enrich", "Webhook LOGO图片"),
+                                ),
+                                {
+                                    "component": "VAlert",
                                     "props": {
-                                        "model": "play_notify_source",
-                                        "label": "播放通知来源",
-                                        "items": [
-                                            {"title": "自动：Webhook优先，轮询兜底", "value": "auto"},
-                                            {"title": "仅Webhook：增强版TVH", "value": "webhook"},
-                                            {"title": "仅轮询：原版TVH", "value": "polling"},
-                                        ],
+                                        "type": "info",
+                                        "variant": "tonal",
+                                        "text": "自动模式：Webhook通知开启时停用轮询，Webhook通知关闭时使用轮询兜底。",
                                     },
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "expected_dvb_count", "label": "预期DVB数量", "type": "number"},
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "tvh_url", "label": "TVH地址", "placeholder": "http://127.0.0.1:9981"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "public_base_url", "label": "公网播放域名", "placeholder": "https://m3u.example.com"},
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "tvh_user", "label": "TVH管理员账号"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "tvh_pass", "label": "TVH管理员密码", "type": "password"},
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "dvb_path", "label": "DVB路径", "placeholder": "/dev/dvb"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "check_interval", "label": "检查间隔秒", "type": "number"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "play_notify_interval", "label": "播放通知间隔秒", "type": "number"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "ipdb_update_interval_hours", "label": "IP库更新间隔小时", "type": "number"},
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "ipdb_dir", "label": "本地IP库目录"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "ipdb_country_url", "label": "国家/地区库下载地址"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "ipdb_asn_url", "label": "ASN组织库下载地址"},
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {"model": "ip2region_url", "label": "国内省市库下载地址"},
-                                }],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {
-                                        "model": "webhook_secret",
-                                        "label": "Webhook Secret",
-                                        "type": "password",
-                                        "placeholder": "留空则使用MoviePilot API_TOKEN",
-                                    },
-                                }],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [{
-                                    "component": "VTextField",
-                                    "props": {
-                                        "model": "webhook_hmac_secret",
-                                        "label": "Webhook HMAC Secret",
-                                        "type": "password",
-                                        "placeholder": "留空则不校验HMAC签名",
-                                    },
-                                }],
-                            },
+                                },
+                            ),
+                            panel(
+                                "高级配置",
+                                row(
+                                    field("dvb_path", "DVB路径", placeholder="/dev/dvb"),
+                                    field("check_interval", "检查间隔秒", type="number"),
+                                    field("play_notify_interval", "播放通知间隔秒", type="number"),
+                                ),
+                                row(
+                                    field(
+                                        "webhook_secret",
+                                        "Webhook Secret",
+                                        type="password",
+                                        placeholder="留空则使用MoviePilot API_TOKEN",
+                                    ),
+                                    field(
+                                        "webhook_hmac_secret",
+                                        "Webhook HMAC Secret",
+                                        type="password",
+                                        placeholder="留空则不校验HMAC签名",
+                                    ),
+                                ),
+                            ),
+                            panel(
+                                "IP归属地配置",
+                                row(
+                                    switch("ip_lookup_enabled", "IP归属地查询"),
+                                    switch("ipdb_enabled", "本地IP库优先"),
+                                    switch("ipdb_auto_update", "自动更新IP库"),
+                                ),
+                                row(
+                                    field("ipdb_update_interval_hours", "IP库更新间隔小时", type="number"),
+                                    field("ipdb_dir", "本地IP库目录"),
+                                ),
+                                row(
+                                    field("ipdb_country_url", "国家/地区库下载地址", md=12),
+                                    field("ipdb_asn_url", "ASN组织库下载地址", md=12),
+                                    field("ip2region_url", "国内省市库下载地址", md=12),
+                                ),
+                            ),
                         ],
                     },
                     {
@@ -2692,7 +2567,7 @@ class tvhhelper(_PluginBase):
                         "props": {
                             "type": "info",
                             "variant": "tonal",
-                            "text": "命令: /tvh 打开功能菜单。播放通知来源建议使用自动：Webhook通知开启时停用轮询，Webhook通知关闭时使用轮询兜底；也可手动选择仅Webhook或仅轮询。IP归属优先查本地IP库，未命中才在线兜底。",
+                            "text": "命令: /tvh 打开功能菜单。建议播放通知来源使用自动；IP归属优先查本地IP库，未命中才在线兜底。",
                         },
                     },
                 ],
