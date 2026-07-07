@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import importlib
 import secrets
 import threading
 import time
@@ -39,6 +40,8 @@ from .core import (
     build_record_merge_choice_buttons,
     build_record_padding_adjust_buttons,
     build_record_program_buttons,
+    build_record_search_detail_buttons,
+    build_record_search_result_buttons,
     build_play_notify_user_buttons,
     build_user_action_buttons,
     build_user_confirm_buttons,
@@ -79,6 +82,8 @@ from .core import (
     format_record_created_message,
     format_record_merge_confirm_message,
     format_record_merged_message,
+    format_record_program_detail,
+    format_record_search_results_message,
     format_tvh_dvr_reliability_issue,
     format_dvr_adjusted_message,
     format_dvr_calendar_message,
@@ -120,6 +125,7 @@ from .core import (
     removable_tvh_dvr_entries,
     stop_tvh_dvr_entry,
     restart_tvh_server,
+    search_tvh_epg_events,
     select_tvh_webhook_image,
     set_tvh_user_enabled,
     summarize_tvh_dvr_entries,
@@ -134,7 +140,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.87"
+    plugin_version = "0.1.94"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -183,9 +189,12 @@ class tvhhelper(_PluginBase):
     _ipdb_update_running = False
     _dvr_reliability_enabled = True
     _dvr_reliability_interval = 60
+    _record_search_cancel_words = {"取消", "退出", "cancel", "q", "quit", "exit"}
+    _record_search_input_action = "tvhhelper.record_search"
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
+        self.__register_user_message_listener()
         config = self.__merge_existing_config(config)
         self.__reset_runtime_defaults()
         if config:
@@ -418,6 +427,13 @@ class tvhhelper(_PluginBase):
                 "category": "TVH",
                 "data": {"action": "tvh_menu"},
             },
+            {
+                "cmd": "/tvh_search",
+                "event": EventType.PluginAction,
+                "desc": "搜索TVH节目指南",
+                "category": "TVH",
+                "data": {"action": "tvh_search"},
+            },
         ]
 
     @eventmanager.register(ChainEventType.PluginDataReset)
@@ -434,7 +450,7 @@ class tvhhelper(_PluginBase):
         if not event or not event.event_data:
             return
         action = event.event_data.get("action")
-        if action != "tvh_menu":
+        if action not in {"tvh_menu", "tvh_search"}:
             return
         if not self._enabled:
             self.__reply(event, "TVH助手未启用", "")
@@ -446,8 +462,20 @@ class tvhhelper(_PluginBase):
                     event,
                     "TVH状态",
                     self.__status_text(),
-                    buttons=build_main_buttons(self.__class__.__name__),
+                    buttons=self.__main_buttons(),
                 )
+                return
+            if action == "tvh_search":
+                keyword = str(event.event_data.get("arg_str") or "").strip()
+                if not keyword:
+                    self.__reply(
+                        event,
+                        "TVH节目搜索",
+                        "请输入 /tvh_search 关键词，例如 /tvh_search 东张西望。",
+                        buttons=build_secondary_nav_buttons(self.__class__.__name__),
+                    )
+                    return
+                self.__run_record_search(event, keyword)
                 return
         except Exception as err:
             logger.error(f"TVH助手命令执行失败: {err}", exc_info=True)
@@ -457,7 +485,23 @@ class tvhhelper(_PluginBase):
     def handle_callback(self, event: Event = None):
         if not event or not event.event_data:
             return
-        if event.event_data.get("plugin_id") != self.__class__.__name__:
+        plugin_id = event.event_data.get("plugin_id")
+        if plugin_id != self.__class__.__name__:
+            if not plugin_id and self._enabled:
+                try:
+                    if self.__handle_record_search_input_session_text(event):
+                        return
+                    if event.event_data.get("input_session_id"):
+                        return
+                    payload = str(event.event_data.get("text") or "")
+                    if self.__is_record_search_callback_payload(payload):
+                        self.__handle_record_search_callback(event, payload)
+                        return
+                    if self.__looks_like_callback_payload(payload):
+                        return
+                    self.__handle_record_search_text(event)
+                except Exception as err:
+                    self.__reply_record_search_error(event, err)
             return
         if not self._enabled:
             self.__reply(event, "TVH助手未启用", "")
@@ -465,19 +509,23 @@ class tvhhelper(_PluginBase):
 
         payload = str(event.event_data.get("text") or "")
         try:
+            if self.__handle_record_search_input_session_text(event):
+                return
+            if self.__handle_record_search_callback(event, payload):
+                return
             if payload == "status":
                 self.__edit_or_reply_copy(
                     event,
                     "TVH状态",
                     self.__status_text(force_refresh=True),
-                    buttons=build_main_buttons(self.__class__.__name__),
+                    buttons=self.__main_buttons(),
                 )
             elif payload == "main_menu":
                 self.__edit_or_reply_copy(
                     event,
                     "TVH状态",
                     self.__status_text(),
-                    buttons=build_main_buttons(self.__class__.__name__),
+                    buttons=self.__main_buttons(),
                 )
             elif payload == "noop":
                 return
@@ -725,6 +773,92 @@ class tvhhelper(_PluginBase):
             logger.error(f"TVH助手按钮执行失败: {err}", exc_info=True)
             self.__reply(event, "TVH助手执行失败", str(err))
 
+    def __register_user_message_listener(self) -> None:
+        user_message_event = getattr(EventType, "UserMessage", None)
+        if not user_message_event:
+            return
+        try:
+            eventmanager.add_event_listener(user_message_event, self.handle_user_message)
+        except Exception as err:
+            logger.debug(f"TVH节目搜索普通文本监听不可用: {err}")
+
+    def handle_user_message(self, event: Event = None):
+        if not self._enabled or not event or not event.event_data:
+            return
+        try:
+            self.__handle_record_search_text(event)
+        except Exception as err:
+            self.__reply_record_search_error(event, err)
+
+    def __handle_record_search_callback(self, event: Event, payload: str) -> bool:
+        try:
+            action = self.__record_search_action(payload)
+            if action == "start":
+                self.__start_record_search(event)
+                return True
+            if action == "cancel":
+                self.__cancel_record_search(event)
+                return True
+            if action == "cancel_main":
+                self.__cancel_record_search_to_main(event)
+                return True
+            if payload.startswith("record_search_page|"):
+                _, session_id, page_text = payload.split("|", 2)
+                self.__show_record_search_results(event, session_id, self.__to_int(page_text, 0))
+                return True
+            if payload.startswith("record_search_detail|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__show_record_search_detail(event, session_id, self.__to_int(index_text, -1))
+                return True
+            if payload.startswith("record_search_pick|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__select_record_search_result(event, session_id, self.__to_int(index_text, -1))
+                return True
+        except Exception as err:
+            self.__reply_record_search_error(event, err)
+            return True
+        return False
+
+    def __reply_record_search_error(self, event: Event, err: Exception) -> None:
+        logger.error(f"TVH节目搜索执行失败: {err}", exc_info=True)
+        err_text = str(err)
+        if err_text in {
+            "搜索结果已过期，请重新搜索后再试。",
+            "未找到选择的搜索结果，请重新搜索后再试。",
+        }:
+            reply_text = err_text
+        else:
+            reply_text = "TVH节目搜索操作失败，请检查 TVH 连接配置或稍后重试。详细原因已写入插件日志。"
+        self.__reply(
+            event,
+            "TVH助手执行失败",
+            reply_text,
+            buttons=build_secondary_nav_buttons(self.__class__.__name__),
+        )
+
+    @staticmethod
+    def __record_search_action(payload: str) -> str | None:
+        if payload in {"record_search", "record_search|start"}:
+            return "start"
+        if payload == "record_search_cancel_main" or payload.startswith("record_search_cancel_main|"):
+            return "cancel_main"
+        if payload == "record_search_cancel" or payload.startswith("record_search_cancel|"):
+            return "cancel"
+        return None
+
+    @staticmethod
+    def __is_record_search_callback_payload(payload: str) -> bool:
+        return tvhhelper.__record_search_action(payload) is not None or payload.startswith((
+            "record_search_page|",
+            "record_search_detail|",
+            "record_search_pick|",
+        ))
+
+    @staticmethod
+    def __looks_like_callback_payload(payload: str) -> bool:
+        text = str(payload or "").strip()
+        return bool(text and "|" in text and "\n" not in text and len(text) <= 128)
+
     def __reply(self, event: Event, title: str, text: str, **kwargs):
         text = self.__append_button_text(text, kwargs.get("buttons"))
         self.chain.post_message(Notification(
@@ -784,6 +918,14 @@ class tvhhelper(_PluginBase):
     @staticmethod
     def __append_button_text(text: str, buttons: list[list[dict]] | None) -> str:
         return text
+
+    def __main_buttons(self) -> list[list[dict]]:
+        buttons = [list(row) for row in build_main_buttons(self.__class__.__name__)]
+        insert_at = max(0, len(buttons) - 1)
+        buttons.insert(insert_at, [
+            {"text": "节目搜索", "callback_data": plugin_callback(self.__class__.__name__, "record_search|start")},
+        ])
+        return buttons
 
     def __delete_original(self, event: Event) -> bool:
         message_id = event.event_data.get("original_message_id")
@@ -1332,14 +1474,315 @@ class tvhhelper(_PluginBase):
             buttons=build_record_program_buttons(self.__class__.__name__, session_id, events, page=page),
         )
 
+    def __start_record_search(self, event: Event):
+        if not self.__record_search_user_id(event):
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                "无法识别当前用户，请重新从 /tvh 进入节目搜索。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+        wait_key = self.__record_search_wait_key(event)
+        if not self.__create_plugin_input_session(event, wait_key):
+            self.__save_record_session(wait_key, {
+                "type": "record_search_wait",
+                "created_at": time.time(),
+            })
+        self.__reply(
+            event,
+            "TVH节目搜索",
+            "请输入节目关键词。发送“取消”或“退出”可结束搜索。",
+            force_reply=True,
+        )
+
+    def __cancel_record_search(self, event: Event):
+        self.__clear_record_search_wait_session(event)
+        self.__clear_plugin_input_session(event)
+        self.__edit_or_reply(
+            event,
+            "TVH节目搜索",
+            "已取消节目搜索。",
+            buttons=build_secondary_nav_buttons(self.__class__.__name__),
+        )
+
+    def __cancel_record_search_to_main(self, event: Event):
+        self.__clear_record_search_wait_session(event)
+        self.__clear_plugin_input_session(event)
+        self.__edit_or_reply_copy(
+            event,
+            "TVH状态",
+            self.__status_text(),
+            buttons=self.__main_buttons(),
+        )
+
+    def __handle_record_search_text(self, event: Event) -> bool:
+        wait_key = self.__find_record_search_wait_key(event)
+        waiting = self._record_session_cache.get(wait_key) if self._record_session_cache else None
+        if not isinstance(waiting, dict) or waiting.get("type") != "record_search_wait":
+            return False
+        self.__clear_record_session(wait_key)
+
+        keyword = str(event.event_data.get("text") or "").strip()
+        if not keyword:
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                "关键词不能为空，请从 /tvh 重新进入节目搜索。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return True
+
+        if self.__is_record_search_cancel_text(keyword):
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                "已取消节目搜索。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return True
+
+        self.__run_record_search(event, keyword)
+        return True
+
+    def __handle_record_search_input_session_text(self, event: Event) -> bool:
+        data = event.event_data or {}
+        if not data.get("input_session_id"):
+            return False
+        payload = data.get("payload")
+        keyword = str(data.get("input_text") or "").strip()
+        if not keyword:
+            text_value = str(data.get("text") or "").strip()
+            if not text_value.startswith("plugin_input|"):
+                keyword = text_value
+        wait_key = None
+
+        if not isinstance(payload, dict) or payload.get("action") != self._record_search_input_action:
+            return False
+        wait_key = str(payload.get("wait_key") or "")
+        if wait_key and not wait_key.startswith("record_search_wait|"):
+            return False
+        self.__clear_plugin_input_session(event)
+
+        if wait_key:
+            self.__clear_record_session(wait_key)
+        else:
+            self.__clear_record_session(self.__record_search_wait_key(event))
+
+        if not keyword:
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                "关键词不能为空，请从 /tvh 重新进入节目搜索。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return True
+
+        if self.__is_record_search_cancel_text(keyword):
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                "已取消节目搜索。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return True
+
+        self.__run_record_search(event, keyword)
+        return True
+
+    def __is_record_search_cancel_text(self, text: str) -> bool:
+        return str(text or "").strip().lower() in self._record_search_cancel_words
+
+    def __create_plugin_input_session(self, event: Event, wait_key: str) -> bool:
+        try:
+            interaction = importlib.import_module("app.helper.interaction")
+            manager = getattr(interaction, "plugin_input_interaction_manager", None)
+            create_or_replace = getattr(manager, "create_or_replace", None)
+            if not callable(create_or_replace):
+                return False
+            data = event.event_data or {}
+            user_id = self.__record_search_user_id(event)
+            if not user_id:
+                return False
+            create_or_replace(
+                user_id=user_id,
+                plugin_id=self.__class__.__name__,
+                channel=data.get("channel"),
+                source=data.get("source"),
+                username=data.get("username"),
+                prompt_id="record_search",
+                payload={
+                    "action": self._record_search_input_action,
+                    "wait_key": wait_key,
+                },
+            )
+            return True
+        except Exception as err:
+            logger.debug(f"TVH节目搜索输入会话不可用，使用本地等待缓存: {err}")
+            return False
+
+    def __clear_plugin_input_session(self, event: Event) -> None:
+        try:
+            interaction = importlib.import_module("app.helper.interaction")
+            manager = getattr(interaction, "plugin_input_interaction_manager", None)
+            user_id = self.__record_search_user_id(event)
+            if not manager or not user_id:
+                return
+            get_by_user = getattr(manager, "get_by_user", None)
+            remove = getattr(manager, "remove", None)
+            if callable(get_by_user) and callable(remove):
+                data = event.event_data or {}
+                request = get_by_user(user_id, data.get("channel"), data.get("source"))
+                request_plugin_id = getattr(request, "plugin_id", None)
+                request_payload = getattr(request, "payload", None)
+                if request_plugin_id != self.__class__.__name__:
+                    if not isinstance(request_payload, dict) or request_payload.get("action") != self._record_search_input_action:
+                        return
+                request_id = getattr(request, "request_id", None)
+                if request_id:
+                    remove(request_id)
+        except Exception as err:
+            logger.debug(f"TVH节目搜索清理输入会话失败: {err}")
+
+    def __run_record_search(self, event: Event, keyword: str) -> None:
+        try:
+            events = fetch_tvh_epg_events(self._tvh_url, self._tvh_user, self._tvh_pass, hours=24)
+            results = search_tvh_epg_events(events, keyword, now=int(time.time()), limit=10)
+        except Exception as err:
+            logger.error(f"TVH节目搜索失败: {err}", exc_info=True)
+            self.__reply(
+                event,
+                "TVH节目搜索失败",
+                "TVH EPG 读取失败，请检查 TVH 连接配置或稍后重试。详细原因已写入插件日志。",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+
+        if not results:
+            self.__reply(
+                event,
+                "TVH节目搜索",
+                f"未找到匹配节目: {keyword}",
+                buttons=build_secondary_nav_buttons(self.__class__.__name__),
+            )
+            return
+
+        session_id = self.__create_record_session({
+            "keyword": keyword,
+            "events": results,
+        })
+        self.__reply_record_search_results(event, session_id, keyword, results, page=0)
+
+    def __show_record_search_results(self, event: Event, session_id: str, page: int = 0):
+        session = self.__record_search_session(session_id)
+        self.__edit_or_reply_record_search_results(
+            event,
+            session_id,
+            str(session.get("keyword") or ""),
+            list(session.get("events") or []),
+            page=page,
+        )
+
+    def __show_record_search_detail(self, event: Event, session_id: str, event_index: int):
+        session = self.__record_search_session(session_id)
+        events = list(session.get("events") or [])
+        if event_index < 0 or event_index >= len(events):
+            raise ValueError("未找到选择的搜索结果，请重新搜索后再试。")
+        page = max(0, int(event_index / 8))
+        self.__edit_or_reply(
+            event,
+            "TVH节目详情",
+            format_record_program_detail(events[event_index]),
+            buttons=build_record_search_detail_buttons(self.__class__.__name__, session_id, event_index, page=page),
+        )
+
+    def __select_record_search_result(self, event: Event, session_id: str, event_index: int):
+        session = self.__record_search_session(session_id)
+        events = list(session.get("events") or [])
+        if event_index < 0 or event_index >= len(events):
+            raise ValueError("未找到选择的搜索结果，请重新搜索后再试。")
+        self.__select_record_event(event, session_id, session, events[event_index])
+
+    def __record_search_session(self, session_id: str) -> dict:
+        session = self._record_session_cache.get(session_id) if self._record_session_cache else None
+        if not isinstance(session, dict) or not session.get("events"):
+            raise ValueError("搜索结果已过期，请重新搜索后再试。")
+        return session
+
+    def __reply_record_search_results(
+        self,
+        event: Event,
+        session_id: str,
+        keyword: str,
+        events: list[Any],
+        page: int = 0,
+    ):
+        self.__reply(
+            event,
+            "TVH节目搜索",
+            format_record_search_results_message(keyword, events, page=page),
+            buttons=build_record_search_result_buttons(self.__class__.__name__, session_id, events, page=page),
+        )
+
+    def __edit_or_reply_record_search_results(
+        self,
+        event: Event,
+        session_id: str,
+        keyword: str,
+        events: list[Any],
+        page: int = 0,
+    ):
+        self.__edit_or_reply(
+            event,
+            "TVH节目搜索",
+            format_record_search_results_message(keyword, events, page=page),
+            buttons=build_record_search_result_buttons(self.__class__.__name__, session_id, events, page=page),
+        )
+
+    def __record_search_wait_key(self, event: Event) -> str:
+        data = event.event_data or {}
+        channel = data.get("channel") or "-"
+        source = data.get("source") or "-"
+        actor = self.__record_search_user_id(event) or "-"
+        return f"record_search_wait|{channel}|{source}|{actor}"
+
+    def __find_record_search_wait_key(self, event: Event) -> str:
+        exact_key = self.__record_search_wait_key(event)
+        if self._record_session_cache and self._record_session_cache.get(exact_key):
+            return exact_key
+        data = event.event_data or {}
+        channel = data.get("channel") or "-"
+        actor = self.__record_search_user_id(event) or "-"
+        prefix = f"record_search_wait|{channel}|"
+        suffix = f"|{actor}"
+        for key in self._record_session_cache.keys() if self._record_session_cache else []:
+            if key != exact_key and key.startswith(prefix) and key.endswith(suffix):
+                waiting = self._record_session_cache.get(key)
+                if isinstance(waiting, dict) and waiting.get("type") == "record_search_wait":
+                    return key
+        return exact_key
+
+    @staticmethod
+    def __record_search_user_id(event: Event) -> str:
+        data = event.event_data or {}
+        return str(
+            data.get("user")
+            or data.get("userid")
+            or ""
+        )
+
+    def __clear_record_session(self, session_id: str) -> None:
+        if self._record_session_cache:
+            self._record_session_cache.delete(session_id)
+
+    def __clear_record_search_wait_session(self, event: Event) -> None:
+        wait_key = self.__find_record_search_wait_key(event)
+        self.__clear_record_session(wait_key)
+
     def __select_record_program(self, event: Event, session_id: str, event_id: str):
         session = self.__record_session(session_id)
         selected = self.__find_record_event(session, event_id)
-        session["selected_event"] = selected
-        session["start_padding"] = DEFAULT_RECORD_START_PADDING_MINUTES
-        session["stop_padding"] = DEFAULT_RECORD_STOP_PADDING_MINUTES
-        self.__save_record_session(session_id, session)
-        self.__show_record_padding_adjust(event, session_id)
+        self.__select_record_event(event, session_id, session, selected)
 
     def __select_record_program_by_index(self, event: Event, session_id: str, event_index: int):
         session = self.__record_session(session_id)
@@ -1347,6 +1790,9 @@ class tvhhelper(_PluginBase):
         if event_index < 0 or event_index >= len(events):
             raise ValueError("未找到选择的节目，请返回节目列表后重试。")
         selected = events[event_index]
+        self.__select_record_event(event, session_id, session, selected)
+
+    def __select_record_event(self, event: Event, session_id: str, session: dict[str, Any], selected):
         session["selected_event"] = selected
         session["start_padding"] = DEFAULT_RECORD_START_PADDING_MINUTES
         session["stop_padding"] = DEFAULT_RECORD_STOP_PADDING_MINUTES

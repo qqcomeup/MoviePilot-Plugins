@@ -115,6 +115,7 @@ from core import (
     analyze_tvh_dvr_reliability,
     format_tvh_dvr_reliability_issue,
     parse_tvh_epg_events,
+    search_tvh_epg_events,
     parse_tvh_subscriptions,
     parse_tvh_users,
     playback_subscription_key,
@@ -394,6 +395,93 @@ def test_record_program_buttons_use_session_and_event_id():
     assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_prog|session-1|0"
 
 
+def test_record_search_results_message_formats_page_and_truncates_description():
+    events = [
+        TvhEpgEvent(
+            event_id="100",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="晚间新闻",
+            start=1893456000,
+            stop=1893457800,
+            summary="这是一个很长的节目简介，包含主持、嘉宾、新闻重点和延伸报道，应该在搜索列表里被截断。",
+        ),
+        TvhEpgEvent(
+            event_id="101",
+            channel_uuid="ch-2",
+            channel_name="明珠台",
+            title="News At Seven",
+            start=1893459600,
+            stop=1893461400,
+        ),
+    ]
+
+    message = core.format_record_search_results_message("新闻", events, page=0, page_size=1, description_limit=16)
+
+    assert message == "\n".join([
+        "搜索: 新闻 | 1/2",
+        "",
+        "1. 翡翠台 | 晚间新闻",
+        "   时间: 2030-01-01 08:00:00 - 2030-01-01 08:30:00",
+        "   简介: 这是一个很长的节目简介，包含主持...",
+    ])
+
+
+def test_record_search_results_message_handles_empty_results():
+    assert core.format_record_search_results_message("不存在", [], page=0, page_size=8) == (
+        "搜索: 不存在\n\n没有找到匹配的 TVH 节目。"
+    )
+
+
+def test_record_search_result_buttons_use_short_callbacks_and_pagination():
+    events = [
+        TvhEpgEvent(
+            event_id=f"event-{index}",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title=f"节目{index}",
+            start=1893456000 + index,
+            stop=1893457800 + index,
+        )
+        for index in range(3)
+    ]
+
+    buttons = core.build_record_search_result_buttons("tvhhelper", "abcd1234ef", events, page=1, page_size=1)
+
+    assert buttons == [
+        [
+            {"text": "预约录制 2", "callback_data": "[PLUGIN]tvhhelper|record_search_pick|abcd1234ef|1"},
+            {"text": "详情 2", "callback_data": "[PLUGIN]tvhhelper|record_search_detail|abcd1234ef|1"},
+        ],
+        [
+            {"text": "上一页", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|0"},
+            {"text": "2/3", "callback_data": "[PLUGIN]tvhhelper|noop"},
+            {"text": "下一页", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|2"},
+        ],
+        [
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|record_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+    callback_data = [
+        button["callback_data"]
+        for row in buttons
+        for button in row
+        if button.get("callback_data")
+    ]
+    assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
+
+
+def test_record_search_detail_buttons_return_to_search_page():
+    assert core.build_record_search_detail_buttons("tvhhelper", "abcd1234ef", entry_index=3, page=2) == [
+        [{"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|record_search_pick|abcd1234ef|3"}],
+        [
+            {"text": "返回结果", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|2"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+        ],
+    ]
+
+
 def test_record_buttons_fit_telegram_callback_limit():
     channels = [
         TvhChannel(uuid="cc28bb2d998203bd47f6f67611d85e4a", name=f"频道{index}", number=str(index))
@@ -537,6 +625,73 @@ def test_tvh_epg_events_are_parsed_and_old_events_are_skipped():
             summary="节目简介",
         )
     ]
+
+
+def test_search_tvh_epg_events_matches_title_channel_and_description_fields():
+    events = [
+        TvhEpgEvent(
+            event_id="title",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="午间新闻",
+            start=2000,
+            stop=2600,
+        ),
+        TvhEpgEvent(
+            event_id="channel",
+            channel_uuid="ch-2",
+            channel_name="ViuTV",
+            title="娱乐节目",
+            start=2100,
+            stop=2700,
+        ),
+        TvhEpgEvent(
+            event_id="summary",
+            channel_uuid="ch-3",
+            channel_name="明珠台",
+            title="纪录片",
+            start=2200,
+            stop=2800,
+            summary="晚间新闻专题",
+        ),
+        TvhEpgEvent(
+            event_id="description",
+            channel_uuid="ch-4",
+            channel_name="HOY TV",
+            title="电影",
+            start=2300,
+            stop=2900,
+            description="新闻主播客串演出",
+        ),
+    ]
+
+    assert [event.event_id for event in search_tvh_epg_events(events, " 新闻 ", now=2050)] == [
+        "title",
+        "summary",
+        "description",
+    ]
+    assert [event.event_id for event in search_tvh_epg_events(events, "viutv", now=2050)] == ["channel"]
+
+
+def test_search_tvh_epg_events_filters_past_events_unless_allowed_and_applies_limit():
+    events = [
+        TvhEpgEvent("past", "ch-1", "翡翠台", "新闻", 1000, 1500),
+        TvhEpgEvent("running", "ch-1", "翡翠台", "新闻进行中", 1800, 2200),
+        TvhEpgEvent("future-2", "ch-1", "翡翠台", "晚间新闻", 3000, 3600),
+        TvhEpgEvent("future-1", "ch-1", "翡翠台", "午间新闻", 2400, 2700),
+    ]
+
+    assert [event.event_id for event in search_tvh_epg_events(events, "新闻", now=2000, limit=2)] == [
+        "running",
+        "future-1",
+    ]
+    assert [event.event_id for event in search_tvh_epg_events(events, "新闻", now=2000, include_past=True)] == [
+        "past",
+        "running",
+        "future-1",
+        "future-2",
+    ]
+    assert search_tvh_epg_events(events, "   ", now=2000) == []
 
 
 def test_tvh_dvr_configs_skip_disabled_entries():
@@ -2552,6 +2707,23 @@ def test_ip_location_cache_expires_after_ttl():
     current_time[0] = 106
     assert fetch_ip_location_cached("58.253.166.121", resolver=resolver, cache=cache)[0] == "loc-2"
     assert calls == ["58.253.166.121", "58.253.166.121"]
+
+
+def test_timed_value_cache_delete_removes_value():
+    cache = TimedValueCache(ttl_seconds=60, now=lambda: 100)
+    cache.set("key", "value")
+
+    cache.delete("key")
+
+    assert cache.get("key") is None
+
+
+def test_timed_value_cache_keys_returns_current_keys():
+    cache = TimedValueCache(ttl_seconds=60, now=lambda: 100)
+    cache.set("key-1", "value")
+    cache.set("key-2", "value")
+
+    assert sorted(cache.keys()) == ["key-1", "key-2"]
 
 
 def test_ip_location_cache_does_not_store_empty_result():

@@ -204,6 +204,12 @@ class TimedValueCache:
         self._values[key] = (self._now() + self.ttl_seconds, value)
         return value
 
+    def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+
+    def keys(self) -> list[str]:
+        return list(self._values.keys())
+
     def clear(self):
         self._values.clear()
 
@@ -481,6 +487,52 @@ def build_record_program_buttons(
     return rows + nav + [
         [
             {"text": "返回频道", "callback_data": plugin_callback(plugin_id, f"record_chs|{session_id}|0")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_record_search_result_buttons(
+    plugin_id: str,
+    session_id: str,
+    events: list[TvhEpgEvent],
+    page: int = 0,
+    page_size: int = 8,
+) -> list[list[dict]]:
+    page_items, page, total_pages = _paginate(events, page, page_size)
+    start_index = page * max(1, int(page_size or 1))
+    rows = [
+        [
+            {
+                "text": f"预约录制 {start_index + offset + 1}",
+                "callback_data": plugin_callback(plugin_id, f"record_search_pick|{session_id}|{start_index + offset}"),
+            },
+            {
+                "text": f"详情 {start_index + offset + 1}",
+                "callback_data": plugin_callback(plugin_id, f"record_search_detail|{session_id}|{start_index + offset}"),
+            },
+        ]
+        for offset, _ in enumerate(page_items)
+    ]
+    return rows + _record_page_nav(plugin_id, f"record_search_page|{session_id}", page, total_pages) + [
+        [
+            {"text": "返回", "callback_data": plugin_callback(plugin_id, "record_menu")},
+            {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
+        ],
+    ]
+
+
+def build_record_search_detail_buttons(
+    plugin_id: str,
+    session_id: str,
+    entry_index: int,
+    page: int = 0,
+) -> list[list[dict]]:
+    target = f"{session_id}|{entry_index}"
+    return [
+        [{"text": "预约录制", "callback_data": plugin_callback(plugin_id, f"record_search_pick|{target}")}],
+        [
+            {"text": "返回结果", "callback_data": plugin_callback(plugin_id, f"record_search_page|{session_id}|{max(0, int(page or 0))}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -1975,6 +2027,14 @@ def _collapse_whitespace(value: str) -> str:
     return " ".join(str(value or "").split())
 
 
+def _truncate_record_search_description(value: str | None, limit: int = 60) -> str:
+    text = _collapse_whitespace(value or "")
+    limit = max(1, int(limit or 60))
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
 def _format_duration(seconds: int | float | str | None) -> str:
     try:
         total = max(0, int(float(seconds or 0)))
@@ -2603,6 +2663,51 @@ def parse_tvh_epg_events(payload: dict, now: int | None = None) -> list[TvhEpgEv
     return sorted(events, key=lambda item: (item.start, item.stop, item.title))
 
 
+def search_tvh_epg_events(
+    events: Iterable[TvhEpgEvent],
+    keyword: str,
+    now: int | None = None,
+    limit: int | None = 20,
+    include_past: bool = False,
+) -> list[TvhEpgEvent]:
+    normalized_keyword = (keyword or "").strip().casefold()
+    if not normalized_keyword:
+        return []
+
+    max_results = None if limit is None else max(0, int(limit))
+    if max_results == 0:
+        return []
+
+    now_value = int(now if now is not None else time.time())
+    results = [
+        event
+        for event in events
+        if (include_past or event.stop > now_value)
+        and _tvh_epg_event_matches_keyword(event, normalized_keyword)
+    ]
+    results.sort(key=lambda item: (item.start, item.stop, item.title))
+    return results if max_results is None else results[:max_results]
+
+
+def _tvh_epg_event_matches_keyword(event: TvhEpgEvent, normalized_keyword: str) -> bool:
+    return any(
+        normalized_keyword in text.strip().casefold()
+        for text in _tvh_epg_event_search_texts(event)
+        if text and text.strip()
+    )
+
+
+def _tvh_epg_event_search_texts(event: TvhEpgEvent) -> tuple[str | None, ...]:
+    return (
+        event.title,
+        event.channel_name,
+        event.subtitle,
+        event.summary,
+        getattr(event, "details", None),
+        event.description,
+    )
+
+
 def parse_tvh_dvr_configs(payload: dict) -> list[TvhDvrConfig]:
     configs: list[TvhDvrConfig] = []
     for entry in payload.get("entries", []) if isinstance(payload, dict) else []:
@@ -3149,6 +3254,36 @@ def format_record_program_detail(event: TvhEpgEvent) -> str:
     details = event.summary or event.description
     if details:
         lines.extend(["", f"简介: {_collapse_whitespace(details)}"])
+    return "\n".join(lines)
+
+
+def format_record_search_results_message(
+    keyword: str,
+    events: list[TvhEpgEvent],
+    page: int = 0,
+    page_size: int = 8,
+    description_limit: int = 60,
+) -> str:
+    keyword_text = str(keyword or "").strip() or "-"
+    if not events:
+        return f"搜索: {keyword_text}\n\n没有找到匹配的 TVH 节目。"
+    page_items, page, total_pages = _paginate(events, page, page_size)
+    lines = [
+        f"搜索: {keyword_text} | {page + 1}/{total_pages}",
+        "",
+    ]
+    start_index = page * max(1, int(page_size or 1))
+    for offset, event in enumerate(page_items, start=1):
+        channel = getattr(event, "channel_name", None) or getattr(event, "channel_uuid", None) or "-"
+        summary = getattr(event, "summary", None)
+        description = getattr(event, "description", None)
+        lines.extend([
+            f"{start_index + offset}. {channel} | {event.title}",
+            f"   时间: {format_record_datetime_range(event.start, event.stop)}",
+        ])
+        details = _truncate_record_search_description(summary or description, description_limit)
+        if details:
+            lines.append(f"   简介: {details}")
     return "\n".join(lines)
 
 
