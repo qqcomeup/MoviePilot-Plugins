@@ -140,7 +140,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.95"
+    plugin_version = "0.1.97"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -829,7 +829,7 @@ class tvhhelper(_PluginBase):
             reply_text = err_text
         else:
             reply_text = "TVH节目搜索操作失败，请检查 TVH 连接配置或稍后重试。详细原因已写入插件日志。"
-        self.__reply(
+        self.__edit_or_reply(
             event,
             "TVH助手执行失败",
             reply_text,
@@ -896,7 +896,7 @@ class tvhhelper(_PluginBase):
         chat_id = event.event_data.get("original_chat_id")
         channel = event.event_data.get("channel")
         source = event.event_data.get("source")
-        if not message_id or not chat_id or not channel or not source:
+        if not message_id or not chat_id or not channel:
             return False
         try:
             buttons = kwargs.get("buttons")
@@ -1484,11 +1484,14 @@ class tvhhelper(_PluginBase):
             )
             return
         wait_key = self.__record_search_wait_key(event)
-        if not self.__create_plugin_input_session(event, wait_key):
-            self.__save_record_session(wait_key, {
-                "type": "record_search_wait",
-                "created_at": time.time(),
-            })
+        session = {
+            "type": "record_search_wait",
+            "created_at": time.time(),
+            "edit_target": self.__record_search_edit_target(event),
+        }
+        if self.__create_plugin_input_session(event, wait_key):
+            session["type"] = "record_search_input_wait"
+        self.__save_record_session(wait_key, session)
         self.__reply(
             event,
             "TVH节目搜索",
@@ -1525,7 +1528,7 @@ class tvhhelper(_PluginBase):
 
         keyword = str(event.event_data.get("text") or "").strip()
         if not keyword:
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索",
                 "关键词不能为空，请从 /tvh 重新进入节目搜索。",
@@ -1534,7 +1537,7 @@ class tvhhelper(_PluginBase):
             return True
 
         if self.__is_record_search_cancel_text(keyword):
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索",
                 "已取消节目搜索。",
@@ -1564,13 +1567,17 @@ class tvhhelper(_PluginBase):
             return False
         self.__clear_plugin_input_session(event)
 
+        waiting = self._record_session_cache.get(wait_key) if wait_key and self._record_session_cache else None
+        if isinstance(waiting, dict) and waiting.get("type") == "record_search_input_wait":
+            self.__apply_record_search_edit_target(event, waiting)
+
         if wait_key:
             self.__clear_record_session(wait_key)
         else:
             self.__clear_record_session(self.__record_search_wait_key(event))
 
         if not keyword:
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索",
                 "关键词不能为空，请从 /tvh 重新进入节目搜索。",
@@ -1579,7 +1586,7 @@ class tvhhelper(_PluginBase):
             return True
 
         if self.__is_record_search_cancel_text(keyword):
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索",
                 "已取消节目搜索。",
@@ -1592,6 +1599,29 @@ class tvhhelper(_PluginBase):
 
     def __is_record_search_cancel_text(self, text: str) -> bool:
         return str(text or "").strip().lower() in self._record_search_cancel_words
+
+    @staticmethod
+    def __record_search_edit_target(event: Event) -> dict:
+        """提取节目搜索后续结果可编辑的原消息目标。"""
+        data = event.event_data or {}
+        return {
+            "channel": data.get("channel"),
+            "source": data.get("source"),
+            "original_message_id": data.get("original_message_id"),
+            "original_chat_id": data.get("original_chat_id"),
+        }
+
+    @staticmethod
+    def __apply_record_search_edit_target(event: Event, waiting: dict) -> None:
+        """将等待会话中缓存的编辑目标补回当前搜索输入事件。"""
+        target = waiting.get("edit_target")
+        if not isinstance(target, dict):
+            return
+        data = event.event_data or {}
+        for key in ("channel", "source", "original_message_id", "original_chat_id"):
+            if target.get(key) and not data.get(key):
+                data[key] = target.get(key)
+        event.event_data = data
 
     def __create_plugin_input_session(self, event: Event, wait_key: str) -> bool:
         try:
@@ -1650,7 +1680,7 @@ class tvhhelper(_PluginBase):
             results = search_tvh_epg_events(events, keyword, now=int(time.time()), limit=10)
         except Exception as err:
             logger.error(f"TVH节目搜索失败: {err}", exc_info=True)
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索失败",
                 "TVH EPG 读取失败，请检查 TVH 连接配置或稍后重试。详细原因已写入插件日志。",
@@ -1659,7 +1689,7 @@ class tvhhelper(_PluginBase):
             return
 
         if not results:
-            self.__reply(
+            self.__edit_or_reply(
                 event,
                 "TVH节目搜索",
                 f"未找到匹配节目: {keyword}",
@@ -1671,7 +1701,7 @@ class tvhhelper(_PluginBase):
             "keyword": keyword,
             "events": results,
         })
-        self.__reply_record_search_results(event, session_id, keyword, results, page=0)
+        self.__edit_or_reply_record_search_results(event, session_id, keyword, results, page=0)
 
     def __show_record_search_results(self, event: Event, session_id: str, page: int = 0):
         session = self.__record_search_session(session_id)

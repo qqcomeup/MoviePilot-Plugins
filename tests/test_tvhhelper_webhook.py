@@ -912,6 +912,150 @@ def test_record_search_plugin_input_session_text_searches_keyword(monkeypatch):
     assert "晚间新闻" in plugin.messages[-1].kwargs["text"]
 
 
+def test_record_search_input_session_edits_original_message_for_results(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    events = [types.SimpleNamespace(title="晚间新闻", channel_name="翡翠台", start=1893456000, stop=1893457800)]
+    edits = []
+    monkeypatch.setattr(module, "fetch_tvh_epg_events", lambda *args, **kwargs: events)
+    monkeypatch.setattr(module, "search_tvh_epg_events", lambda source_events, *args, **kwargs: source_events, raising=False)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin.chain.run_module = lambda name, **kwargs: edits.append((name, kwargs)) or True
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "plugin_input|input-session-1",
+        "input_text": "新闻",
+        "channel": "telegram",
+        "source": "telegram-bot",
+        "user": "user-id",
+        "input_session_id": "input-session-1",
+        "original_message_id": "message-1",
+        "original_chat_id": "chat-1",
+        "payload": {
+            "action": "tvhhelper.record_search",
+            "wait_key": "record_search_wait|telegram|telegram-bot|user-id",
+        },
+    }))
+
+    assert plugin.messages == []
+    assert len(edits) == 1
+    assert edits[0][0] == "edit_message"
+    assert edits[0][1]["message_id"] == "message-1"
+    assert edits[0][1]["chat_id"] == "chat-1"
+    assert edits[0][1]["title"] == "TVH节目搜索"
+    assert "晚间新闻" in edits[0][1]["text"]
+
+
+def test_record_search_input_session_edits_original_message_for_no_results(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    edits = []
+    monkeypatch.setattr(module, "fetch_tvh_epg_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr(module, "search_tvh_epg_events", lambda *args, **kwargs: [], raising=False)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin.chain.run_module = lambda name, **kwargs: edits.append((name, kwargs)) or True
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "plugin_input|input-session-1",
+        "input_text": "不存在节目",
+        "channel": "telegram",
+        "source": "telegram-bot",
+        "user": "user-id",
+        "input_session_id": "input-session-1",
+        "original_message_id": "message-1",
+        "original_chat_id": "chat-1",
+        "payload": {
+            "action": "tvhhelper.record_search",
+            "wait_key": "record_search_wait|telegram|telegram-bot|user-id",
+        },
+    }))
+
+    assert plugin.messages == []
+    assert len(edits) == 1
+    assert edits[0][0] == "edit_message"
+    assert edits[0][1]["title"] == "TVH节目搜索"
+    assert "未找到匹配节目: 不存在节目" in edits[0][1]["text"]
+
+
+def test_record_search_input_session_uses_cached_start_message_as_edit_target(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    events = [types.SimpleNamespace(title="晚间新闻", channel_name="翡翠台", start=1893456000, stop=1893457800)]
+    edits = []
+    monkeypatch.setattr(module, "fetch_tvh_epg_events", lambda *args, **kwargs: events)
+    monkeypatch.setattr(module, "search_tvh_epg_events", lambda source_events, *args, **kwargs: source_events, raising=False)
+
+    class PluginInputInteractionManager:
+        def create_or_replace(self, **kwargs):
+            return types.SimpleNamespace(request_id="input-session-1")
+
+    helper_module = types.ModuleType("app.helper")
+    interaction_module = types.ModuleType("app.helper.interaction")
+    interaction_module.plugin_input_interaction_manager = PluginInputInteractionManager()
+    monkeypatch.setitem(sys.modules, "app.helper", helper_module)
+    monkeypatch.setitem(sys.modules, "app.helper.interaction", interaction_module)
+
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin.chain.run_module = lambda name, **kwargs: edits.append((name, kwargs)) or True
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "record_search|start",
+        "channel": "telegram",
+        "source": "telegram-bot",
+        "user": "user-id",
+        "original_message_id": "message-1",
+        "original_chat_id": "chat-1",
+    }))
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "plugin_input|input-session-1",
+        "input_text": "新闻",
+        "channel": "telegram",
+        "source": "telegram-bot",
+        "user": "user-id",
+        "input_session_id": "input-session-1",
+        "payload": {
+            "action": "tvhhelper.record_search",
+            "wait_key": "record_search_wait|telegram|telegram-bot|user-id",
+        },
+    }))
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0].kwargs["force_reply"] is True
+    assert len(edits) == 1
+    assert edits[0][1]["message_id"] == "message-1"
+    assert edits[0][1]["chat_id"] == "chat-1"
+    assert edits[0][1]["title"] == "TVH节目搜索"
+    assert "晚间新闻" in edits[0][1]["text"]
+
+
+def test_record_search_no_result_back_edits_original_when_source_missing(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    edits = []
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+    plugin.chain.run_module = lambda name, **kwargs: edits.append((name, kwargs)) or True
+
+    plugin.handle_callback(types.SimpleNamespace(event_data={
+        "plugin_id": "tvhhelper",
+        "text": "main_menu",
+        "channel": "telegram",
+        "user": "user-id",
+        "original_message_id": "message-1",
+        "original_chat_id": "chat-1",
+    }))
+
+    assert plugin.messages == []
+    assert len(edits) == 1
+    assert edits[0][0] == "edit_message"
+    assert edits[0][1]["source"] is None
+    assert edits[0][1]["message_id"] == "message-1"
+    assert edits[0][1]["title"] == "TVH状态"
+
+
 def test_record_search_plugin_input_session_text_clears_mp_session(monkeypatch):
     module = import_tvhhelper(monkeypatch)
     events = [types.SimpleNamespace(title="晚间新闻", channel_name="翡翠台", start=1893456000, stop=1893457800)]
