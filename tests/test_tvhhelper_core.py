@@ -419,7 +419,7 @@ def test_record_search_results_message_formats_page_and_truncates_description():
     message = core.format_record_search_results_message("新闻", events, page=0, page_size=1, description_limit=16)
 
     assert message == "\n".join([
-        "搜索: 新闻 | 1/2",
+        "搜索: 新闻 | 简繁兼容 | 1/2",
         "",
         "1. 翡翠台 | 晚间新闻",
         "   时间: 2030-01-01 08:00:00 - 2030-01-01 08:30:00",
@@ -429,7 +429,7 @@ def test_record_search_results_message_formats_page_and_truncates_description():
 
 def test_record_search_results_message_handles_empty_results():
     assert core.format_record_search_results_message("不存在", [], page=0, page_size=8) == (
-        "搜索: 不存在\n\n没有找到匹配的 TVH 节目。"
+        "搜索: 不存在 | 简繁兼容\n\n没有找到匹配的 TVH 节目。"
     )
 
 
@@ -671,6 +671,48 @@ def test_search_tvh_epg_events_matches_title_channel_and_description_fields():
         "description",
     ]
     assert [event.event_id for event in search_tvh_epg_events(events, "viutv", now=2050)] == ["channel"]
+
+
+def test_search_tvh_epg_events_matches_simplified_keyword_against_traditional_epg():
+    events = [
+        TvhEpgEvent(
+            event_id="traditional",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="東張西望",
+            start=2000,
+            stop=2600,
+            summary="節目介紹香港社區大小事。",
+        ),
+        TvhEpgEvent(
+            event_id="other",
+            channel_uuid="ch-2",
+            channel_name="明珠台",
+            title="新闻",
+            start=2100,
+            stop=2700,
+        ),
+    ]
+
+    assert [event.event_id for event in search_tvh_epg_events(events, "东张西望", now=2050)] == ["traditional"]
+    assert [event.event_id for event in search_tvh_epg_events(events, "节目介绍", now=2050)] == ["traditional"]
+
+
+def test_search_tvh_epg_events_matches_traditional_keyword_against_simplified_epg():
+    events = [
+        TvhEpgEvent(
+            event_id="simplified",
+            channel_uuid="ch-1",
+            channel_name="翡翠台",
+            title="财经现场",
+            start=2000,
+            stop=2600,
+            description="交易现场重点回顾。",
+        ),
+    ]
+
+    assert [event.event_id for event in search_tvh_epg_events(events, "財經現場", now=2050)] == ["simplified"]
+    assert [event.event_id for event in search_tvh_epg_events(events, "交易現場", now=2050)] == ["simplified"]
 
 
 def test_search_tvh_epg_events_filters_past_events_unless_allowed_and_applies_limit():

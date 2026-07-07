@@ -828,7 +828,7 @@ def test_record_search_callback_prompts_and_next_text_searches(monkeypatch):
     assert "请输入节目关键词" in plugin.messages[0].kwargs["text"]
     assert calls == [(events, "新闻", 10)]
     assert plugin.messages[1].kwargs["title"] == "TVH节目搜索"
-    assert "搜索: 新闻 | 1/1" in plugin.messages[1].kwargs["text"]
+    assert "搜索: 新闻 | 简繁兼容 | 1/1" in plugin.messages[1].kwargs["text"]
     assert "晚间新闻" in plugin.messages[1].kwargs["text"]
     assert len(plugin.messages) == 2
 
@@ -1969,7 +1969,7 @@ def test_record_search_page_shows_cached_results(monkeypatch):
 
     message = plugin.messages[-1].kwargs
     assert message["title"] == "TVH节目搜索"
-    assert "搜索: 新闻 | 2/2" in message["text"]
+    assert "搜索: 新闻 | 简繁兼容 | 2/2" in message["text"]
     assert "新闻 8" in message["text"]
     flat_buttons = [button for row in message["buttons"] for button in row]
     assert any(button["text"] == "上一页" for button in flat_buttons)
