@@ -106,6 +106,7 @@ from .core import (
     lookup_ip_location_from_mmdb,
     lookup_ip_location_from_ip2region,
     merge_subscription_details,
+    normalize_plugin_callback_payload,
     normalize_interval,
     plugin_callback,
     playback_notification_key,
@@ -140,7 +141,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.97"
+    plugin_version = "0.1.98"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -191,6 +192,7 @@ class tvhhelper(_PluginBase):
     _dvr_reliability_interval = 60
     _record_search_cancel_words = {"取消", "退出", "cancel", "q", "quit", "exit"}
     _record_search_input_action = "tvhhelper.record_search"
+    _record_search_force_reply_ttl = 60
 
     def init_plugin(self, config: dict = None):
         eventmanager.add_event_listener(ChainEventType.PluginDataReset, self.handle_reset)
@@ -493,7 +495,10 @@ class tvhhelper(_PluginBase):
                         return
                     if event.event_data.get("input_session_id"):
                         return
-                    payload = str(event.event_data.get("text") or "")
+                    payload = normalize_plugin_callback_payload(
+                        str(event.event_data.get("text") or ""),
+                        self.__class__.__name__,
+                    )
                     if self.__is_record_search_callback_payload(payload):
                         self.__handle_record_search_callback(event, payload)
                         return
@@ -507,7 +512,10 @@ class tvhhelper(_PluginBase):
             self.__reply(event, "TVH助手未启用", "")
             return
 
-        payload = str(event.event_data.get("text") or "")
+        payload = normalize_plugin_callback_payload(
+            str(event.event_data.get("text") or ""),
+            self.__class__.__name__,
+        )
         try:
             if self.__handle_record_search_input_session_text(event):
                 return
@@ -784,11 +792,12 @@ class tvhhelper(_PluginBase):
 
     def handle_user_message(self, event: Event = None):
         if not self._enabled or not event or not event.event_data:
-            return
+            return False
         try:
-            self.__handle_record_search_text(event)
+            return self.__handle_record_search_text(event)
         except Exception as err:
             self.__reply_record_search_error(event, err)
+            return True
 
     def __handle_record_search_callback(self, event: Event, payload: str) -> bool:
         try:
@@ -861,7 +870,7 @@ class tvhhelper(_PluginBase):
 
     def __reply(self, event: Event, title: str, text: str, **kwargs):
         text = self.__append_button_text(text, kwargs.get("buttons"))
-        self.chain.post_message(Notification(
+        return self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
             text=text,
@@ -871,7 +880,7 @@ class tvhhelper(_PluginBase):
 
     def __reply_copy(self, event: Event, title: str, text: str, **kwargs):
         text = self.__append_button_text(text, kwargs.get("buttons"))
-        self.chain.post_message(Notification(
+        return self.chain.post_message(Notification(
             channel=event.event_data.get("channel"),
             title=title,
             text=text,
@@ -1311,10 +1320,16 @@ class tvhhelper(_PluginBase):
             "确认批量删除录制文件",
             format_dvr_bulk_remove_confirm_message(entries, session.get("dvr_filter")),
             buttons=[
-                [{"text": f"确认删除{len(removable)}个", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dvr_remove_all|{session_id}"}],
+                [{
+                    "text": f"确认删除{len(removable)}个",
+                    "callback_data": plugin_callback(self.__class__.__name__, f"dvr_remove_all|{session_id}"),
+                }],
                 [
-                    {"text": "返回任务", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dvr_tasks_page|{session_id}|0"},
-                    {"text": "关闭", "callback_data": f"[PLUGIN]{self.__class__.__name__}|dismiss"},
+                    {
+                        "text": "返回任务",
+                        "callback_data": plugin_callback(self.__class__.__name__, f"dvr_tasks_page|{session_id}|0"),
+                    },
+                    {"text": "关闭", "callback_data": plugin_callback(self.__class__.__name__, "dismiss")},
                 ],
             ],
         )
@@ -1475,7 +1490,8 @@ class tvhhelper(_PluginBase):
         )
 
     def __start_record_search(self, event: Event):
-        if not self.__record_search_user_id(event):
+        user_id = self.__record_search_user_id(event)
+        if not user_id:
             self.__reply(
                 event,
                 "TVH节目搜索",
@@ -1484,20 +1500,32 @@ class tvhhelper(_PluginBase):
             )
             return
         wait_key = self.__record_search_wait_key(event)
+        now = time.time()
         session = {
             "type": "record_search_wait",
-            "created_at": time.time(),
+            "created_at": now,
+            "expires_at": now + self._record_search_force_reply_ttl,
+            "chat_id": self.__record_search_chat_id(event),
+            "channel": (event.event_data or {}).get("channel"),
+            "source": (event.event_data or {}).get("source"),
+            "user_id": user_id,
+            "prompt_message_id": self.__record_search_prompt_message_id(event),
             "edit_target": self.__record_search_edit_target(event),
         }
-        if self.__create_plugin_input_session(event, wait_key):
-            session["type"] = "record_search_input_wait"
-        self.__save_record_session(wait_key, session)
-        self.__reply(
+        sent = self.__send_record_search_prompt(
             event,
             "TVH节目搜索",
             "请输入节目关键词。发送“取消”或“退出”可结束搜索。",
-            force_reply=True,
         )
+        prompt_message_id = self.__message_id_from_send_result(sent)
+        if prompt_message_id:
+            session["prompt_message_id"] = prompt_message_id
+            session["chat_id"] = self.__chat_id_from_send_result(sent) or session.get("chat_id")
+            session["channel"] = self.__channel_from_send_result(sent) or session.get("channel")
+            session["source"] = self.__source_from_send_result(sent) or session.get("source")
+        if prompt_message_id and self.__create_plugin_input_session(event, wait_key, session):
+            session["type"] = "record_search_input_wait"
+        self.__save_record_session(wait_key, session)
 
     def __cancel_record_search(self, event: Event):
         self.__clear_record_search_wait_session(event)
@@ -1524,6 +1552,9 @@ class tvhhelper(_PluginBase):
         waiting = self._record_session_cache.get(wait_key) if self._record_session_cache else None
         if not isinstance(waiting, dict) or waiting.get("type") != "record_search_wait":
             return False
+        if not self.__record_search_wait_matches_event(waiting, event):
+            return False
+        self.__delete_record_search_prompt(event, waiting)
         self.__clear_record_session(wait_key)
 
         keyword = str(event.event_data.get("text") or "").strip()
@@ -1568,8 +1599,9 @@ class tvhhelper(_PluginBase):
         self.__clear_plugin_input_session(event)
 
         waiting = self._record_session_cache.get(wait_key) if wait_key and self._record_session_cache else None
-        if isinstance(waiting, dict) and waiting.get("type") == "record_search_input_wait":
+        if isinstance(waiting, dict) and waiting.get("type") in {"record_search_wait", "record_search_input_wait"}:
             self.__apply_record_search_edit_target(event, waiting)
+            self.__delete_record_search_prompt(event, waiting)
 
         if wait_key:
             self.__clear_record_session(wait_key)
@@ -1600,6 +1632,120 @@ class tvhhelper(_PluginBase):
     def __is_record_search_cancel_text(self, text: str) -> bool:
         return str(text or "").strip().lower() in self._record_search_cancel_words
 
+    def __send_record_search_prompt(self, event: Event, title: str, text: str) -> Any:
+        """发送节目搜索 ForceReply 提示，并尽量返回渠道消息 ID。"""
+        direct_send = getattr(self.chain, "send_direct_message", None)
+        if callable(direct_send):
+            data = event.event_data or {}
+            return direct_send(Notification(
+                channel=data.get("channel"),
+                source=data.get("source"),
+                title=title,
+                text=text,
+                userid=data.get("user") or data.get("userid"),
+                username=data.get("username"),
+                force_reply=True,
+                save_history=True,
+            ))
+        return self.__reply(event, title, text, force_reply=True)
+
+    @staticmethod
+    def __message_id_from_send_result(result: Any) -> str:
+        """从消息发送结果中提取新消息 ID，兼容字典和对象返回值。"""
+        if isinstance(result, dict):
+            value = result.get("message_id") or result.get("id")
+            return str(value) if value not in (None, "") else ""
+        value = getattr(result, "message_id", None) or getattr(result, "id", None)
+        return str(value) if value not in (None, "") else ""
+
+    @staticmethod
+    def __chat_id_from_send_result(result: Any) -> str:
+        """从消息发送结果中提取聊天 ID。"""
+        if isinstance(result, dict):
+            value = result.get("chat_id")
+            return str(value) if value not in (None, "") else ""
+        value = getattr(result, "chat_id", None)
+        return str(value) if value not in (None, "") else ""
+
+    @staticmethod
+    def __channel_from_send_result(result: Any) -> Any:
+        """从消息发送结果中提取消息渠道。"""
+        if isinstance(result, dict):
+            return result.get("channel")
+        return getattr(result, "channel", None)
+
+    @staticmethod
+    def __source_from_send_result(result: Any) -> str:
+        """从消息发送结果中提取消息来源。"""
+        if isinstance(result, dict):
+            value = result.get("source")
+            return str(value) if value not in (None, "") else ""
+        value = getattr(result, "source", None)
+        return str(value) if value not in (None, "") else ""
+
+    @staticmethod
+    def __record_search_chat_id(event: Event) -> str:
+        """提取当前消息所在会话 ID。"""
+        data = event.event_data or {}
+        return str(data.get("chat_id") or data.get("original_chat_id") or "")
+
+    @staticmethod
+    def __record_search_prompt_message_id(event: Event) -> str:
+        """提取 ForceReply 提示消息 ID。"""
+        data = event.event_data or {}
+        value = data.get("prompt_message_id") or data.get("sent_message_id")
+        return str(value) if value not in (None, "") else ""
+
+    @staticmethod
+    def __record_search_reply_to_message_id(event: Event) -> str:
+        """提取用户回复所指向的消息 ID。"""
+        data = event.event_data or {}
+        value = (
+            data.get("reply_to_message_id")
+            or data.get("reply_message_id")
+            or data.get("reply_to")
+        )
+        if isinstance(value, dict):
+            value = value.get("message_id") or value.get("id")
+        return str(value) if value not in (None, "") else ""
+
+    def __record_search_wait_matches_event(self, waiting: dict, event: Event) -> bool:
+        """校验节目搜索等待会话是否属于当前 ForceReply 输入。"""
+        if float(waiting.get("expires_at") or 0) <= time.time():
+            return False
+        user_id = self.__record_search_user_id(event)
+        if str(waiting.get("user_id") or "") != user_id:
+            return False
+        chat_id = self.__record_search_chat_id(event)
+        waiting_chat_id = str(waiting.get("chat_id") or "")
+        if waiting_chat_id and waiting_chat_id != chat_id:
+            return False
+        prompt_message_id = str(waiting.get("prompt_message_id") or "")
+        if prompt_message_id:
+            return self.__record_search_reply_to_message_id(event) == prompt_message_id
+        return True
+
+    def __delete_record_search_prompt(self, event: Event, waiting: dict) -> None:
+        """删除节目搜索 ForceReply 提示消息，失败时不影响搜索流程。"""
+        prompt_message_id = str(waiting.get("prompt_message_id") or "")
+        if not prompt_message_id:
+            return
+        data = event.event_data or {}
+        channel = waiting.get("channel") or data.get("channel")
+        source = waiting.get("source") or data.get("source")
+        chat_id = waiting.get("chat_id") or self.__record_search_chat_id(event)
+        if not channel or not source:
+            return
+        try:
+            self.chain.delete_message(
+                channel=channel,
+                source=source,
+                message_id=prompt_message_id,
+                chat_id=chat_id,
+            )
+        except Exception as err:
+            logger.debug(f"TVH节目搜索提示删除失败: {err}")
+
     @staticmethod
     def __record_search_edit_target(event: Event) -> dict:
         """提取节目搜索后续结果可编辑的原消息目标。"""
@@ -1623,7 +1769,7 @@ class tvhhelper(_PluginBase):
                 data[key] = target.get(key)
         event.event_data = data
 
-    def __create_plugin_input_session(self, event: Event, wait_key: str) -> bool:
+    def __create_plugin_input_session(self, event: Event, wait_key: str, session: dict) -> bool:
         try:
             interaction = importlib.import_module("app.helper.interaction")
             manager = getattr(interaction, "plugin_input_interaction_manager", None)
@@ -1637,10 +1783,13 @@ class tvhhelper(_PluginBase):
             create_or_replace(
                 user_id=user_id,
                 plugin_id=self.__class__.__name__,
-                channel=data.get("channel"),
-                source=data.get("source"),
+                channel=session.get("channel") or data.get("channel"),
+                source=session.get("source") or data.get("source"),
                 username=data.get("username"),
+                chat_id=session.get("chat_id") or self.__record_search_chat_id(event),
                 prompt_id="record_search",
+                prompt_message_id=session.get("prompt_message_id"),
+                timeout_seconds=self._record_search_force_reply_ttl,
                 payload={
                     "action": self._record_search_input_action,
                     "wait_key": wait_key,
@@ -1778,7 +1927,12 @@ class tvhhelper(_PluginBase):
 
     def __find_record_search_wait_key(self, event: Event) -> str:
         exact_key = self.__record_search_wait_key(event)
-        if self._record_session_cache and self._record_session_cache.get(exact_key):
+        exact_waiting = self._record_session_cache.get(exact_key) if self._record_session_cache else None
+        if (
+            isinstance(exact_waiting, dict)
+            and exact_waiting.get("type") == "record_search_wait"
+            and self.__record_search_wait_matches_event(exact_waiting, event)
+        ):
             return exact_key
         data = event.event_data or {}
         channel = data.get("channel") or "-"
@@ -1788,7 +1942,11 @@ class tvhhelper(_PluginBase):
         for key in self._record_session_cache.keys() if self._record_session_cache else []:
             if key != exact_key and key.startswith(prefix) and key.endswith(suffix):
                 waiting = self._record_session_cache.get(key)
-                if isinstance(waiting, dict) and waiting.get("type") == "record_search_wait":
+                if (
+                    isinstance(waiting, dict)
+                    and waiting.get("type") == "record_search_wait"
+                    and self.__record_search_wait_matches_event(waiting, event)
+                ):
                     return key
         return exact_key
 

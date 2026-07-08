@@ -102,6 +102,8 @@ from core import (
     plan_playback_notifications,
     normalize_base_url,
     normalize_isp_carrier,
+    normalize_plugin_callback_payload,
+    plugin_callback,
     generate_auth_token,
     load_passwd_tokens,
     merge_tokens,
@@ -282,33 +284,45 @@ def test_user_message_contains_short_urls():
 def test_main_buttons_use_plugin_callbacks():
     assert build_main_buttons("tvhhelper") == [
         [
-            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|status"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|status"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
         [
-            {"text": "用户链接", "callback_data": "[PLUGIN]tvhhelper|users"},
-            {"text": "用户管理", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
+            {"text": "用户链接", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|users"},
+            {"text": "用户管理", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_users"},
         ],
         [
-            {"text": "关闭用户", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
-            {"text": "播放通知", "callback_data": "[PLUGIN]tvhhelper|play_notify_users"},
+            {"text": "关闭用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|close_menu"},
+            {"text": "播放通知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|play_notify_users"},
         ],
         [
-            {"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|record_menu"},
-            {"text": "录制任务", "callback_data": "[PLUGIN]tvhhelper|dvr_tasks"},
+            {"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_menu"},
+            {"text": "录制任务", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dvr_tasks"},
         ],
         [
-            {"text": "重启TVH", "callback_data": "[PLUGIN]tvhhelper|confirm_restart"},
+            {"text": "重启TVH", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_restart"},
         ],
     ]
 
 
+def test_plugin_callback_namespaces_payload_for_other_plugin_decoders():
+    assert plugin_callback("tvhhelper", "dismiss") == "[PLUGIN]tvhhelper|tvhhelper|dismiss"
+    assert plugin_callback("TVHHelper", "record_search|start") == "[PLUGIN]TVHHelper|TVHHelper|record_search|start"
+
+
+def test_normalize_plugin_callback_payload_accepts_new_and_old_callbacks():
+    assert normalize_plugin_callback_payload("tvhhelper|dismiss", "tvhhelper") == "dismiss"
+    assert normalize_plugin_callback_payload("TVHHelper|record_menu", "TVHHelper") == "record_menu"
+    assert normalize_plugin_callback_payload("dismiss", "tvhhelper") == "dismiss"
+    assert normalize_plugin_callback_payload("other|dismiss", "tvhhelper") == "other|dismiss"
+
+
 def test_restart_confirm_buttons_require_second_click():
     assert build_restart_confirm_buttons("tvhhelper") == [
-        [{"text": "确认重启TVH", "callback_data": "[PLUGIN]tvhhelper|restart_tvh"}],
+        [{"text": "确认重启TVH", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|restart_tvh"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
@@ -322,7 +336,7 @@ def test_record_channel_buttons_page_channels():
     buttons = build_record_channel_buttons("tvhhelper", "session-1", channels, page=1, page_size=8)
 
     assert buttons[0][0]["text"] == "9 频道9"
-    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_ch|session-1|8"
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|tvhhelper|record_ch|session-1|8"
     assert buttons[1][0]["text"] == "上一页"
 
 
@@ -373,7 +387,7 @@ def test_record_channel_buttons_pin_default_channels_before_pagination():
     buttons = build_record_channel_buttons("tvhhelper", "session-1", channels, page=0, page_size=2)
 
     assert buttons[0][0]["text"] == "81 翡翠台"
-    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_ch|session-1|2"
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|tvhhelper|record_ch|session-1|2"
     assert buttons[0][1]["text"] == "1 频道A"
 
 
@@ -392,7 +406,7 @@ def test_record_program_buttons_use_session_and_event_id():
     buttons = build_record_program_buttons("tvhhelper", "session-1", events)
 
     assert buttons[0][0]["text"].endswith("晚间新闻")
-    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|record_prog|session-1|0"
+    assert buttons[0][0]["callback_data"] == "[PLUGIN]tvhhelper|tvhhelper|record_prog|session-1|0"
 
 
 def test_record_search_results_message_formats_page_and_truncates_description():
@@ -450,17 +464,17 @@ def test_record_search_result_buttons_use_short_callbacks_and_pagination():
 
     assert buttons == [
         [
-            {"text": "预约录制 2", "callback_data": "[PLUGIN]tvhhelper|record_search_pick|abcd1234ef|1"},
-            {"text": "详情 2", "callback_data": "[PLUGIN]tvhhelper|record_search_detail|abcd1234ef|1"},
+            {"text": "预约录制 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_pick|abcd1234ef|1"},
+            {"text": "详情 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_detail|abcd1234ef|1"},
         ],
         [
-            {"text": "上一页", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|0"},
-            {"text": "2/3", "callback_data": "[PLUGIN]tvhhelper|noop"},
-            {"text": "下一页", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|2"},
+            {"text": "上一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|0"},
+            {"text": "2/3", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|noop"},
+            {"text": "下一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|2"},
         ],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|record_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
     callback_data = [
@@ -474,10 +488,10 @@ def test_record_search_result_buttons_use_short_callbacks_and_pagination():
 
 def test_record_search_detail_buttons_return_to_search_page():
     assert core.build_record_search_detail_buttons("tvhhelper", "abcd1234ef", entry_index=3, page=2) == [
-        [{"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|record_search_pick|abcd1234ef|3"}],
+        [{"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_pick|abcd1234ef|3"}],
         [
-            {"text": "返回结果", "callback_data": "[PLUGIN]tvhhelper|record_search_page|abcd1234ef|2"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回结果", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|2"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
@@ -518,10 +532,10 @@ def test_record_buttons_fit_telegram_callback_limit():
 
 def test_record_confirm_buttons_confirm_and_cancel():
     assert build_record_confirm_buttons("tvhhelper", "session-1") == [
-        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|record_confirm|session-1"}],
+        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_confirm|session-1"}],
         [
-            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
-            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_programs|session-1|0"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_cancel|session-1"},
         ],
     ]
 
@@ -529,17 +543,17 @@ def test_record_confirm_buttons_confirm_and_cancel():
 def test_record_padding_adjust_buttons_use_plus_minus_five_minutes():
     assert build_record_padding_adjust_buttons("tvhhelper", "session-1") == [
         [
-            {"text": "提前 -5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|start|-5"},
-            {"text": "提前 +5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|start|5"},
+            {"text": "提前 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|start|-5"},
+            {"text": "提前 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|start|5"},
         ],
         [
-            {"text": "延后 -5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|stop|-5"},
-            {"text": "延后 +5", "callback_data": "[PLUGIN]tvhhelper|record_pad_delta|session-1|stop|5"},
+            {"text": "延后 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|stop|-5"},
+            {"text": "延后 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|stop|5"},
         ],
-        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|record_confirm|session-1"}],
+        [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_confirm|session-1"}],
         [
-            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
-            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+            {"text": "返回节目", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_programs|session-1|0"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_cancel|session-1"},
         ],
     ]
     callbacks = [
@@ -562,18 +576,18 @@ def test_record_padding_preset_buttons_use_consistent_five_minute_steps():
 def test_record_created_buttons_return_to_program_list():
     assert build_record_created_buttons("tvhhelper", "session-1") == [
         [
-            {"text": "继续选节目", "callback_data": "[PLUGIN]tvhhelper|record_programs|session-1|0"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "继续选节目", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_programs|session-1|0"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
 
 def test_record_merge_choice_buttons_offer_merge_separate_and_cancel():
     assert build_record_merge_choice_buttons("tvhhelper", "session-1") == [
-        [{"text": "合并录制", "callback_data": "[PLUGIN]tvhhelper|record_merge|session-1|merge"}],
+        [{"text": "合并录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_merge|session-1|merge"}],
         [
-            {"text": "仍分开录制", "callback_data": "[PLUGIN]tvhhelper|record_merge|session-1|separate"},
-            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|record_cancel|session-1"},
+            {"text": "仍分开录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_merge|session-1|separate"},
+            {"text": "取消", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_cancel|session-1"},
         ],
     ]
 
@@ -965,7 +979,7 @@ def test_dvr_bulk_remove_buttons_only_show_for_removable_entries():
     flat = [button for row in buttons for button in row]
 
     assert flat == [
-        {"text": "一键删除可删", "callback_data": "[PLUGIN]tvhhelper|dvr_remove_all_confirm|session-1"}
+        {"text": "一键删除可删", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dvr_remove_all_confirm|session-1"}
     ]
     assert len(flat[0]["callback_data"].encode("utf-8")) <= 64
     assert build_dvr_bulk_remove_buttons("tvhhelper", "session-1", entries[:1]) == []
@@ -1595,13 +1609,13 @@ def test_user_select_buttons_are_two_per_row():
 
     assert buttons == [
         [
-            {"text": "test", "callback_data": "[PLUGIN]tvhhelper|user|test"},
-            {"text": "empty", "callback_data": "[PLUGIN]tvhhelper|user|empty"},
+            {"text": "test", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|test"},
+            {"text": "empty", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|empty"},
         ],
-        [{"text": "third", "callback_data": "[PLUGIN]tvhhelper|user|third"}],
+        [{"text": "third", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|third"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
@@ -1618,29 +1632,29 @@ def test_user_manage_buttons_show_enabled_state_two_per_row():
 
     assert buttons == [
         [
-            {"text": "test 已启用", "callback_data": "[PLUGIN]tvhhelper|manage_user|test"},
-            {"text": "disabled 已禁用", "callback_data": "[PLUGIN]tvhhelper|manage_user|disabled"},
+            {"text": "test 已启用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|test"},
+            {"text": "disabled 已禁用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|disabled"},
         ],
-        [{"text": "unknown 未知", "callback_data": "[PLUGIN]tvhhelper|manage_user|unknown"}],
+        [{"text": "unknown 未知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|unknown"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
 
 def test_user_action_buttons_reset_token_and_toggle_user():
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=True)) == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|test"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|test"}],
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|test"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|test"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_users"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=False))[1] == [
-        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|1|test"}
+        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|1|test"}
     ]
 
 
@@ -1650,16 +1664,16 @@ def test_user_action_buttons_can_toggle_playback_notifications():
         TvhUser(username="test", enabled=True),
         play_notify_enabled=True,
     )[:3] == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|test"}],
-        [{"text": "关闭播放通知", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_user|0|test"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|test"}],
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|test"}],
+        [{"text": "关闭播放通知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_user|0|test"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|test"}],
     ]
     assert build_user_action_buttons(
         "tvhhelper",
         TvhUser(username="test", enabled=True),
         play_notify_enabled=False,
     )[1] == [
-        {"text": "开启播放通知", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_user|1|test"}
+        {"text": "开启播放通知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_user|1|test"}
     ]
 
 
@@ -1671,23 +1685,23 @@ def test_play_notify_user_buttons_toggle_each_user():
         "auto",
     ) == [
         [
-            {"text": "ck 已开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|0|ck"},
-            {"text": "test 已关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_menu|1|test"},
+            {"text": "ck 已开启", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_menu|0|ck"},
+            {"text": "test 已关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_menu|1|test"},
         ],
         [
-            {"text": "全部开启", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|1"},
-            {"text": "全部关闭", "callback_data": "[PLUGIN]tvhhelper|toggle_play_notify_all|0"},
+            {"text": "全部开启", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_all|1"},
+            {"text": "全部关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_all|0"},
         ],
         [
-            {"text": "自动 ✓", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|auto"},
-            {"text": "仅Webhook", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|webhook"},
+            {"text": "自动 ✓", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|set_play_notify_source|auto"},
+            {"text": "仅Webhook", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|set_play_notify_source|webhook"},
         ],
         [
-            {"text": "仅轮询", "callback_data": "[PLUGIN]tvhhelper|set_play_notify_source|polling"},
+            {"text": "仅轮询", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|set_play_notify_source|polling"},
         ],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
@@ -1697,8 +1711,8 @@ def test_user_action_buttons_encode_usernames_and_confirm_sensitive_actions():
     assert encoded == "a%7Cb"
     assert decode_callback_value(encoded) == "a|b"
     assert build_user_action_buttons("tvhhelper", TvhUser(username="a|b", enabled=True))[:2] == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|a%7Cb"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|confirm_toggle_user|0|a%7Cb"}],
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|a%7Cb"}],
+        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|a%7Cb"}],
     ]
 
 
@@ -1706,27 +1720,27 @@ def test_unknown_user_enabled_state_does_not_show_destructive_toggle():
     buttons = build_user_action_buttons("tvhhelper", TvhUser(username="unknown"))
 
     assert buttons == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|confirm_reset_token|unknown"}],
+        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|unknown"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_users"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_users"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
 
 def test_user_confirm_buttons_put_state_before_encoded_username():
     assert build_user_confirm_buttons("tvhhelper", "toggle_user", "a|b", False) == [
-        [{"text": "确认禁用", "callback_data": "[PLUGIN]tvhhelper|toggle_user|0|a%7Cb"}],
+        [{"text": "确认禁用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_user|0|a%7Cb"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_user|a%7Cb"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|a%7Cb"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
     assert build_user_confirm_buttons("tvhhelper", "reset_token", "a|b") == [
-        [{"text": "确认重置", "callback_data": "[PLUGIN]tvhhelper|reset_token|a%7Cb"}],
+        [{"text": "确认重置", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|reset_token|a%7Cb"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|manage_user|a%7Cb"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|a%7Cb"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
 
@@ -2487,8 +2501,8 @@ def test_play_notify_settings_use_persisted_config_over_runtime_state():
 def test_secondary_nav_buttons_use_plugin_callbacks():
     assert build_secondary_nav_buttons("tvhhelper") == [
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ]
     ]
 
@@ -3436,15 +3450,15 @@ def test_subscription_close_buttons_use_plugin_callbacks():
 
     assert buttons == [
         [
-            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|close_menu"},
-            {"text": "一键断开全部", "callback_data": "[PLUGIN]tvhhelper|close_all"},
+            {"text": "刷新", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|close_menu"},
+            {"text": "一键断开全部", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|close_all"},
         ],
         [
-            {"text": "关闭 test / News", "callback_data": "[PLUGIN]tvhhelper|close|12"},
-            {"text": "关闭 test / Movie", "callback_data": "[PLUGIN]tvhhelper|close|13"},
+            {"text": "关闭 test / News", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|close|12"},
+            {"text": "关闭 test / Movie", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|close|13"},
         ],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|main_menu"},
-            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|dismiss"},
+            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
+            {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]

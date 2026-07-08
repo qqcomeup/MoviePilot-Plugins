@@ -636,7 +636,16 @@ def build_long_epg_url(public_base_url: str, token: str) -> str:
 
 
 def plugin_callback(plugin_id: str, payload: str) -> str:
-    return f"[PLUGIN]{plugin_id}|{payload}"
+    return f"[PLUGIN]{plugin_id}|{plugin_id}|{payload}"
+
+
+def normalize_plugin_callback_payload(payload: str, plugin_id: str) -> str:
+    normalized_payload = str(payload or "")
+    normalized_plugin_id = str(plugin_id or "").strip().lower()
+    prefix, separator, rest = normalized_payload.partition("|")
+    if separator and prefix.strip().lower() == normalized_plugin_id:
+        return rest
+    return normalized_payload
 
 
 def encode_callback_value(value: str) -> str:
