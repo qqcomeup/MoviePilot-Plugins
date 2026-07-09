@@ -28,6 +28,17 @@ DEFAULT_PINNED_RECORD_CHANNELS = (
     "HOY TV",
     "HOY 國際財經台",
 )
+
+
+def strip_tvh_markdown_code_blocks(text: str | None) -> str:
+    """移除TVH通知文本中的Markdown代码块标记。"""
+    if not text:
+        return ""
+    lines = str(text).splitlines()
+    stripped = [line for line in lines if line not in {"```text", "```"}]
+    return "\n".join(stripped).strip()
+
+
 SIMPLIFIED_TRADITIONAL_CHAR_PAIRS = (
     ("万", "萬"), ("与", "與"), ("东", "東"), ("个", "個"), ("两", "兩"), ("严", "嚴"),
     ("丧", "喪"), ("临", "臨"), ("为", "為"), ("丽", "麗"), ("举", "舉"), ("义", "義"),

@@ -83,6 +83,7 @@ from core import (
     format_subscription_status_line,
     format_playback_notification,
     format_playback_switch_notification,
+    strip_tvh_markdown_code_blocks,
     format_tvh_webhook_message,
     is_real_playback_subscription,
     is_playback_switch_pair,
@@ -2125,6 +2126,15 @@ def test_playback_notification_labels_recording_file_stop_as_download():
     assert "停止: 2026-07-04 21:46:54" in text
     assert "时长: 00:03:31" in text
     assert "输入/输出: 134.2/134.2 Mb/s" in text
+
+
+def test_strip_tvh_markdown_code_blocks_keeps_notification_content_plain():
+    text = "停止播放\n```text\nck / 翡翠台\n\n技术信息\n事件: playback.stop\n```\n\n开始播放\n```text\nck / TVB Plus\n```"
+
+    plain = strip_tvh_markdown_code_blocks(text)
+
+    assert plain == "停止播放\nck / 翡翠台\n\n技术信息\n事件: playback.stop\n\n开始播放\nck / TVB Plus"
+    assert "```" not in plain
 
 
 def test_tvh_webhook_message_formats_test_event():

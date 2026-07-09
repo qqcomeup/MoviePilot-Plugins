@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import types
+from enum import Enum
 from pathlib import Path
 
 os.environ["TZ"] = "Asia/Shanghai"
@@ -20,6 +21,20 @@ def install_moviepilot_stubs(monkeypatch, include_user_message=True):
 
     class NotificationType:
         Plugin = "Plugin"
+
+    class MessageChannel(Enum):
+        Wechat = "微信"
+        Feishu = "飞书"
+        WechatClawBot = "微信ClawBot"
+        Telegram = "Telegram"
+        Slack = "Slack"
+        Discord = "Discord"
+        SynologyChat = "SynologyChat"
+        VoceChat = "VoceChat"
+        Web = "Web"
+        WebAgent = "WebAgent"
+        WebPush = "WebPush"
+        QQ = "QQ"
 
     class Notification:
         def __init__(self, **kwargs):
@@ -88,7 +103,7 @@ def install_moviepilot_stubs(monkeypatch, include_user_message=True):
         "app.db.systemconfig_oper": types.SimpleNamespace(SystemConfigOper=lambda: types.SimpleNamespace(delete=lambda key: None, get=lambda key: {})),
         "app.log": types.SimpleNamespace(logger=types.SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None, warning=lambda *a, **k: None, debug=lambda *a, **k: None)),
         "app.plugins": types.SimpleNamespace(_PluginBase=PluginBase),
-        "app.schemas.types": types.SimpleNamespace(ChainEventType=ChainEventType, EventType=EventType),
+        "app.schemas.types": types.SimpleNamespace(ChainEventType=ChainEventType, EventType=EventType, MessageChannel=MessageChannel),
         "fastapi": types.SimpleNamespace(Body=lambda default=None: default, Header=lambda default=None: default),
         "apscheduler": types.ModuleType("apscheduler"),
         "apscheduler.triggers": types.ModuleType("apscheduler.triggers"),
@@ -137,6 +152,42 @@ def test_receive_webhook_posts_plugin_notification(monkeypatch):
     assert plugin.messages[0]["mtype"] == "Plugin"
     assert plugin.messages[0]["title"] == "TVH开始播放"
     assert "频道: News" in plugin.messages[0]["text"]
+
+
+def test_receive_webhook_formats_monospace_only_for_telegram(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module.tvhhelper,
+        "_tvhhelper__enabled_notification_channels",
+        lambda self: [module.MessageChannel.Telegram, module.MessageChannel.Wechat],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "play_notify_users": {"ck": True},
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "playback.start",
+            "user": "ck",
+            "client": "VLC",
+            "channel": "News",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert len(plugin.messages) == 2
+    assert plugin.messages[0]["channel"] == module.MessageChannel.Telegram
+    assert plugin.messages[0]["parse_mode"] == "Markdown"
+    assert plugin.messages[0]["text"].startswith("```text\n")
+    assert plugin.messages[1]["channel"] == module.MessageChannel.Wechat
+    assert "parse_mode" not in plugin.messages[1]
+    assert "频道: News" in plugin.messages[1]["text"]
+    assert "```" not in plugin.messages[1]["text"]
 
 
 def test_receive_webhook_records_last_health_state(monkeypatch):

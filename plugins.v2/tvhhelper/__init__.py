@@ -17,7 +17,7 @@ from app.db.systemconfig_oper import SystemConfigOper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import Notification, NotificationType
-from app.schemas.types import ChainEventType, EventType
+from app.schemas.types import ChainEventType, EventType, MessageChannel
 
 from .core import (
     DvbMonitor,
@@ -78,6 +78,7 @@ from .core import (
     filter_tvh_dvr_entries,
     format_playback_notification,
     format_playback_switch_notification,
+    strip_tvh_markdown_code_blocks,
     format_record_confirm_message,
     format_record_created_message,
     format_record_merge_confirm_message,
@@ -141,7 +142,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.98"
+    plugin_version = "0.1.99"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -899,6 +900,65 @@ class tvhhelper(_PluginBase):
         if self.__edit_original(event, title, text, parse_mode="Markdown", **kwargs):
             return
         self.__reply_copy(event, title, text, **kwargs)
+
+    def __post_tvh_notification(self, title: str, text: str, **kwargs):
+        """按通知渠道发送TVH通知，Telegram保留等宽格式。"""
+        channels = self.__enabled_notification_channels()
+        if not channels:
+            self.post_message(title=title, text=text, parse_mode="Markdown", **kwargs)
+            return
+        plain_text = strip_tvh_markdown_code_blocks(text)
+        for channel in channels:
+            if channel == MessageChannel.Telegram:
+                self.post_message(
+                    channel=channel,
+                    title=title,
+                    text=text,
+                    parse_mode="Markdown",
+                    **kwargs,
+                )
+                continue
+            self.post_message(
+                channel=channel,
+                title=title,
+                text=plain_text,
+                **kwargs,
+            )
+
+    @staticmethod
+    def __enabled_notification_channels() -> list[MessageChannel]:
+        """读取当前启用的MoviePilot通知渠道。"""
+        type_map = {
+            "telegram": MessageChannel.Telegram,
+            "wechat": MessageChannel.Wechat,
+            "feishu": MessageChannel.Feishu,
+            "wechatclawbot": MessageChannel.WechatClawBot,
+            "slack": MessageChannel.Slack,
+            "discord": MessageChannel.Discord,
+            "synologychat": MessageChannel.SynologyChat,
+            "vocechat": MessageChannel.VoceChat,
+            "webpush": MessageChannel.WebPush,
+            "qqbot": MessageChannel.QQ,
+        }
+        try:
+            from app.helper.service import ServiceConfigHelper
+        except Exception:
+            return []
+        channels: list[MessageChannel] = []
+        seen: set[MessageChannel] = set()
+        try:
+            configs = ServiceConfigHelper.get_notification_configs()
+        except Exception as err:
+            logger.debug(f"TVH通知渠道读取失败: {err}")
+            return []
+        for conf in configs or []:
+            if not getattr(conf, "enabled", False):
+                continue
+            channel = type_map.get(str(getattr(conf, "type", "") or "").lower())
+            if channel and channel not in seen:
+                channels.append(channel)
+                seen.add(channel)
+        return channels
 
     def __edit_original(self, event: Event, title: str, text: str, parse_mode: str | None = None, **kwargs) -> bool:
         message_id = event.event_data.get("original_message_id")
@@ -2447,22 +2507,20 @@ class tvhhelper(_PluginBase):
                     f"{title}: {subscription.username} / {subscription.channel} -> {next_subscription.channel}"
                 )
                 self.__record_playback_history_from_switch(subscription, next_subscription)
-                self.post_message(
+                self.__post_tvh_notification(
                     mtype=NotificationType.Plugin,
                     title=title,
                     text=text,
-                    parse_mode="Markdown",
                 )
                 index += 1
                 continue
             title, text = format_playback_notification(event_name, subscription)
             logger.info(f"{title}: {subscription.username} / {subscription.channel}")
             self.__record_playback_history_from_subscription(event_name, subscription)
-            self.post_message(
+            self.__post_tvh_notification(
                 mtype=NotificationType.Plugin,
                 title=title,
                 text=text,
-                parse_mode="Markdown",
             )
             index += 1
 
@@ -2593,14 +2651,13 @@ class tvhhelper(_PluginBase):
                 "mtype": NotificationType.Plugin,
                 "title": title,
                 "text": text,
-                "parse_mode": "Markdown",
             }
             if image:
                 message["image"] = image
             dvr_download_url = self.__ticket_download_url_for_payload(payload)
             if event == "dvr.complete" and dvr_download_url:
                 message["buttons"] = [[{"text": "下载录制文件", "url": dvr_download_url}]]
-            self.post_message(**message)
+            self.__post_tvh_notification(**message)
         return schemas.Response(success=True, message="Webhook已接收")
 
     def __ticket_download_url_for_entry(self, entry) -> str | None:
