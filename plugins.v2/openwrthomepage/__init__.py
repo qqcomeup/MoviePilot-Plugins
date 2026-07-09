@@ -19,7 +19,7 @@ class OpenWrtHomePage(_PluginBase):
     plugin_name = "OpenWrt HomePage"
     plugin_desc = "将 OpenWrt 路由监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
-    plugin_version = "1.1"
+    plugin_version = "1.2"
     plugin_author = "local"
     author_url = "https://github.com/xijin285/MoviePilot-Plugins/tree/main/plugins.v2/openwrtbackup"
     plugin_config_prefix = "openwrthomepage_"
@@ -306,8 +306,8 @@ class OpenWrtHomePage(_PluginBase):
                             "variant": "tonal",
                             "color": "error",
                             "prepend-icon": "mdi-open-in-new",
+                            "text": "跳转到使用说明",
                         },
-                        "content": ["查看使用说明"],
                     },
                     {
                         "component": "VBtn",
@@ -317,8 +317,8 @@ class OpenWrtHomePage(_PluginBase):
                             "variant": "tonal",
                             "color": "error",
                             "prepend-icon": "mdi-open-in-new",
+                            "text": "跳转到 OpenWrtBackup",
                         },
-                        "content": ["查看 OpenWrtBackup"],
                     },
                 ],
             },
