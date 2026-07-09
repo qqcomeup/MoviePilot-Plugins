@@ -167,5 +167,17 @@
       "v1.1": "默认使用 ikuai-cli 对应的 /api/v4.0 本地接口，并支持配置 API 前缀",
       "v1.0": "支持爱快本地路由系统总览、接口流量、在线客户端 customapi 接口"
     }
+  },
+  "OpenWrtHomePage": {
+    "name": "OpenWrt HomePage",
+    "description": "将 OpenWrt 路由监控数据转换为 Homepage customapi 接口。",
+    "labels": "工具,网络,监控,Homepage",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
+    "author": "local",
+    "level": 1,
+    "history": {
+      "v1.0": "支持读取 OpenWrtBackup 连接信息，提供 OpenWrt 总览、流量和服务状态 customapi 接口"
+    }
   }
 }
