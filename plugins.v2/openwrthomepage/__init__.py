@@ -19,7 +19,7 @@ class OpenWrtHomePage(_PluginBase):
     plugin_name = "OpenWrt HomePage"
     plugin_desc = "将 OpenWrt 路由监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     plugin_author = "local"
     author_url = "https://github.com/xijin285/MoviePilot-Plugins/tree/main/plugins.v2/openwrtbackup"
     plugin_config_prefix = "openwrthomepage_"
@@ -293,41 +293,32 @@ class OpenWrtHomePage(_PluginBase):
                 },
             },
             {
-                "component": "VRow",
+                "component": "div",
+                "props": {
+                    "class": "d-flex flex-wrap ga-2 mb-4",
+                },
                 "content": [
                     {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 6},
-                        "content": [
-                            {
-                                "component": "VBtn",
-                                "props": {
-                                    "href": self.plugin_doc_url,
-                                    "target": "_blank",
-                                    "variant": "tonal",
-                                    "color": "primary",
-                                    "prepend-icon": "mdi-open-in-new",
-                                },
-                                "content": ["查看使用说明"],
-                            }
-                        ],
+                        "component": "VBtn",
+                        "props": {
+                            "href": self.plugin_doc_url,
+                            "target": "_blank",
+                            "variant": "tonal",
+                            "color": "error",
+                            "prepend-icon": "mdi-open-in-new",
+                        },
+                        "content": ["查看使用说明"],
                     },
                     {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 6},
-                        "content": [
-                            {
-                                "component": "VBtn",
-                                "props": {
-                                    "href": self.dependency_plugin_url,
-                                    "target": "_blank",
-                                    "variant": "tonal",
-                                    "color": "secondary",
-                                    "prepend-icon": "mdi-open-in-new",
-                                },
-                                "content": ["查看 OpenWrtBackup"],
-                            }
-                        ],
+                        "component": "VBtn",
+                        "props": {
+                            "href": self.dependency_plugin_url,
+                            "target": "_blank",
+                            "variant": "tonal",
+                            "color": "error",
+                            "prepend-icon": "mdi-open-in-new",
+                        },
+                        "content": ["查看 OpenWrtBackup"],
                     },
                 ],
             },
