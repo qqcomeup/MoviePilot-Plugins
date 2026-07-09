@@ -151,5 +151,20 @@
       "v1.1": "单节点接口增加 Swap、三段负载、合并网速和累计流量字段",
       "v1.0": "支持 Komari 总览、单节点和节点列表 customapi 接口"
     }
+  },
+  "IKuaiHomePage": {
+    "name": "iKuai HomePage",
+    "description": "将爱快本地路由监控数据转换为 Homepage customapi 接口。",
+    "labels": "工具,网络,监控,Homepage",
+    "version": "1.3",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
+    "author": "local",
+    "level": 1,
+    "history": {
+      "v1.3": "改为读取 IkuaiRouterBackup 的爱快连接信息，避免重复保存认证配置",
+      "v1.2": "支持后台账号密码兼容模式，通过 /Action/call 读取爱快监控数据",
+      "v1.1": "默认使用 ikuai-cli 对应的 /api/v4.0 本地接口，并支持配置 API 前缀",
+      "v1.0": "支持爱快本地路由系统总览、接口流量、在线客户端 customapi 接口"
+    }
   }
 }
