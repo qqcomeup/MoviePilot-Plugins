@@ -172,11 +172,12 @@
     "name": "OpenWrt HomePage",
     "description": "将 OpenWrt 路由监控数据转换为 Homepage customapi 接口。",
     "labels": "工具,网络,监控,Homepage",
-    "version": "1.0",
+    "version": "1.1",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
     "author": "local",
     "level": 1,
     "history": {
+      "v1.1": "修正插件详情页跳转按钮布局，并改为红色提示按钮",
       "v1.0": "支持读取 OpenWrtBackup 连接信息，提供 OpenWrt 总览、流量和服务状态 customapi 接口"
     }
   }
