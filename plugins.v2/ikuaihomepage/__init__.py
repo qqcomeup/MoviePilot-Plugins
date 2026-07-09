@@ -20,7 +20,7 @@ class IKuaiHomePage(_PluginBase):
     plugin_name = "iKuai HomePage"
     plugin_desc = "将爱快本地路由监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
-    plugin_version = "1.3"
+    plugin_version = "1.4"
     plugin_author = "local"
     author_url = "https://github.com/ikuaidev/ikuai-cli"
     plugin_config_prefix = "ikuaihomepage_"
@@ -31,7 +31,7 @@ class IKuaiHomePage(_PluginBase):
 
     _enabled = False
     _source_plugin_id = "IkuaiRouterBackup"
-    _router_url = "http://192.168.8.1"
+    _router_url = ""
     _auth_mode = "ikuairouterbackup"
     _api_base_path = "/api/v4.0"
     _api_token = ""
@@ -48,7 +48,7 @@ class IKuaiHomePage(_PluginBase):
         self.stop_service()
         self._enabled = False
         self._source_plugin_id = "IkuaiRouterBackup"
-        self._router_url = "http://192.168.8.1"
+        self._router_url = ""
         self._auth_mode = "ikuairouterbackup"
         self._api_base_path = "/api/v4.0"
         self._api_token = ""
@@ -302,24 +302,21 @@ class IKuaiHomePage(_PluginBase):
                 },
             },
             {
-                "component": "VRow",
+                "component": "div",
+                "props": {
+                    "class": "d-flex flex-wrap ga-2 mb-4",
+                },
                 "content": [
                     {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VBtn",
-                                "props": {
-                                    "href": self.plugin_doc_url,
-                                    "target": "_blank",
-                                    "variant": "tonal",
-                                    "color": "primary",
-                                    "prepend-icon": "mdi-open-in-new",
-                                },
-                                "content": ["查看使用说明"],
-                            }
-                        ],
+                        "component": "VBtn",
+                        "props": {
+                            "href": self.plugin_doc_url,
+                            "target": "_blank",
+                            "variant": "tonal",
+                            "color": "error",
+                            "prepend-icon": "mdi-open-in-new",
+                        },
+                        "text": "跳转到使用说明",
                     }
                 ],
             },
@@ -350,7 +347,7 @@ class IKuaiHomePage(_PluginBase):
             self._last_error = f"读取 {self._source_plugin_id} 配置失败: {err}"
             source_config = {}
 
-        self._router_url = self._normalize_router_url(str(source_config.get("ikuai_url") or "http://192.168.8.1"))
+        self._router_url = self._normalize_router_url(str(source_config.get("ikuai_url") or ""))
         self._web_username = str(source_config.get("ikuai_username") or "").strip()
         self._web_password = str(source_config.get("ikuai_password") or "")
         if not source_config:
@@ -847,7 +844,7 @@ class IKuaiHomePage(_PluginBase):
         """生成 Homepage YAML 示例。"""
         return f"""- iKuai:
     icon: router.png
-    href: http://192.168.8.1
+    href: <ROUTER_LAN_URL>
     widgets:
       - type: customapi
         url: http://moviepilot:3001{api_base}/summary?apikey={{{{HOMEPAGE_VAR_MP_APIKEY}}}}
