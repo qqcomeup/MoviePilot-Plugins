@@ -136,5 +136,20 @@
       "v0.1.1": "使用 TVHeadend status inputs 读取 DVB 状态，并新增用户 M3U/EPG 机器人按钮。",
       "v0.1.0": "新增 TVH 状态、DVB 设备、用户短链接查询和 DVB 变动通知。"
     }
+  },
+  "KomariHomePage": {
+    "name": "Komari HomePage",
+    "description": "将 Komari 服务器监控数据转换为 Homepage customapi 接口。",
+    "labels": "工具,监控,Homepage",
+    "version": "1.3",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
+    "author": "local",
+    "level": 1,
+    "history": {
+      "v1.3": "修复 recent 乱序时可能读取旧指标的问题，插件详情页增加配置说明",
+      "v1.2": "单节点接口增加 CPU 与系统信息字段",
+      "v1.1": "单节点接口增加 Swap、三段负载、合并网速和累计流量字段",
+      "v1.0": "支持 Komari 总览、单节点和节点列表 customapi 接口"
+    }
   }
 }
