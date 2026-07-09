@@ -27,6 +27,7 @@ class IKuaiHomePage(_PluginBase):
     plugin_order = 32
     plugin_label = "工具,网络,监控,Homepage"
     auth_level = 1
+    plugin_doc_url = "https://github.com/qqcomeup/MoviePilot-Plugins/tree/main/plugins.v2/ikuaihomepage"
 
     _enabled = False
     _source_plugin_id = "IkuaiRouterBackup"
@@ -299,6 +300,28 @@ class IKuaiHomePage(_PluginBase):
                     "variant": "tonal",
                     "text": f"路由地址: {self._router_url or '-'}；最近错误: {self._last_error or '无'}",
                 },
+            },
+            {
+                "component": "VRow",
+                "content": [
+                    {
+                        "component": "VCol",
+                        "props": {"cols": 12},
+                        "content": [
+                            {
+                                "component": "VBtn",
+                                "props": {
+                                    "href": self.plugin_doc_url,
+                                    "target": "_blank",
+                                    "variant": "tonal",
+                                    "color": "primary",
+                                    "prepend-icon": "mdi-open-in-new",
+                                },
+                                "content": ["查看使用说明"],
+                            }
+                        ],
+                    }
+                ],
             },
             {
                 "component": "VTextarea",
