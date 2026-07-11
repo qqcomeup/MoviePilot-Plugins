@@ -20,7 +20,7 @@ class OpenWrtHomePage(_PluginBase):
     plugin_desc = "将 OpenWrt 路由监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
     plugin_version = "1.2"
-    plugin_author = "local"
+    plugin_author = "qqcomeup"
     author_url = "https://github.com/xijin285/MoviePilot-Plugins/tree/main/plugins.v2/openwrtbackup"
     plugin_config_prefix = "openwrthomepage_"
     plugin_order = 33
@@ -264,8 +264,8 @@ class OpenWrtHomePage(_PluginBase):
                             "variant": "tonal",
                             "text": (
                                 "本插件不保存 OpenWrt 认证信息，会读取 OpenWrtBackup 的地址、用户名和密码作为数据来源。"
-                                "依赖仓库: https://github.com/xijin285/MoviePilot-Plugins/tree/main/plugins.v2/openwrtbackup；"
-                                "本插件仓库: https://github.com/qqcomeup/MoviePilot-Plugins/tree/main/plugins.v2/openwrthomepage"
+                                "依赖仓库: https://github.com/xijin285/MoviePilot-Plugins；"
+                                "本插件仓库: https://github.com/qqcomeup/MoviePilot-Plugins"
                             ),
                         },
                     },
@@ -306,19 +306,8 @@ class OpenWrtHomePage(_PluginBase):
                             "variant": "tonal",
                             "color": "error",
                             "prepend-icon": "mdi-open-in-new",
-                            "text": "跳转到使用说明",
                         },
-                    },
-                    {
-                        "component": "VBtn",
-                        "props": {
-                            "href": self.dependency_plugin_url,
-                            "target": "_blank",
-                            "variant": "tonal",
-                            "color": "error",
-                            "prepend-icon": "mdi-open-in-new",
-                            "text": "跳转到 OpenWrtBackup",
-                        },
+                        "text": "跳转到使用说明",
                     },
                 ],
             },
