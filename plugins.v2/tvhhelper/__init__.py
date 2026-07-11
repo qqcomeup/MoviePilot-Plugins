@@ -142,7 +142,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.1.99"
+    plugin_version = "0.2.0"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -619,6 +619,10 @@ class tvhhelper(_PluginBase):
                 self.__select_record_program(event, session_id, event_id)
             elif payload.startswith("record_pad_delta|"):
                 _, session_id, target, minutes_text = payload.split("|", 3)
+                self.__adjust_record_padding(event, session_id, target, self.__to_int(minutes_text, 0))
+            elif payload.startswith("rpd|"):
+                _, session_id, target, minutes_text = payload.split("|", 3)
+                target = "start" if target == "s" else "stop" if target == "e" else target
                 self.__adjust_record_padding(event, session_id, target, self.__to_int(minutes_text, 0))
             elif payload.startswith("record_pad_start|"):
                 _, session_id, minutes_text = payload.split("|", 2)

@@ -2137,7 +2137,7 @@ def test_record_padding_delta_updates_same_confirm_page(monkeypatch):
     })
 
     plugin.handle_callback(callback_event)
-    callback_event.event_data["text"] = "record_pad_delta|session-1|stop|5"
+    callback_event.event_data["text"] = "rpd|session-1|e|5"
     plugin.handle_callback(callback_event)
 
     session = plugin._record_session_cache.get("session-1")

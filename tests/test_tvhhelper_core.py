@@ -544,12 +544,12 @@ def test_record_confirm_buttons_confirm_and_cancel():
 def test_record_padding_adjust_buttons_use_plus_minus_five_minutes():
     assert build_record_padding_adjust_buttons("tvhhelper", "session-1") == [
         [
-            {"text": "提前 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|start|-5"},
-            {"text": "提前 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|start|5"},
+            {"text": "提前 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rpd|session-1|s|-5"},
+            {"text": "提前 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rpd|session-1|s|5"},
         ],
         [
-            {"text": "延后 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|stop|-5"},
-            {"text": "延后 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_pad_delta|session-1|stop|5"},
+            {"text": "延后 -5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rpd|session-1|e|-5"},
+            {"text": "延后 +5", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rpd|session-1|e|5"},
         ],
         [{"text": "确认录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_confirm|session-1"}],
         [
@@ -564,6 +564,14 @@ def test_record_padding_adjust_buttons_use_plus_minus_five_minutes():
         if button.get("callback_data")
     ]
     assert max(len(value.encode("utf-8")) for value in callbacks) <= 64
+
+    long_callbacks = [
+        button["callback_data"]
+        for row in build_record_padding_adjust_buttons("tvhhelper", "yxmqOf1DcXs")
+        for button in row
+        if button.get("callback_data")
+    ]
+    assert max(len(value.encode("utf-8")) for value in long_callbacks) <= 64
 
 
 def test_record_padding_preset_buttons_use_consistent_five_minute_steps():
@@ -2471,6 +2479,22 @@ def test_select_tvh_webhook_image_prefers_channel_icon():
     }, base_url="https://m3u.example.com/")
 
     assert image == "https://m3u.example.com/imagecache/12"
+
+
+def test_select_tvh_webhook_image_keeps_absolute_channel_icon():
+    image = select_tvh_webhook_image({
+        "channel_icon": "https://tvlogo-282.pages.dev/logos/翡翠台.png",
+    }, base_url="https://tvlogo-282.pages.dev")
+
+    assert image == "https://tvlogo-282.pages.dev/logos/翡翠台.png"
+
+
+def test_select_tvh_webhook_image_deduplicates_repeated_absolute_prefix():
+    image = select_tvh_webhook_image({
+        "channel_icon": "https://tvlogo-282.pages.devhttps://tvlogo-282.pages.dev/logos/翡翠台.png",
+    }, base_url="https://m3u.example.com")
+
+    assert image == "https://tvlogo-282.pages.dev/logos/翡翠台.png"
 
 
 def test_tvh_webhook_message_formats_dvr_error_event():

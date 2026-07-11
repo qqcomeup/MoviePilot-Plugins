@@ -939,12 +939,12 @@ def build_record_stop_padding_buttons(plugin_id: str, session_id: str) -> list[l
 def build_record_padding_adjust_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
     return [
         [
-            {"text": "提前 -5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|start|-5")},
-            {"text": "提前 +5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|start|5")},
+            {"text": "提前 -5", "callback_data": plugin_callback(plugin_id, f"rpd|{session_id}|s|-5")},
+            {"text": "提前 +5", "callback_data": plugin_callback(plugin_id, f"rpd|{session_id}|s|5")},
         ],
         [
-            {"text": "延后 -5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|stop|-5")},
-            {"text": "延后 +5", "callback_data": plugin_callback(plugin_id, f"record_pad_delta|{session_id}|stop|5")},
+            {"text": "延后 -5", "callback_data": plugin_callback(plugin_id, f"rpd|{session_id}|e|-5")},
+            {"text": "延后 +5", "callback_data": plugin_callback(plugin_id, f"rpd|{session_id}|e|5")},
         ],
         [{"text": "确认录制", "callback_data": plugin_callback(plugin_id, f"record_confirm|{session_id}")}],
         [
@@ -4614,11 +4614,27 @@ def _normalize_tvh_image_url(base_url: str | None, image) -> str | None:
     value = _string_or_none(image)
     if not value:
         return None
+    value = _deduplicate_absolute_url_prefix(value)
     if "://" in value or value.startswith("data:"):
         return value
     if not base_url:
         return value
     return f"{normalize_base_url(base_url)}/{value.lstrip('/')}"
+
+
+def _deduplicate_absolute_url_prefix(value: str) -> str:
+    """折叠重复拼接的绝对URL前缀。"""
+    for scheme in ("https://", "http://"):
+        if not value.startswith(scheme):
+            continue
+        second = value.find(scheme, len(scheme))
+        if second <= 0:
+            return value
+        prefix = value[:second]
+        if value[second:].startswith(prefix):
+            return value[second:]
+        return value
+    return value
 
 
 def post_tvh_form(
