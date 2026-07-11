@@ -175,7 +175,7 @@
     "labels": "工具,网络,监控,Homepage",
     "version": "1.2",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
-    "author": "local",
+    "author": "qqcomeup",
     "level": 1,
     "history": {
       "v1.2": "插件详情页跳转按钮增加明确文字，避免只显示外链图标",
