@@ -144,7 +144,7 @@
     "labels": "工具,监控,Homepage",
     "version": "1.3",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png",
-    "author": "local",
+    "author": "qqcomeup",
     "level": 1,
     "history": {
       "v1.3": "修复 recent 乱序时可能读取旧指标的问题，插件详情页增加配置说明",
