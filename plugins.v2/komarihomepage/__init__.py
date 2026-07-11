@@ -19,7 +19,7 @@ class KomariHomePage(_PluginBase):
     plugin_desc = "将 Komari 服务器监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
     plugin_version = "1.3"
-    plugin_author = "local"
+    plugin_author = "qqcomeup"
     author_url = "https://github.com/komari-monitor/komari"
     plugin_config_prefix = "komarihomepage_"
     plugin_order = 31
