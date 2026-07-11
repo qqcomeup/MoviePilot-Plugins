@@ -1006,12 +1006,12 @@ def build_dvr_entry_buttons(
 def build_dvr_calendar_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
     return [
         [
-            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|all")},
-            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|recording")},
+            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dcf|{session_id}|all")},
+            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dcf|{session_id}|recording")},
         ],
         [
-            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|finished")},
-            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_calendar_filter|{session_id}|failed")},
+            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dcf|{session_id}|finished")},
+            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dcf|{session_id}|failed")},
         ],
     ] + [
         [{"text": "返回列表", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_page|{session_id}|0")}],
@@ -1021,12 +1021,12 @@ def build_dvr_calendar_buttons(plugin_id: str, session_id: str) -> list[list[dic
 def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]]:
     return [
         [
-            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|all")},
-            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|recording")},
+            {"text": "全部", "callback_data": plugin_callback(plugin_id, f"dtf|{session_id}|all")},
+            {"text": "录制中", "callback_data": plugin_callback(plugin_id, f"dtf|{session_id}|recording")},
         ],
         [
-            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|finished")},
-            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dvr_tasks_filter|{session_id}|failed")},
+            {"text": "已完成", "callback_data": plugin_callback(plugin_id, f"dtf|{session_id}|finished")},
+            {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dtf|{session_id}|failed")},
         ],
         [
             {"text": "日历视图", "callback_data": plugin_callback(plugin_id, f"dvr_calendar|{session_id}")},
@@ -1038,7 +1038,7 @@ def build_dvr_bulk_remove_buttons(plugin_id: str, session_id: str, entries: list
     if not removable_tvh_dvr_entries(entries):
         return []
     return [[
-        {"text": "一键删除可删", "callback_data": plugin_callback(plugin_id, f"dvr_remove_all_confirm|{session_id}")},
+        {"text": "一键删除可删", "callback_data": plugin_callback(plugin_id, f"drac|{session_id}")},
     ]]
 
 

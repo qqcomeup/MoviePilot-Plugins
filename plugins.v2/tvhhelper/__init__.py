@@ -142,7 +142,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -545,12 +545,18 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("dvr_tasks_filter|"):
                 _, session_id, dvr_filter = payload.split("|", 2)
                 self.__show_dvr_tasks(event, page=0, session_id=session_id, dvr_filter=dvr_filter)
+            elif payload.startswith("dtf|"):
+                _, session_id, dvr_filter = payload.split("|", 2)
+                self.__show_dvr_tasks(event, page=0, session_id=session_id, dvr_filter=dvr_filter)
             elif payload.startswith("dvr_tasks_page|"):
                 _, session_id, page_text = payload.split("|", 2)
                 self.__show_dvr_tasks(event, page=self.__to_int(page_text, 0), session_id=session_id)
             elif payload.startswith("dvr_calendar|"):
                 self.__show_dvr_calendar(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_calendar_filter|"):
+                _, session_id, dvr_filter = payload.split("|", 2)
+                self.__show_dvr_calendar(event, session_id, dvr_filter=dvr_filter)
+            elif payload.startswith("dcf|"):
                 _, session_id, dvr_filter = payload.split("|", 2)
                 self.__show_dvr_calendar(event, session_id, dvr_filter=dvr_filter)
             elif payload.startswith("dvr_task|"):
@@ -573,7 +579,11 @@ class tvhhelper(_PluginBase):
                 self.__confirm_remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_remove_all_confirm|"):
                 self.__confirm_remove_all_dvr_tasks(event, payload.split("|", 1)[1])
+            elif payload.startswith("drac|"):
+                self.__confirm_remove_all_dvr_tasks(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_remove_all|"):
+                self.__remove_all_dvr_tasks(event, payload.split("|", 1)[1])
+            elif payload.startswith("dra|"):
                 self.__remove_all_dvr_tasks(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_remove|"):
                 _, session_id, index_text = payload.split("|", 2)
@@ -1386,7 +1396,7 @@ class tvhhelper(_PluginBase):
             buttons=[
                 [{
                     "text": f"确认删除{len(removable)}个",
-                    "callback_data": plugin_callback(self.__class__.__name__, f"dvr_remove_all|{session_id}"),
+                    "callback_data": plugin_callback(self.__class__.__name__, f"dra|{session_id}"),
                 }],
                 [
                     {

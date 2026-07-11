@@ -934,7 +934,7 @@ def test_dvr_entry_buttons_fit_telegram_callback_limit():
 
 
 def test_dvr_filter_buttons_fit_telegram_callback_limit():
-    buttons = build_dvr_filter_buttons("tvhhelper", "session-1")
+    buttons = build_dvr_filter_buttons("tvhhelper", "mZK3Rqi0hpc")
     callback_data = [
         button["callback_data"]
         for row in buttons
@@ -984,11 +984,11 @@ def test_dvr_bulk_remove_buttons_only_show_for_removable_entries():
         TvhDvrEntry(uuid="failed", title="失败", channel="翡翠台", start=1, stop=2, sched_status="failed"),
     ]
 
-    buttons = build_dvr_bulk_remove_buttons("tvhhelper", "session-1", entries)
+    buttons = build_dvr_bulk_remove_buttons("tvhhelper", "mZK3Rqi0hpc", entries)
     flat = [button for row in buttons for button in row]
 
     assert flat == [
-        {"text": "一键删除可删", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dvr_remove_all_confirm|session-1"}
+        {"text": "一键删除可删", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|drac|mZK3Rqi0hpc"}
     ]
     assert len(flat[0]["callback_data"].encode("utf-8")) <= 64
     assert build_dvr_bulk_remove_buttons("tvhhelper", "session-1", entries[:1]) == []
