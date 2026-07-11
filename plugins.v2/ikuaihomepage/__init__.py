@@ -21,7 +21,7 @@ class IKuaiHomePage(_PluginBase):
     plugin_desc = "将爱快本地路由监控数据转换为 Homepage customapi 接口。"
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/homepage.png"
     plugin_version = "1.4"
-    plugin_author = "local"
+    plugin_author = "qqcomeup"
     author_url = "https://github.com/ikuaidev/ikuai-cli"
     plugin_config_prefix = "ikuaihomepage_"
     plugin_order = 32
