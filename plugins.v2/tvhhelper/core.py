@@ -1,5 +1,6 @@
 import json
 import ipaddress
+import hashlib
 import os
 import secrets
 import string
@@ -667,6 +668,10 @@ def decode_callback_value(value: str) -> str:
     return urllib.parse.unquote(value)
 
 
+def user_callback_key(username: str) -> str:
+    return hashlib.sha1(str(username or "").encode("utf-8")).hexdigest()[:12]
+
+
 def build_main_buttons(plugin_id: str) -> list[list[dict]]:
     return [
         [
@@ -693,7 +698,7 @@ def build_main_buttons(plugin_id: str) -> list[list[dict]]:
 
 def build_user_select_buttons(plugin_id: str, users: list[TvhUser]) -> list[list[dict]]:
     buttons = [
-        {"text": user.username, "callback_data": plugin_callback(plugin_id, f"user|{encode_callback_value(user.username)}")}
+        {"text": user.username, "callback_data": plugin_callback(plugin_id, f"u|{user_callback_key(user.username)}")}
         for user in users
     ]
     return [buttons[index:index + 2] for index in range(0, len(buttons), 2)] + build_secondary_nav_buttons(plugin_id)
@@ -703,7 +708,7 @@ def build_user_manage_buttons(plugin_id: str, users: list[TvhUser]) -> list[list
     buttons = [
         {
             "text": f"{user.username} {_enabled_label(user.enabled)}",
-            "callback_data": plugin_callback(plugin_id, f"manage_user|{encode_callback_value(user.username)}"),
+            "callback_data": plugin_callback(plugin_id, f"mu|{user_callback_key(user.username)}"),
         }
         for user in users
     ]
@@ -715,21 +720,21 @@ def build_user_action_buttons(
     user: TvhUser,
     play_notify_enabled: bool | None = None,
 ) -> list[list[dict]]:
-    username = encode_callback_value(user.username)
+    username = user_callback_key(user.username)
     buttons = [
-        [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"confirm_reset_token|{username}")}],
+        [{"text": "重置Token", "callback_data": plugin_callback(plugin_id, f"crt|{username}")}],
     ]
     if play_notify_enabled is not None:
         target_enabled = "0" if play_notify_enabled else "1"
         toggle_text = "关闭播放通知" if play_notify_enabled else "开启播放通知"
         buttons.append([
-            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"toggle_play_notify_user|{target_enabled}|{username}")},
+            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"tpnu|{target_enabled}|{username}")},
         ])
     if user.enabled is not None:
         target_enabled = "0" if user.enabled else "1"
         toggle_text = "禁用用户" if target_enabled == "0" else "启用用户"
         buttons.append([
-            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"confirm_toggle_user|{target_enabled}|{username}")},
+            {"text": toggle_text, "callback_data": plugin_callback(plugin_id, f"ctu|{target_enabled}|{username}")},
         ])
     return buttons + [
         [
@@ -754,7 +759,7 @@ def build_play_notify_user_buttons(
             "text": f"{user.username} {label}",
             "callback_data": plugin_callback(
                 plugin_id,
-                f"toggle_play_notify_menu|{target_enabled}|{encode_callback_value(user.username)}",
+                f"tpnm|{target_enabled}|{user_callback_key(user.username)}",
             ),
         })
     bulk_buttons = [[
@@ -789,19 +794,19 @@ def build_play_notify_user_buttons(
 
 
 def build_user_confirm_buttons(plugin_id: str, action: str, username: str, enabled: bool | None = None) -> list[list[dict]]:
-    encoded_username = encode_callback_value(username)
+    encoded_username = user_callback_key(username)
     if action == "reset_token":
-        confirm_payload = f"reset_token|{encoded_username}"
+        confirm_payload = f"rt|{encoded_username}"
         confirm_text = "确认重置"
     elif action == "toggle_user" and enabled is not None:
-        confirm_payload = f"toggle_user|{'1' if enabled else '0'}|{encoded_username}"
+        confirm_payload = f"tu|{'1' if enabled else '0'}|{encoded_username}"
         confirm_text = "确认启用" if enabled else "确认禁用"
     else:
         raise ValueError("未知确认操作")
     return [
         [{"text": confirm_text, "callback_data": plugin_callback(plugin_id, confirm_payload)}],
         [
-            {"text": "返回", "callback_data": plugin_callback(plugin_id, f"manage_user|{encoded_username}")},
+            {"text": "返回", "callback_data": plugin_callback(plugin_id, f"mu|{encoded_username}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -895,16 +900,16 @@ def build_record_search_result_buttons(
         [
             {
                 "text": f"预约录制 {start_index + offset + 1}",
-                "callback_data": plugin_callback(plugin_id, f"record_search_pick|{session_id}|{start_index + offset}"),
+                "callback_data": plugin_callback(plugin_id, f"rsp|{session_id}|{start_index + offset}"),
             },
             {
                 "text": f"详情 {start_index + offset + 1}",
-                "callback_data": plugin_callback(plugin_id, f"record_search_detail|{session_id}|{start_index + offset}"),
+                "callback_data": plugin_callback(plugin_id, f"rsd|{session_id}|{start_index + offset}"),
             },
         ]
         for offset, _ in enumerate(page_items)
     ]
-    return rows + _record_page_nav(plugin_id, f"record_search_page|{session_id}", page, total_pages) + [
+    return rows + _record_page_nav(plugin_id, f"rsg|{session_id}", page, total_pages) + [
         [
             {"text": "返回", "callback_data": plugin_callback(plugin_id, "record_menu")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
@@ -920,9 +925,9 @@ def build_record_search_detail_buttons(
 ) -> list[list[dict]]:
     target = f"{session_id}|{entry_index}"
     return [
-        [{"text": "预约录制", "callback_data": plugin_callback(plugin_id, f"record_search_pick|{target}")}],
+        [{"text": "预约录制", "callback_data": plugin_callback(plugin_id, f"rsp|{target}")}],
         [
-            {"text": "返回结果", "callback_data": plugin_callback(plugin_id, f"record_search_page|{session_id}|{max(0, int(page or 0))}")},
+            {"text": "返回结果", "callback_data": plugin_callback(plugin_id, f"rsg|{session_id}|{max(0, int(page or 0))}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
         ],
     ]
@@ -1029,7 +1034,7 @@ def build_dvr_filter_buttons(plugin_id: str, session_id: str) -> list[list[dict]
             {"text": "失败", "callback_data": plugin_callback(plugin_id, f"dtf|{session_id}|failed")},
         ],
         [
-            {"text": "日历视图", "callback_data": plugin_callback(plugin_id, f"dvr_calendar|{session_id}")},
+        {"text": "日历视图", "callback_data": plugin_callback(plugin_id, f"dcal|{session_id}")},
         ],
     ]
 
@@ -1061,22 +1066,22 @@ def build_dvr_entry_action_buttons(
     if entry is None or _dvr_entry_can_adjust(entry):
         rows.extend([
             [
-                {"text": "延后结束+5", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|5")},
-                {"text": "延后结束+10", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|10")},
+                {"text": "延后结束+5", "callback_data": plugin_callback(plugin_id, f"dsd|{target}|5")},
+                {"text": "延后结束+10", "callback_data": plugin_callback(plugin_id, f"dsd|{target}|10")},
             ],
         ])
         action_button = (
-            {"text": "停止录制", "callback_data": plugin_callback(plugin_id, f"dvr_stop_confirm|{target}")}
+            {"text": "停止录制", "callback_data": plugin_callback(plugin_id, f"dsc|{target}")}
             if entry is not None and is_recording_tvh_dvr_entry(entry)
-            else {"text": "取消任务", "callback_data": plugin_callback(plugin_id, f"dvr_cancel_confirm|{target}")}
+            else {"text": "取消任务", "callback_data": plugin_callback(plugin_id, f"dcc|{target}")}
         )
         rows.append([
-            {"text": "提前结束-5", "callback_data": plugin_callback(plugin_id, f"dvr_stop_delta|{target}|-5")},
+            {"text": "提前结束-5", "callback_data": plugin_callback(plugin_id, f"dsd|{target}|-5")},
             action_button,
         ])
     if entry is not None and can_remove_tvh_dvr_entry(entry):
         rows.append([
-            {"text": "删除录制文件", "callback_data": plugin_callback(plugin_id, f"dvr_remove_confirm|{target}")},
+            {"text": "删除录制文件", "callback_data": plugin_callback(plugin_id, f"drc|{target}")},
         ])
     rows.append([
         {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
@@ -1087,7 +1092,7 @@ def build_dvr_entry_action_buttons(
 def build_dvr_remove_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
     target = f"{session_id}|{entry_index}"
     return [
-        [{"text": "确认删除文件", "callback_data": plugin_callback(plugin_id, f"dvr_remove|{target}")}],
+        [{"text": "确认删除文件", "callback_data": plugin_callback(plugin_id, f"dr|{target}")}],
         [
             {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
@@ -1098,7 +1103,7 @@ def build_dvr_remove_confirm_buttons(plugin_id: str, session_id: str, entry_inde
 def build_dvr_cancel_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
     target = f"{session_id}|{entry_index}"
     return [
-        [{"text": "确认取消任务", "callback_data": plugin_callback(plugin_id, f"dvr_cancel|{target}")}],
+        [{"text": "确认取消任务", "callback_data": plugin_callback(plugin_id, f"dc|{target}")}],
         [
             {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},
@@ -1109,7 +1114,7 @@ def build_dvr_cancel_confirm_buttons(plugin_id: str, session_id: str, entry_inde
 def build_dvr_stop_confirm_buttons(plugin_id: str, session_id: str, entry_index: int) -> list[list[dict]]:
     target = f"{session_id}|{entry_index}"
     return [
-        [{"text": "确认停止录制", "callback_data": plugin_callback(plugin_id, f"dvr_stop|{target}")}],
+        [{"text": "确认停止录制", "callback_data": plugin_callback(plugin_id, f"ds|{target}")}],
         [
             {"text": "返回详情", "callback_data": plugin_callback(plugin_id, f"dvr_task|{target}")},
             {"text": "关闭", "callback_data": plugin_callback(plugin_id, "dismiss")},

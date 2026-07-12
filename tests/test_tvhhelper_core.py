@@ -28,6 +28,9 @@ from core import (
     build_dvr_filter_buttons,
     build_dvr_bulk_remove_buttons,
     build_dvr_calendar_buttons,
+    build_dvr_cancel_confirm_buttons,
+    build_dvr_remove_confirm_buttons,
+    build_dvr_stop_confirm_buttons,
     build_epg_url,
     build_long_epg_url,
     build_long_m3u_url,
@@ -38,6 +41,8 @@ from core import (
     build_record_merge_choice_buttons,
     build_record_padding_adjust_buttons,
     build_record_program_buttons,
+    build_record_search_detail_buttons,
+    build_record_search_result_buttons,
     sort_record_channels_for_display,
     build_record_start_padding_buttons,
     build_record_stop_padding_buttons,
@@ -124,11 +129,27 @@ from core import (
     playback_subscription_key,
     summarize_tvh_dvr_entries,
     tokens_from_passwd_payload,
+    user_callback_key,
     scan_dvb_adapters,
     restart_tvh_server,
     set_tvh_user_enabled,
     select_tvh_webhook_image,
 )
+
+
+def _callback_data_from_buttons(buttons: list[list[dict]]) -> list[str]:
+    return [
+        button["callback_data"]
+        for row in buttons
+        for button in row
+        if button.get("callback_data")
+    ]
+
+
+def _assert_callback_data_within_telegram_limit(buttons: list[list[dict]]) -> None:
+    callback_data = _callback_data_from_buttons(buttons)
+    assert callback_data
+    assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
 
 
 def test_short_urls_are_built_with_a_parameter():
@@ -465,13 +486,13 @@ def test_record_search_result_buttons_use_short_callbacks_and_pagination():
 
     assert buttons == [
         [
-            {"text": "预约录制 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_pick|abcd1234ef|1"},
-            {"text": "详情 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_detail|abcd1234ef|1"},
+            {"text": "预约录制 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsp|abcd1234ef|1"},
+            {"text": "详情 2", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsd|abcd1234ef|1"},
         ],
         [
-            {"text": "上一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|0"},
+            {"text": "上一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsg|abcd1234ef|0"},
             {"text": "2/3", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|noop"},
-            {"text": "下一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|2"},
+            {"text": "下一页", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsg|abcd1234ef|2"},
         ],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_menu"},
@@ -489,9 +510,9 @@ def test_record_search_result_buttons_use_short_callbacks_and_pagination():
 
 def test_record_search_detail_buttons_return_to_search_page():
     assert core.build_record_search_detail_buttons("tvhhelper", "abcd1234ef", entry_index=3, page=2) == [
-        [{"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_pick|abcd1234ef|3"}],
+        [{"text": "预约录制", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsp|abcd1234ef|3"}],
         [
-            {"text": "返回结果", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|record_search_page|abcd1234ef|2"},
+            {"text": "返回结果", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|rsg|abcd1234ef|2"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
@@ -945,6 +966,80 @@ def test_dvr_filter_buttons_fit_telegram_callback_limit():
     assert callback_data
     assert max(len(value.encode("utf-8")) for value in callback_data) <= 64
     assert any(button["text"] == "日历视图" for row in buttons for button in row)
+
+
+def test_all_tvhhelper_buttons_fit_telegram_callback_limit():
+    session_id = "mZK3Rqi0hpc"
+    long_username = "long_username_abcdefghijklmnopqrstuvwxyz"
+    users = [
+        TvhUser(username=long_username, enabled=True),
+        TvhUser(username="a|b", enabled=False),
+    ]
+    channels = [
+        TvhChannel(uuid=f"channel-{index}", name=f"频道{index}", number=str(index))
+        for index in range(12)
+    ]
+    events = [
+        TvhEpgEvent(
+            event_id=f"event-{index}",
+            channel_uuid="channel-1",
+            channel_name="翡翠台",
+            title=f"节目{index}",
+            start=1893456000 + index * 1800,
+            stop=1893457800 + index * 1800,
+        )
+        for index in range(12)
+    ]
+    entries = [
+        TvhDvrEntry(
+            uuid=f"dvr-{index}",
+            title=f"录制任务{index}",
+            channel="翡翠台",
+            start=1893456000 + index * 1800,
+            stop=1893457800 + index * 1800,
+            sched_status="completed" if index % 2 else "recording",
+            filename=f"/recordings/task-{index}.ts",
+            url=f"dvrfile/dvr-{index}",
+        )
+        for index in range(12)
+    ]
+    button_sets = [
+        build_main_buttons("tvhhelper"),
+        build_secondary_nav_buttons("tvhhelper"),
+        build_restart_confirm_buttons("tvhhelper"),
+        build_user_select_buttons("tvhhelper", users),
+        build_user_manage_buttons("tvhhelper", users),
+        build_user_action_buttons("tvhhelper", users[0], play_notify_enabled=True),
+        build_user_confirm_buttons("tvhhelper", "reset_token", long_username),
+        build_user_confirm_buttons("tvhhelper", "toggle_user", long_username, False),
+        build_play_notify_user_buttons("tvhhelper", users, {long_username: True}, "webhook"),
+        build_subscription_close_buttons(
+            "tvhhelper",
+            [TvhSubscription(subscription_id="999999", username=long_username, channel="翡翠台")],
+        ),
+        build_record_channel_buttons("tvhhelper", session_id, channels, page=1),
+        build_record_program_buttons("tvhhelper", session_id, events, page=1),
+        build_record_search_result_buttons("tvhhelper", session_id, events, page=1),
+        build_record_search_detail_buttons("tvhhelper", session_id, entry_index=999, page=9),
+        build_record_start_padding_buttons("tvhhelper", session_id),
+        build_record_stop_padding_buttons("tvhhelper", session_id),
+        build_record_padding_adjust_buttons("tvhhelper", session_id),
+        build_record_confirm_buttons("tvhhelper", session_id),
+        build_record_created_buttons("tvhhelper", session_id),
+        build_record_merge_choice_buttons("tvhhelper", session_id),
+        build_dvr_entry_buttons("tvhhelper", session_id, entries, page=1),
+        build_dvr_calendar_buttons("tvhhelper", session_id),
+        build_dvr_filter_buttons("tvhhelper", session_id),
+        build_dvr_bulk_remove_buttons("tvhhelper", session_id, entries),
+        build_dvr_entry_action_buttons("tvhhelper", session_id, 999, entries[0]),
+        build_dvr_entry_action_buttons("tvhhelper", session_id, 999, entries[1], "https://tvh.example.com/dvrfile/dvr-1"),
+        build_dvr_remove_confirm_buttons("tvhhelper", session_id, 999),
+        build_dvr_cancel_confirm_buttons("tvhhelper", session_id, 999),
+        build_dvr_stop_confirm_buttons("tvhhelper", session_id, 999),
+    ]
+
+    for buttons in button_sets:
+        _assert_callback_data_within_telegram_limit(buttons)
 
 
 def test_dvr_calendar_message_groups_entries_by_day():
@@ -1607,6 +1702,9 @@ def test_restart_tvh_server_calls_tvh_restart_api(monkeypatch):
 
 
 def test_user_select_buttons_are_two_per_row():
+    test_key = user_callback_key("test")
+    empty_key = user_callback_key("empty")
+    third_key = user_callback_key("third")
     buttons = build_user_select_buttons(
         "tvhhelper",
         [
@@ -1618,10 +1716,10 @@ def test_user_select_buttons_are_two_per_row():
 
     assert buttons == [
         [
-            {"text": "test", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|test"},
-            {"text": "empty", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|empty"},
+            {"text": "test", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|u|{test_key}"},
+            {"text": "empty", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|u|{empty_key}"},
         ],
-        [{"text": "third", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|user|third"}],
+        [{"text": "third", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|u|{third_key}"}],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
@@ -1630,6 +1728,9 @@ def test_user_select_buttons_are_two_per_row():
 
 
 def test_user_manage_buttons_show_enabled_state_two_per_row():
+    test_key = user_callback_key("test")
+    disabled_key = user_callback_key("disabled")
+    unknown_key = user_callback_key("unknown")
     buttons = build_user_manage_buttons(
         "tvhhelper",
         [
@@ -1641,10 +1742,10 @@ def test_user_manage_buttons_show_enabled_state_two_per_row():
 
     assert buttons == [
         [
-            {"text": "test 已启用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|test"},
-            {"text": "disabled 已禁用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|disabled"},
+            {"text": "test 已启用", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|mu|{test_key}"},
+            {"text": "disabled 已禁用", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|mu|{disabled_key}"},
         ],
-        [{"text": "unknown 未知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|unknown"}],
+        [{"text": "unknown 未知", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|mu|{unknown_key}"}],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|main_menu"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
@@ -1653,9 +1754,10 @@ def test_user_manage_buttons_show_enabled_state_two_per_row():
 
 
 def test_user_action_buttons_reset_token_and_toggle_user():
+    test_key = user_callback_key("test")
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=True)) == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|test"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|test"}],
+        [{"text": "重置Token", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|crt|{test_key}"}],
+        [{"text": "禁用用户", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|ctu|0|{test_key}"}],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_users"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
@@ -1663,30 +1765,33 @@ def test_user_action_buttons_reset_token_and_toggle_user():
     ]
 
     assert build_user_action_buttons("tvhhelper", TvhUser(username="test", enabled=False))[1] == [
-        {"text": "启用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|1|test"}
+        {"text": "启用用户", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|ctu|1|{test_key}"}
     ]
 
 
 def test_user_action_buttons_can_toggle_playback_notifications():
+    test_key = user_callback_key("test")
     assert build_user_action_buttons(
         "tvhhelper",
         TvhUser(username="test", enabled=True),
         play_notify_enabled=True,
     )[:3] == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|test"}],
-        [{"text": "关闭播放通知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_user|0|test"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|test"}],
+        [{"text": "重置Token", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|crt|{test_key}"}],
+        [{"text": "关闭播放通知", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|tpnu|0|{test_key}"}],
+        [{"text": "禁用用户", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|ctu|0|{test_key}"}],
     ]
     assert build_user_action_buttons(
         "tvhhelper",
         TvhUser(username="test", enabled=True),
         play_notify_enabled=False,
     )[1] == [
-        {"text": "开启播放通知", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_user|1|test"}
+        {"text": "开启播放通知", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|tpnu|1|{test_key}"}
     ]
 
 
 def test_play_notify_user_buttons_toggle_each_user():
+    ck_key = user_callback_key("ck")
+    test_key = user_callback_key("test")
     assert build_play_notify_user_buttons(
         "tvhhelper",
         [TvhUser(username="ck"), TvhUser(username="test")],
@@ -1694,8 +1799,8 @@ def test_play_notify_user_buttons_toggle_each_user():
         "auto",
     ) == [
         [
-            {"text": "ck 已开启", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_menu|0|ck"},
-            {"text": "test 已关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_menu|1|test"},
+            {"text": "ck 已开启", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|tpnm|0|{ck_key}"},
+            {"text": "test 已关闭", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|tpnm|1|{test_key}"},
         ],
         [
             {"text": "全部开启", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_play_notify_all|1"},
@@ -1717,19 +1822,21 @@ def test_play_notify_user_buttons_toggle_each_user():
 
 def test_user_action_buttons_encode_usernames_and_confirm_sensitive_actions():
     encoded = encode_callback_value("a|b")
+    user_key = user_callback_key("a|b")
     assert encoded == "a%7Cb"
     assert decode_callback_value(encoded) == "a|b"
     assert build_user_action_buttons("tvhhelper", TvhUser(username="a|b", enabled=True))[:2] == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|a%7Cb"}],
-        [{"text": "禁用用户", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_toggle_user|0|a%7Cb"}],
+        [{"text": "重置Token", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|crt|{user_key}"}],
+        [{"text": "禁用用户", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|ctu|0|{user_key}"}],
     ]
 
 
 def test_unknown_user_enabled_state_does_not_show_destructive_toggle():
+    unknown_key = user_callback_key("unknown")
     buttons = build_user_action_buttons("tvhhelper", TvhUser(username="unknown"))
 
     assert buttons == [
-        [{"text": "重置Token", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|confirm_reset_token|unknown"}],
+        [{"text": "重置Token", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|crt|{unknown_key}"}],
         [
             {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_users"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
@@ -1738,17 +1845,18 @@ def test_unknown_user_enabled_state_does_not_show_destructive_toggle():
 
 
 def test_user_confirm_buttons_put_state_before_encoded_username():
+    user_key = user_callback_key("a|b")
     assert build_user_confirm_buttons("tvhhelper", "toggle_user", "a|b", False) == [
-        [{"text": "确认禁用", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|toggle_user|0|a%7Cb"}],
+        [{"text": "确认禁用", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|tu|0|{user_key}"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|a%7Cb"},
+            {"text": "返回", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|mu|{user_key}"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]
     assert build_user_confirm_buttons("tvhhelper", "reset_token", "a|b") == [
-        [{"text": "确认重置", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|reset_token|a%7Cb"}],
+        [{"text": "确认重置", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|rt|{user_key}"}],
         [
-            {"text": "返回", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|manage_user|a%7Cb"},
+            {"text": "返回", "callback_data": f"[PLUGIN]tvhhelper|tvhhelper|mu|{user_key}"},
             {"text": "关闭", "callback_data": "[PLUGIN]tvhhelper|tvhhelper|dismiss"},
         ],
     ]

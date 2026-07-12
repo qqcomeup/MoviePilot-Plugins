@@ -132,6 +132,7 @@ from .core import (
     set_tvh_user_enabled,
     summarize_tvh_dvr_entries,
     token_for_user,
+    user_callback_key,
     TvhDvrEntry,
     TvhServerStatus,
     TvhUser,
@@ -142,7 +143,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.2.1"
+    plugin_version = "0.2.3"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -191,6 +192,8 @@ class tvhhelper(_PluginBase):
     _ipdb_update_running = False
     _dvr_reliability_enabled = True
     _dvr_reliability_interval = 60
+    _record_default_start_padding = DEFAULT_RECORD_START_PADDING_MINUTES
+    _record_default_stop_padding = DEFAULT_RECORD_STOP_PADDING_MINUTES
     _record_search_cancel_words = {"取消", "退出", "cancel", "q", "quit", "exit"}
     _record_search_input_action = "tvhhelper.record_search"
     _record_search_force_reply_ttl = 60
@@ -218,6 +221,14 @@ class tvhhelper(_PluginBase):
             self._play_notify_interval = normalize_interval(config.get("play_notify_interval"), 10, 5)
             self._dvr_reliability_enabled = bool(config.get("dvr_reliability_enabled", True))
             self._dvr_reliability_interval = normalize_interval(config.get("dvr_reliability_interval"), 60, 30)
+            self._record_default_start_padding = self.__normalize_record_padding(
+                config.get("record_default_start_padding"),
+                DEFAULT_RECORD_START_PADDING_MINUTES,
+            )
+            self._record_default_stop_padding = self.__normalize_record_padding(
+                config.get("record_default_stop_padding"),
+                DEFAULT_RECORD_STOP_PADDING_MINUTES,
+            )
             self._ip_lookup_enabled = bool(config.get("ip_lookup_enabled", True))
             self._ipdb_enabled = bool(config.get("ipdb_enabled", True))
             self._ipdb_auto_update = bool(config.get("ipdb_auto_update", True))
@@ -287,6 +298,8 @@ class tvhhelper(_PluginBase):
         self._play_notify_interval = 10
         self._dvr_reliability_enabled = True
         self._dvr_reliability_interval = 60
+        self._record_default_start_padding = DEFAULT_RECORD_START_PADDING_MINUTES
+        self._record_default_stop_padding = DEFAULT_RECORD_STOP_PADDING_MINUTES
         self._ip_lookup_enabled = True
         self._ipdb_enabled = True
         self._ipdb_auto_update = True
@@ -318,6 +331,10 @@ class tvhhelper(_PluginBase):
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @classmethod
+    def __normalize_record_padding(cls, value: Any, default: int) -> int:
+        return min(180, max(0, cls.__to_int(value, default)))
 
     def __payload_int(self, payload: str, index: int, default: int) -> int:
         try:
@@ -367,6 +384,8 @@ class tvhhelper(_PluginBase):
             "play_notify_interval": self._play_notify_interval,
             "dvr_reliability_enabled": self._dvr_reliability_enabled,
             "dvr_reliability_interval": self._dvr_reliability_interval,
+            "record_default_start_padding": self._record_default_start_padding,
+            "record_default_stop_padding": self._record_default_stop_padding,
             "ip_lookup_enabled": self._ip_lookup_enabled,
             "ipdb_enabled": self._ipdb_enabled,
             "ipdb_auto_update": self._ipdb_auto_update,
@@ -553,6 +572,8 @@ class tvhhelper(_PluginBase):
                 self.__show_dvr_tasks(event, page=self.__to_int(page_text, 0), session_id=session_id)
             elif payload.startswith("dvr_calendar|"):
                 self.__show_dvr_calendar(event, payload.split("|", 1)[1])
+            elif payload.startswith("dcal|"):
+                self.__show_dvr_calendar(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_calendar_filter|"):
                 _, session_id, dvr_filter = payload.split("|", 2)
                 self.__show_dvr_calendar(event, session_id, dvr_filter=dvr_filter)
@@ -565,16 +586,39 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("dvr_cancel_confirm|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__confirm_cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dcc|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_cancel|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dc|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__cancel_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_stop_confirm|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__confirm_stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dsc|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dsd|"):
+                _, session_id, index_text, minutes_text = payload.split("|", 3)
+                self.__adjust_dvr_task_stop(
+                    event,
+                    session_id,
+                    self.__to_int(index_text, -1),
+                    self.__to_int(minutes_text, 0),
+                )
             elif payload.startswith("dvr_stop|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("ds|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__stop_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_remove_confirm|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__confirm_remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("drc|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__confirm_remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_remove_all_confirm|"):
@@ -586,6 +630,9 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("dra|"):
                 self.__remove_all_dvr_tasks(event, payload.split("|", 1)[1])
             elif payload.startswith("dvr_remove|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
+            elif payload.startswith("dr|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__remove_dvr_task(event, session_id, self.__to_int(index_text, -1))
             elif payload.startswith("dvr_stop_delta|"):
@@ -678,6 +725,9 @@ class tvhhelper(_PluginBase):
             elif payload.startswith("manage_user|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
                 self.__show_manage_user(event, username)
+            elif payload.startswith("mu|"):
+                username = self.__username_from_callback_key(payload.split("|", 1)[1])
+                self.__show_manage_user(event, username)
             elif payload == "play_notify_users":
                 self.__show_play_notify_users(event)
             elif payload.startswith("set_play_notify_source|"):
@@ -694,14 +744,34 @@ class tvhhelper(_PluginBase):
                 enabled = enabled_text == "1"
                 self.__set_play_notify_user(username, enabled)
                 self.__show_play_notify_users(event, f"{username} 播放通知已{'开启' if enabled else '关闭'}")
+            elif payload.startswith("tpnm|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = self.__username_from_callback_key(encoded_username)
+                enabled = enabled_text == "1"
+                self.__set_play_notify_user(username, enabled)
+                self.__show_play_notify_users(event, f"{username} 播放通知已{'开启' if enabled else '关闭'}")
             elif payload.startswith("toggle_play_notify_user|"):
                 _, enabled_text, encoded_username = payload.split("|", 2)
                 username = decode_callback_value(encoded_username)
                 enabled = enabled_text == "1"
                 self.__set_play_notify_user(username, enabled)
                 self.__show_manage_user(event, username, f"播放通知已{'开启' if enabled else '关闭'}")
+            elif payload.startswith("tpnu|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = self.__username_from_callback_key(encoded_username)
+                enabled = enabled_text == "1"
+                self.__set_play_notify_user(username, enabled)
+                self.__show_manage_user(event, username, f"播放通知已{'开启' if enabled else '关闭'}")
             elif payload.startswith("confirm_reset_token|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
+                self.__edit_or_reply(
+                    event,
+                    f"确认重置 {username}",
+                    f"确认重置用户 {username} 的 Token？\n\n旧的 M3U/XMLTV 链接会立刻失效。",
+                    buttons=build_user_confirm_buttons(self.__class__.__name__, "reset_token", username),
+                )
+            elif payload.startswith("crt|"):
+                username = self.__username_from_callback_key(payload.split("|", 1)[1])
                 self.__edit_or_reply(
                     event,
                     f"确认重置 {username}",
@@ -719,8 +789,45 @@ class tvhhelper(_PluginBase):
                     f"确认{action}用户 {username}？",
                     buttons=build_user_confirm_buttons(self.__class__.__name__, "toggle_user", username, enabled),
                 )
+            elif payload.startswith("ctu|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = self.__username_from_callback_key(encoded_username)
+                enabled = enabled_text == "1"
+                action = "启用" if enabled else "禁用"
+                self.__edit_or_reply(
+                    event,
+                    f"确认{action} {username}",
+                    f"确认{action}用户 {username}？",
+                    buttons=build_user_confirm_buttons(self.__class__.__name__, "toggle_user", username, enabled),
+                )
             elif payload.startswith("reset_token|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
+                users = self.__tvh_users()
+                user = find_user(users, username)
+                if not user:
+                    raise ValueError(f"未找到 TVH 用户: {username}")
+                new_token = reset_tvh_user_token(self._tvh_url, self._tvh_user, self._tvh_pass, user)
+                self.__clear_tvh_users_cache()
+                updated_user = TvhUser(
+                    username=user.username,
+                    token=new_token,
+                    access_uuid=user.access_uuid,
+                    passwd_uuid=user.passwd_uuid,
+                    enabled=user.enabled,
+                    passwd_enabled=user.passwd_enabled,
+                )
+                self.__edit_or_reply_copy(
+                    event,
+                    f"TVH用户 {username}",
+                    "Token 已重置\n\n" + format_user_links_message(self._public_base_url, updated_user),
+                    buttons=build_user_action_buttons(
+                        self.__class__.__name__,
+                        updated_user,
+                        self.__is_play_notify_user_enabled(updated_user.username),
+                    ),
+                )
+            elif payload.startswith("rt|"):
+                username = self.__username_from_callback_key(payload.split("|", 1)[1])
                 users = self.__tvh_users()
                 user = find_user(users, username)
                 if not user:
@@ -756,10 +863,32 @@ class tvhhelper(_PluginBase):
                 set_tvh_user_enabled(self._tvh_url, self._tvh_user, self._tvh_pass, user, enabled)
                 self.__clear_tvh_users_cache()
                 self.__show_manage_user(event, username, f"用户已{'启用' if enabled else '禁用'}")
+            elif payload.startswith("tu|"):
+                _, enabled_text, encoded_username = payload.split("|", 2)
+                username = self.__username_from_callback_key(encoded_username)
+                users = self.__tvh_users()
+                user = find_user(users, username)
+                if not user:
+                    raise ValueError(f"未找到 TVH 用户: {username}")
+                enabled = enabled_text == "1"
+                set_tvh_user_enabled(self._tvh_url, self._tvh_user, self._tvh_pass, user, enabled)
+                self.__clear_tvh_users_cache()
+                self.__show_manage_user(event, username, f"用户已{'启用' if enabled else '禁用'}")
             elif payload == "close_menu":
                 self.__show_close_menu(event)
             elif payload.startswith("user|"):
                 username = decode_callback_value(payload.split("|", 1)[1])
+                users = self.__tvh_users()
+                token = token_for_user(users, username)
+                user = TvhUser(username=username, token=token)
+                self.__edit_or_reply_copy(
+                    event,
+                    f"TVH用户 {username}",
+                    format_user_links_message(self._public_base_url, user),
+                    buttons=build_secondary_nav_buttons(self.__class__.__name__),
+                )
+            elif payload.startswith("u|"):
+                username = self.__username_from_callback_key(payload.split("|", 1)[1])
                 users = self.__tvh_users()
                 token = token_for_user(users, username)
                 user = TvhUser(username=username, token=token)
@@ -830,11 +959,23 @@ class tvhhelper(_PluginBase):
                 _, session_id, page_text = payload.split("|", 2)
                 self.__show_record_search_results(event, session_id, self.__to_int(page_text, 0))
                 return True
+            if payload.startswith("rsg|"):
+                _, session_id, page_text = payload.split("|", 2)
+                self.__show_record_search_results(event, session_id, self.__to_int(page_text, 0))
+                return True
             if payload.startswith("record_search_detail|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__show_record_search_detail(event, session_id, self.__to_int(index_text, -1))
                 return True
+            if payload.startswith("rsd|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__show_record_search_detail(event, session_id, self.__to_int(index_text, -1))
+                return True
             if payload.startswith("record_search_pick|"):
+                _, session_id, index_text = payload.split("|", 2)
+                self.__select_record_search_result(event, session_id, self.__to_int(index_text, -1))
+                return True
+            if payload.startswith("rsp|"):
                 _, session_id, index_text = payload.split("|", 2)
                 self.__select_record_search_result(event, session_id, self.__to_int(index_text, -1))
                 return True
@@ -876,6 +1017,9 @@ class tvhhelper(_PluginBase):
             "record_search_page|",
             "record_search_detail|",
             "record_search_pick|",
+            "rsg|",
+            "rsd|",
+            "rsp|",
         ))
 
     @staticmethod
@@ -1291,8 +1435,8 @@ class tvhhelper(_PluginBase):
         session_id = self.__create_record_session({
             "channel": channel,
             "events": events,
-            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
-            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
+            "start_padding": self._record_default_start_padding,
+            "stop_padding": self._record_default_stop_padding,
         })
         self.__edit_or_reply(
             event,
@@ -1517,8 +1661,8 @@ class tvhhelper(_PluginBase):
         session_id = self.__create_record_session({
             "channel": channel,
             "events": events,
-            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
-            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
+            "start_padding": self._record_default_start_padding,
+            "stop_padding": self._record_default_stop_padding,
         })
         self.__show_record_programs_from_session(event, session_id, page)
 
@@ -1546,8 +1690,8 @@ class tvhhelper(_PluginBase):
         session.update({
             "channel": channel,
             "events": events,
-            "start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
-            "stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
+            "start_padding": self._record_default_start_padding,
+            "stop_padding": self._record_default_stop_padding,
         })
         self.__save_record_session(session_id, session)
         self.__show_record_programs_from_session(event, session_id, page)
@@ -2056,8 +2200,8 @@ class tvhhelper(_PluginBase):
 
     def __select_record_event(self, event: Event, session_id: str, session: dict[str, Any], selected):
         session["selected_event"] = selected
-        session["start_padding"] = DEFAULT_RECORD_START_PADDING_MINUTES
-        session["stop_padding"] = DEFAULT_RECORD_STOP_PADDING_MINUTES
+        session["start_padding"] = session.get("start_padding", self._record_default_start_padding)
+        session["stop_padding"] = session.get("stop_padding", self._record_default_stop_padding)
         self.__save_record_session(session_id, session)
         self.__show_record_padding_adjust(event, session_id)
 
@@ -2377,6 +2521,12 @@ class tvhhelper(_PluginBase):
         if self._tvh_users_cache:
             self._tvh_users_cache.set(cache_key, users)
         return users
+
+    def __username_from_callback_key(self, value: str) -> str:
+        for user in self.__tvh_users():
+            if user_callback_key(user.username) == value:
+                return user.username
+        return decode_callback_value(value)
 
     def __clear_tvh_users_cache(self):
         if self._tvh_users_cache:
@@ -3252,6 +3402,24 @@ class tvhhelper(_PluginBase):
                                 ),
                                 row(
                                     field(
+                                        "record_default_start_padding",
+                                        "默认提前录制分钟",
+                                        md=4,
+                                        type="number",
+                                        min=0,
+                                        max=180,
+                                    ),
+                                    field(
+                                        "record_default_stop_padding",
+                                        "默认延后录制分钟",
+                                        md=4,
+                                        type="number",
+                                        min=0,
+                                        max=180,
+                                    ),
+                                ),
+                                row(
+                                    field(
                                         "webhook_secret",
                                         "Webhook Secret",
                                         type="password",
@@ -3310,6 +3478,8 @@ class tvhhelper(_PluginBase):
             "expected_dvb_count": 1,
             "check_interval": 60,
             "play_notify_interval": 10,
+            "record_default_start_padding": DEFAULT_RECORD_START_PADDING_MINUTES,
+            "record_default_stop_padding": DEFAULT_RECORD_STOP_PADDING_MINUTES,
             "ip_lookup_enabled": True,
             "ipdb_enabled": True,
             "ipdb_auto_update": True,
