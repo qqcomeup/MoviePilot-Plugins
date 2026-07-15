@@ -273,6 +273,7 @@ class tvhhelper(_PluginBase):
         self._last_webhook_event = ""
         self._last_webhook_seen_at = None
         self._dvr_completion_state = self.__load_dvr_completion_state()
+        self.__initialize_dvr_completion_baseline()
         if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
             self.__start_ipdb_update_async()
         self.__update_config()
@@ -2962,6 +2963,7 @@ class tvhhelper(_PluginBase):
                 if isinstance(recovery_missing_ids, list)
                 else []
             ),
+            "baseline_initialized_at": self.__safe_float(saved.get("baseline_initialized_at")),
         }
 
     def __save_dvr_completion_state(self) -> bool:
@@ -2991,6 +2993,42 @@ class tvhhelper(_PluginBase):
     def __dvr_completion_notified(self, notification_key: str) -> bool:
         """判断录制完成通知是否已发送。"""
         return notification_key in self._dvr_completion_state.setdefault("notified", {})
+
+    def __initialize_dvr_completion_baseline(self) -> None:
+        """首次启动时静默标记历史已完成录制，避免TVH重启重放旧通知。"""
+        if not self._enabled or not self._webhook_notify:
+            return
+        if not self._tvh_user and not self._tvh_pass:
+            return
+        with _DVR_COMPLETION_LOCK:
+            self._dvr_completion_state = self.__load_dvr_completion_state()
+            if self._dvr_completion_state.get("baseline_initialized_at") is not None:
+                return
+            if self._dvr_completion_state.get("pending") or self._dvr_completion_state.get("notified"):
+                self._dvr_completion_state["baseline_initialized_at"] = time.time()
+                self.__save_dvr_completion_state()
+                return
+            now_value = time.time()
+            cutoff = now_value - 120
+            try:
+                entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+            except Exception as err:
+                logger.warning(f"TVH录制完成历史基线读取失败: {err}")
+                return
+            notified = self._dvr_completion_state.setdefault("notified", {})
+            for entry in entries:
+                if not is_tvh_dvr_file_available(entry):
+                    continue
+                stop_time = self.__safe_float(getattr(entry, "stop", None))
+                if stop_time is None or stop_time > cutoff:
+                    continue
+                notification_key = self.__dvr_completion_key({
+                    "dvr_uuid": getattr(entry, "uuid", ""),
+                    "filename": getattr(entry, "filename", ""),
+                })
+                notified[notification_key] = now_value
+            self._dvr_completion_state["baseline_initialized_at"] = now_value
+            self.__save_dvr_completion_state()
 
     def __mark_dvr_completion_notified(self, notification_key: str) -> bool:
         """标记录制完成通知已发送。"""
