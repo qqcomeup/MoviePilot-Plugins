@@ -3411,6 +3411,24 @@ def fetch_tvh_dvr_entries(base_url: str, username: str, password: str, timeout: 
         payload = fetch_tvh_json(base_url, path, username, password, timeout=timeout)
         for entry in parse_tvh_dvr_entries(payload):
             entries[entry.uuid] = entry
+    generic_query = urllib.parse.urlencode({
+        "limit": 300,
+        "sort": "stop",
+        "dir": "DESC",
+        "all": 1,
+    })
+    try:
+        payload = fetch_tvh_json(
+            base_url,
+            f"/api/dvr/entry/grid?{generic_query}",
+            username,
+            password,
+            timeout=timeout,
+        )
+    except TvhError:
+        payload = {}
+    for entry in parse_tvh_dvr_entries(payload):
+        entries[entry.uuid] = entry
     return sorted(
         entries.values(),
         key=lambda item: (_dvr_sort_group(item), item.start_real or item.start, item.stop_real or item.stop, item.title),

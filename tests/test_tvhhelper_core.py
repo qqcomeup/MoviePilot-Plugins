@@ -69,6 +69,7 @@ from core import (
     enrich_tvh_webhook_program,
     ensure_tvhhelper_dvr_config,
     fetch_tvh_channel_program,
+    fetch_tvh_dvr_entries,
     fetch_tvh_status,
     fetch_tvh_status_bundle,
     calculate_recording_window,
@@ -926,6 +927,85 @@ def test_tvh_dvr_entries_are_parsed_from_upcoming_grid():
             url="dvrfile/dvr-1",
         )
     ]
+
+
+def test_fetch_tvh_dvr_entries_uses_generic_grid_when_category_grids_are_empty(monkeypatch):
+    def fake_fetch(base_url, path, username, password, timeout=10):
+        if "/api/dvr/entry/grid?" in path:
+            return {
+                "entries": [{
+                    "uuid": "dvr-generic",
+                    "disp_title": "东张西望[粤]",
+                    "channelname": "翡翠台",
+                    "start": 2000,
+                    "stop": 2600,
+                    "status": "File missing",
+                }]
+            }
+        return {"entries": []}
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    entries = fetch_tvh_dvr_entries("https://tvh.example.com", "admin", "pass")
+
+    assert [entry.uuid for entry in entries] == ["dvr-generic"]
+
+
+def test_fetch_tvh_dvr_entries_deduplicates_generic_and_category_entries(monkeypatch):
+    category_entry = {
+        "uuid": "dvr-shared",
+        "disp_title": "新闻透视[粤]",
+        "channelname": "翡翠台",
+        "start": 3000,
+        "stop": 3600,
+        "status": "Completed OK",
+    }
+    generic_entry = dict(category_entry, disp_title="新闻透视[粤] - 通用接口")
+    paths = []
+
+    def fake_fetch(base_url, path, username, password, timeout=10):
+        paths.append(path)
+        if "/api/dvr/entry/grid?" in path:
+            return {"entries": [generic_entry]}
+        if "grid_finished" in path:
+            return {"entries": [category_entry]}
+        return {"entries": []}
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    entries = fetch_tvh_dvr_entries("https://tvh.example.com", "admin", "pass")
+
+    assert [entry.uuid for entry in entries] == ["dvr-shared"]
+    assert entries[0].title == "新闻透视[粤] - 通用接口"
+    assert any("/api/dvr/entry/grid?" in path for path in paths)
+
+
+def test_fetch_tvh_dvr_entries_keeps_category_results_when_generic_grid_fails(monkeypatch):
+    paths = []
+
+    def fake_fetch(base_url, path, username, password, timeout=10):
+        paths.append(path)
+        if "/api/dvr/entry/grid?" in path:
+            raise core.TvhError("generic grid unavailable")
+        if "grid_finished" in path:
+            return {
+                "entries": [{
+                    "uuid": "dvr-finished",
+                    "disp_title": "晚间新闻",
+                    "channelname": "翡翠台",
+                    "start": 4000,
+                    "stop": 4600,
+                    "status": "Completed OK",
+                }]
+            }
+        return {"entries": []}
+
+    monkeypatch.setattr(core, "fetch_tvh_json", fake_fetch)
+
+    entries = fetch_tvh_dvr_entries("https://tvh.example.com", "admin", "pass")
+
+    assert [entry.uuid for entry in entries] == ["dvr-finished"]
+    assert any("/api/dvr/entry/grid?" in path for path in paths)
 
 
 def test_dvr_entry_buttons_fit_telegram_callback_limit():
