@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 DEFAULT_IPDB_COUNTRY_URL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb"
@@ -3927,6 +3927,59 @@ def summarize_tvh_dvr_entries(entries: list[TvhDvrEntry] | None) -> TvhDvrSummar
         recording=len([entry for entry in entries if _dvr_filter_key(entry) == "recording"]),
         failed=len([entry for entry in entries if _dvr_filter_key(entry) == "failed"]),
     )
+
+
+def is_tvh_dvr_file_available(entry: TvhDvrEntry | None) -> bool:
+    """判断TVH是否已读取到可用的录制文件。"""
+    if entry is None or not entry.filename or not entry.filesize or entry.filesize <= 0:
+        return False
+    status = str(entry.status or "").strip().lower()
+    return "file missing" not in status and "file removed" not in status
+
+
+def build_tvh_dvr_storage_snapshot(entries: list[TvhDvrEntry] | None) -> dict[str, Any]:
+    """统计TVH录制文件的可读与缺失状态。"""
+    readable = 0
+    missing = 0
+    total_bytes = 0
+    readable_ids = []
+    missing_ids = []
+    for entry in entries or []:
+        if is_tvh_dvr_file_available(entry):
+            readable += 1
+            total_bytes += max(0, int(entry.filesize or 0))
+            readable_ids.append(str(entry.uuid))
+            continue
+        status = str(entry.status or "").strip().lower()
+        if entry.filename and ("file missing" in status or "file removed" in status):
+            missing += 1
+            missing_ids.append(str(entry.uuid))
+    return {
+        "readable": readable,
+        "missing": missing,
+        "total_bytes": total_bytes,
+        "readable_ids": sorted(readable_ids),
+        "missing_ids": sorted(missing_ids),
+    }
+
+
+def format_tvh_dvr_storage_recovered(
+    snapshot: dict[str, Any],
+    storage_available: int | None = None,
+    storage_total: int | None = None,
+) -> str:
+    """格式化SMB录制存储恢复汇总。"""
+    lines = [
+        "SMB录制存储已恢复",
+        "",
+        f"可读录像: {max(0, int(snapshot.get('readable') or 0))}",
+        f"录像总大小: {_format_file_size(snapshot.get('total_bytes'))}",
+    ]
+    if storage_total:
+        lines.append(
+            f"存储: 可用 {_format_file_size(storage_available)} / 共 {_format_file_size(storage_total)}"
+        )
+    return "\n".join(lines)
 
 
 def analyze_tvh_dvr_reliability(

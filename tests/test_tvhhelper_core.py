@@ -1008,6 +1008,91 @@ def test_fetch_tvh_dvr_entries_keeps_category_results_when_generic_grid_fails(mo
     assert any("/api/dvr/entry/grid?" in path for path in paths)
 
 
+def test_tvh_dvr_file_availability_requires_readable_file_metadata():
+    available = TvhDvrEntry(
+        uuid="ready",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=1,
+        stop=2,
+        status="Completed OK",
+        filesize=1024,
+        filename="/recordings/news.ts",
+    )
+    missing = TvhDvrEntry(
+        uuid="missing",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=1,
+        stop=2,
+        status="File missing",
+        filesize=1024,
+        filename="/recordings/news.ts",
+    )
+    empty = TvhDvrEntry(
+        uuid="empty",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=1,
+        stop=2,
+        status="Completed OK",
+        filesize=0,
+        filename="/recordings/news.ts",
+    )
+
+    assert core.is_tvh_dvr_file_available(available) is True
+    assert core.is_tvh_dvr_file_available(missing) is False
+    assert core.is_tvh_dvr_file_available(empty) is False
+
+
+def test_tvh_dvr_storage_snapshot_counts_readable_and_missing_files():
+    entries = [
+        TvhDvrEntry(
+            uuid="ready",
+            title="已完成",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK",
+            filesize=2048,
+            filename="/recordings/ready.ts",
+        ),
+        TvhDvrEntry(
+            uuid="missing",
+            title="文件缺失",
+            channel="翡翠台",
+            start=3,
+            stop=4,
+            status="File missing",
+            filesize=0,
+            filename="/recordings/missing.ts",
+        ),
+    ]
+
+    snapshot = core.build_tvh_dvr_storage_snapshot(entries)
+
+    assert snapshot == {
+        "readable": 1,
+        "missing": 1,
+        "total_bytes": 2048,
+        "readable_ids": ["ready"],
+        "missing_ids": ["missing"],
+    }
+
+
+def test_format_tvh_dvr_storage_recovered_reports_summary():
+    text = core.format_tvh_dvr_storage_recovered(
+        {"readable": 5, "missing": 0, "total_bytes": 28 * 1024 * 1024 * 1024},
+        storage_available=1700 * 1024 * 1024 * 1024,
+        storage_total=1900 * 1024 * 1024 * 1024,
+    )
+
+    assert "SMB录制存储已恢复" in text
+    assert "可读录像: 5" in text
+    assert "录像总大小: 28.0 GB" in text
+    assert "存储: 可用 1.7 TB / 共 1.9 TB" in text
+
+
 def test_dvr_entry_buttons_fit_telegram_callback_limit():
     entries = [
         TvhDvrEntry(

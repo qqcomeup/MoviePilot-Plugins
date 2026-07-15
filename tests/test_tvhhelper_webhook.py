@@ -3,6 +3,7 @@ import hmac
 import importlib
 import os
 import sys
+import threading
 import time
 import types
 from enum import Enum
@@ -64,6 +65,8 @@ def install_moviepilot_stubs(monkeypatch, include_user_message=True):
             return decorator
 
     class PluginBase:
+        data = {}
+
         def __init__(self):
             self.config = {}
             self.messages = []
@@ -81,6 +84,17 @@ def install_moviepilot_stubs(monkeypatch, include_user_message=True):
 
         def post_message(self, **kwargs):
             self.messages.append(kwargs)
+
+        def save_data(self, key, value, plugin_id=None):
+            self.data[key] = value
+
+        def get_data(self, key=None, plugin_id=None):
+            if key is None:
+                return dict(self.data)
+            return self.data.get(key)
+
+        def del_data(self, key, plugin_id=None):
+            return self.data.pop(key, None)
 
     app = types.ModuleType("app")
     schemas = types.ModuleType("app.schemas")
@@ -120,6 +134,7 @@ def import_tvhhelper(monkeypatch, include_user_message=True):
     sys.modules.pop("tvhhelper", None)
     sys.modules.pop("tvhhelper.core", None)
     module = importlib.import_module("tvhhelper")
+    module._PluginBase.data = {}
     monkeypatch.setattr(module.tvhhelper, "update_ipdb", lambda self: None)
     return module
 
@@ -325,6 +340,8 @@ def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
             "channel": "翡翠台",
             "dvr_uuid": "dvr-1",
             "filename": "/recordings/晚间新闻.ts",
+            "filesize": 1024,
+            "status": "Completed OK",
         },
         x_tvh_token="secret",
     )
@@ -335,6 +352,415 @@ def test_receive_webhook_dvr_complete_adds_download_button(monkeypatch):
     assert plugin.messages[0]["buttons"] == [[
         {"text": "下载录制文件", "url": "https://tvh.example.com/dvrfile/dvr-1?ticket=ticket-1"},
     ]]
+
+
+def test_receive_webhook_dvr_complete_defers_notification_until_file_is_available(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    entries = [module.TvhDvrEntry(
+        uuid="dvr-1",
+        title="晚间新闻",
+        channel="翡翠台",
+        start=1,
+        stop=2,
+        status="File missing",
+        filesize=0,
+        filename="/recordings/晚间新闻.ts",
+    )]
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", lambda *args, **kwargs: entries)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-pending-1",
+            "timestamp": int(time.time()),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is True
+    assert plugin.messages == []
+    state = plugin.get_data("dvr_completion_notifications")
+    assert len(state["pending"]) == 1
+
+
+def test_pending_dvr_completion_notifies_once_when_file_becomes_available(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    current = {"available": False}
+
+    def fetch_entries(*args, **kwargs):
+        return [module.TvhDvrEntry(
+            uuid="dvr-1",
+            title="晚间新闻",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK" if current["available"] else "File missing",
+            filesize=1024 if current["available"] else 0,
+            filename="/recordings/晚间新闻.ts" if current["available"] else None,
+        )]
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fetch_entries)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+    base = time.time()
+    plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-pending-1",
+            "timestamp": int(base),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+        },
+        x_tvh_token="secret",
+    )
+    current["available"] = True
+
+    plugin.check_dvr_completion_pending(now=base + 11)
+    plugin.check_dvr_completion_pending(now=base + 30)
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制完成"
+    state = plugin.get_data("dvr_completion_notifications")
+    assert state["pending"] == {}
+    assert len(state["notified"]) == 1
+
+    plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-pending-2",
+            "timestamp": int(base),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+            "filesize": 1024,
+            "status": "Completed OK",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert len(plugin.messages) == 1
+
+
+def test_pending_dvr_completion_warns_after_three_failed_checks(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [module.TvhDvrEntry(
+            uuid="dvr-1",
+            title="晚间新闻",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="File missing",
+            filesize=0,
+            filename="/recordings/晚间新闻.ts",
+        )],
+    )
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+    base = time.time()
+    plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-pending-1",
+            "timestamp": int(base),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+        },
+        x_tvh_token="secret",
+    )
+
+    plugin.check_dvr_completion_pending(now=base + 11)
+    plugin.check_dvr_completion_pending(now=base + 42)
+    plugin.check_dvr_completion_pending(now=base + 103)
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制文件未就绪"
+    assert "SMB" in plugin.messages[0]["text"]
+
+
+def test_pending_dvr_completion_api_errors_follow_retry_schedule(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    })
+    base = time.time()
+    plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "dvr-api-error-1",
+            "timestamp": int(base),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+        },
+        x_tvh_token="secret",
+    )
+
+    plugin.check_dvr_completion_pending(now=base + 11)
+    plugin.check_dvr_completion_pending(now=base + 42)
+    plugin.check_dvr_completion_pending(now=base + 103)
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制文件检查失败"
+    assert "TVH API" in plugin.messages[0]["text"]
+
+
+def test_corrupt_pending_record_does_not_block_valid_dvr_completion(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    module._PluginBase.data["dvr_completion_notifications"] = {
+        "pending": {
+            "bad": {"next_check_at": "invalid"},
+            "bad-attempts": {"payload": {}, "attempts": "invalid", "next_check_at": 1},
+            "bad-payload": {"payload": "invalid", "attempts": 0, "next_check_at": 1},
+            "dvr:dvr-1": {
+                "payload": {
+                    "event": "dvr.complete",
+                    "dvr_uuid": "dvr-1",
+                    "title": "晚间新闻",
+                    "channel": "翡翠台",
+                },
+                "attempts": 0,
+                "next_check_at": 1,
+            },
+        },
+        "notified": {},
+    }
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_dvr_entries",
+        lambda *args, **kwargs: [module.TvhDvrEntry(
+            uuid="dvr-1",
+            title="晚间新闻",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK",
+            filesize=1024,
+            filename="/recordings/晚间新闻.ts",
+        )],
+    )
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "webhook_notify": True})
+
+    plugin.check_dvr_completion_pending(now=2)
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制完成"
+
+
+def test_dvr_complete_does_not_notify_when_persistent_state_save_fails(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+    })
+    monkeypatch.setattr(plugin, "save_data", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
+
+    response = plugin.receive_webhook(
+        payload={
+            "event": "dvr.complete",
+            "event_id": "save-failed-1",
+            "timestamp": int(time.time()),
+            "title": "晚间新闻",
+            "channel": "翡翠台",
+            "dvr_uuid": "dvr-1",
+            "filename": "/recordings/晚间新闻.ts",
+            "filesize": 1024,
+            "status": "Completed OK",
+        },
+        x_tvh_token="secret",
+    )
+
+    assert response.success is False
+    assert "保存" in response.message
+    assert plugin.messages == []
+
+
+def test_dvr_complete_notification_send_failure_can_retry(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+    })
+    original_send = plugin._tvhhelper__send_webhook_notification
+    calls = {"count": 0}
+
+    def flaky_send(payload):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("notification offline")
+        original_send(payload)
+
+    monkeypatch.setattr(plugin, "_tvhhelper__send_webhook_notification", flaky_send)
+    payload = {
+        "event": "dvr.complete",
+        "event_id": "send-failed-1",
+        "timestamp": int(time.time()),
+        "title": "晚间新闻",
+        "channel": "翡翠台",
+        "dvr_uuid": "dvr-1",
+        "filename": "/recordings/晚间新闻.ts",
+        "filesize": 1024,
+        "status": "Completed OK",
+    }
+
+    first = plugin.receive_webhook(payload=payload, x_tvh_token="secret")
+    second = plugin.receive_webhook(
+        payload=dict(payload, event_id="send-failed-2"),
+        x_tvh_token="secret",
+    )
+
+    assert first.success is False
+    assert second.success is True
+    assert len(plugin.messages) == 1
+
+
+def test_dvr_completion_state_loader_sanitizes_nested_values(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    module._PluginBase.data["dvr_completion_notifications"] = {
+        "pending": {},
+        "notified": {"valid": "123.5", "invalid": "bad"},
+        "storage_snapshot": {
+            "readable": "2",
+            "missing": "1",
+            "total_bytes": "1024",
+            "readable_ids": ["a", {"bad": True}],
+            "missing_ids": ["b", ["bad"]],
+        },
+        "recovery_missing_ids": ["b", {"bad": True}],
+    }
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True})
+
+    state = plugin._tvhhelper__load_dvr_completion_state()
+
+    assert state["notified"] == {"valid": 123.5}
+    assert state["storage_snapshot"] == {
+        "readable": 2,
+        "missing": 1,
+        "total_bytes": 1024,
+        "readable_ids": ["a"],
+        "missing_ids": ["b"],
+    }
+    assert state["recovery_missing_ids"] == ["b"]
+
+
+def test_concurrent_dvr_complete_webhooks_send_only_once(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+    })
+    original_send = plugin._tvhhelper__send_webhook_notification
+
+    def slow_send(payload):
+        time.sleep(0.05)
+        original_send(payload)
+
+    monkeypatch.setattr(plugin, "_tvhhelper__send_webhook_notification", slow_send)
+    payload = {
+        "event": "dvr.complete",
+        "timestamp": int(time.time()),
+        "title": "晚间新闻",
+        "channel": "翡翠台",
+        "dvr_uuid": "dvr-1",
+        "filename": "/recordings/晚间新闻.ts",
+        "filesize": 1024,
+        "status": "Completed OK",
+    }
+    barrier = threading.Barrier(2)
+
+    def send(index):
+        barrier.wait()
+        plugin.receive_webhook(
+            payload=dict(payload, event_id=f"concurrent-{index}"),
+            x_tvh_token="secret",
+        )
+
+    threads = [threading.Thread(target=send, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(plugin.messages) == 1
+
+
+def test_dvr_completion_deduplication_survives_plugin_reload(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    monkeypatch.setattr(module, "fetch_tvh_dvr_ticket_download_url", lambda *args, **kwargs: None)
+    config = {
+        "enabled": True,
+        "webhook_notify": True,
+        "webhook_secret": "secret",
+        "tvh_url": "https://tvh.example.com",
+    }
+    payload = {
+        "event": "dvr.complete",
+        "event_id": "dvr-complete-1",
+        "timestamp": int(time.time()),
+        "title": "晚间新闻",
+        "channel": "翡翠台",
+        "dvr_uuid": "dvr-1",
+        "filename": "/recordings/晚间新闻.ts",
+        "filesize": 1024,
+        "status": "Completed OK",
+    }
+    first = module.tvhhelper()
+    first.init_plugin(config)
+    first.receive_webhook(payload=payload, x_tvh_token="secret")
+
+    second = module.tvhhelper()
+    second.init_plugin(config)
+    second.receive_webhook(
+        payload=dict(payload, event_id="dvr-complete-2"),
+        x_tvh_token="secret",
+    )
+
+    assert len(first.messages) == 1
+    assert second.messages == []
 
 
 def test_receive_webhook_dvr_complete_enriches_filesize_from_dvr_entry(monkeypatch):
@@ -569,6 +995,130 @@ def test_check_dvr_reliability_posts_once_for_failed_task(monkeypatch):
     assert plugin.messages[0]["title"] == "TVH录制任务失败"
     assert "磁盘空间不足" in plugin.messages[0]["text"]
     assert plugin.messages[0]["buttons"][0][0]["text"] == "查找重播"
+
+
+def test_check_dvr_reliability_notifies_once_when_recording_storage_recovers(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    current = {"available": False}
+
+    def fetch_entries(*args, **kwargs):
+        return [module.TvhDvrEntry(
+            uuid="dvr-1",
+            title="晚间新闻",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK" if current["available"] else "File missing",
+            filesize=1024 if current["available"] else 0,
+            filename="/recordings/晚间新闻.ts",
+        )]
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fetch_entries)
+    monkeypatch.setattr(module, "fetch_tvh_inputs", lambda *args, **kwargs: ["adapter-1"])
+    monkeypatch.setattr(
+        module,
+        "fetch_tvh_status",
+        lambda *args, **kwargs: module.TvhServerStatus(
+            ok=True,
+            storage_available=1700 * 1024 * 1024 * 1024,
+            storage_total=1900 * 1024 * 1024 * 1024,
+        ),
+    )
+    monkeypatch.setattr(module, "analyze_tvh_dvr_reliability", lambda *args, **kwargs: [])
+    plugin = module.tvhhelper()
+    plugin.init_plugin({
+        "enabled": True,
+        "dvr_reliability_enabled": True,
+        "tvh_url": "https://tvh.example.com",
+    })
+
+    plugin.check_dvr_reliability()
+    current["available"] = True
+    plugin.check_dvr_reliability()
+    plugin.check_dvr_reliability()
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制存储已恢复"
+    assert "可读录像: 1" in plugin.messages[0]["text"]
+
+
+def test_recording_storage_recovery_keeps_original_missing_uuid_baseline(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    phase = {"value": 0}
+
+    def entry(uuid, available):
+        return module.TvhDvrEntry(
+            uuid=uuid,
+            title=uuid,
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK" if available else "File missing",
+            filesize=1024 if available else 0,
+            filename=f"/recordings/{uuid}.ts",
+        )
+
+    def fetch_entries(*args, **kwargs):
+        return {
+            0: [entry("a", False), entry("b", False)],
+            1: [entry("a", True), entry("b", False)],
+            2: [entry("b", True)],
+            3: [entry("a", True), entry("b", True)],
+        }[phase["value"]]
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fetch_entries)
+    monkeypatch.setattr(module, "fetch_tvh_inputs", lambda *args, **kwargs: ["adapter-1"])
+    monkeypatch.setattr(module, "fetch_tvh_status", lambda *args, **kwargs: module.TvhServerStatus(ok=True))
+    monkeypatch.setattr(module, "analyze_tvh_dvr_reliability", lambda *args, **kwargs: [])
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "dvr_reliability_enabled": True})
+
+    for value in range(4):
+        phase["value"] = value
+        plugin.check_dvr_reliability()
+        if value < 3:
+            assert plugin.messages == []
+
+    assert len(plugin.messages) == 1
+    assert plugin.messages[0]["title"] == "TVH录制存储已恢复"
+
+
+def test_storage_recovery_send_failure_merges_concurrent_missing_baseline(monkeypatch):
+    module = import_tvhhelper(monkeypatch)
+    current = {"available": False}
+
+    def fetch_entries(*args, **kwargs):
+        return [module.TvhDvrEntry(
+            uuid="old",
+            title="old",
+            channel="翡翠台",
+            start=1,
+            stop=2,
+            status="Completed OK" if current["available"] else "File missing",
+            filesize=1024 if current["available"] else 0,
+            filename="/recordings/old.ts",
+        )]
+
+    monkeypatch.setattr(module, "fetch_tvh_dvr_entries", fetch_entries)
+    monkeypatch.setattr(module, "fetch_tvh_inputs", lambda *args, **kwargs: ["adapter-1"])
+    monkeypatch.setattr(module, "fetch_tvh_status", lambda *args, **kwargs: module.TvhServerStatus(ok=True))
+    monkeypatch.setattr(module, "analyze_tvh_dvr_reliability", lambda *args, **kwargs: [])
+    plugin = module.tvhhelper()
+    plugin.init_plugin({"enabled": True, "dvr_reliability_enabled": True})
+    plugin.check_dvr_reliability()
+
+    def fail_after_concurrent_update(**kwargs):
+        state = dict(module._PluginBase.data["dvr_completion_notifications"])
+        state["recovery_missing_ids"] = ["new"]
+        module._PluginBase.data["dvr_completion_notifications"] = state
+        raise RuntimeError("notification offline")
+
+    monkeypatch.setattr(plugin, "_tvhhelper__post_tvh_notification", fail_after_concurrent_update)
+    current["available"] = True
+    plugin.check_dvr_reliability()
+
+    state = plugin.get_data("dvr_completion_notifications")
+    assert set(state["recovery_missing_ids"]) == {"old", "new"}
 
 
 def test_receive_webhook_enriches_ip_location(monkeypatch):

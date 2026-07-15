@@ -86,6 +86,7 @@ from .core import (
     format_record_program_detail,
     format_record_search_results_message,
     format_tvh_dvr_reliability_issue,
+    format_tvh_dvr_storage_recovered,
     format_dvr_adjusted_message,
     format_dvr_calendar_message,
     format_dvr_cancel_confirm_message,
@@ -104,6 +105,7 @@ from .core import (
     ensure_ip_location_db,
     find_user,
     is_real_playback_subscription,
+    is_tvh_dvr_file_available,
     lookup_ip_location_from_mmdb,
     lookup_ip_location_from_ip2region,
     merge_subscription_details,
@@ -131,12 +133,16 @@ from .core import (
     select_tvh_webhook_image,
     set_tvh_user_enabled,
     summarize_tvh_dvr_entries,
+    build_tvh_dvr_storage_snapshot,
     token_for_user,
     user_callback_key,
     TvhDvrEntry,
     TvhServerStatus,
     TvhUser,
 )
+
+
+_DVR_COMPLETION_LOCK = threading.RLock()
 
 
 class tvhhelper(_PluginBase):
@@ -192,6 +198,9 @@ class tvhhelper(_PluginBase):
     _ipdb_update_running = False
     _dvr_reliability_enabled = True
     _dvr_reliability_interval = 60
+    _dvr_completion_data_key = "dvr_completion_notifications"
+    _dvr_completion_retry_delays = (10, 30, 60)
+    _dvr_completion_state: dict[str, Any] = {}
     _record_default_start_padding = DEFAULT_RECORD_START_PADDING_MINUTES
     _record_default_stop_padding = DEFAULT_RECORD_STOP_PADDING_MINUTES
     _record_search_cancel_words = {"取消", "退出", "cancel", "q", "quit", "exit"}
@@ -263,6 +272,7 @@ class tvhhelper(_PluginBase):
         self._playback_history = []
         self._last_webhook_event = ""
         self._last_webhook_seen_at = None
+        self._dvr_completion_state = self.__load_dvr_completion_state()
         if self._enabled and self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
             self.__start_ipdb_update_async()
         self.__update_config()
@@ -324,6 +334,7 @@ class tvhhelper(_PluginBase):
         self._last_webhook_event = ""
         self._last_webhook_seen_at = None
         self._ipdb_update_running = False
+        self._dvr_completion_state = {}
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
@@ -2581,6 +2592,7 @@ class tvhhelper(_PluginBase):
                 expected_dvb_count=self._expected_dvb_count,
                 now=time.time(),
             )
+            self.__check_dvr_storage_recovery(entries, status)
         except Exception as err:
             logger.error(f"TVH录制可靠性检查失败: {err}", exc_info=True)
             return
@@ -2595,6 +2607,49 @@ class tvhhelper(_PluginBase):
                 text=format_tvh_dvr_reliability_issue(issue),
                 buttons=self.__dvr_reliability_buttons(issue.entry),
             )
+
+    def __check_dvr_storage_recovery(
+        self,
+        entries: list[TvhDvrEntry],
+        status: TvhServerStatus,
+    ) -> None:
+        """检查TVH录制文件是否从缺失状态恢复为可读。"""
+        current = build_tvh_dvr_storage_snapshot(entries)
+        with _DVR_COMPLETION_LOCK:
+            self._dvr_completion_state = self.__load_dvr_completion_state()
+            recovery_missing_ids = set(self._dvr_completion_state.get("recovery_missing_ids") or [])
+            current_missing_ids = set(current.get("missing_ids") or [])
+            current_readable_ids = set(current.get("readable_ids") or [])
+            if current_missing_ids:
+                recovery_missing_ids.update(current_missing_ids)
+            recovered = (
+                bool(recovery_missing_ids)
+                and recovery_missing_ids.issubset(current_readable_ids)
+                and int(current.get("missing") or 0) == 0
+            )
+            self._dvr_completion_state["storage_snapshot"] = current
+            self._dvr_completion_state["recovery_missing_ids"] = [] if recovered else sorted(recovery_missing_ids)
+            saved = self.__save_dvr_completion_state()
+        if not recovered or not saved:
+            return
+        try:
+            self.__post_tvh_notification(
+                mtype=NotificationType.Plugin,
+                title="TVH录制存储已恢复",
+                text=format_tvh_dvr_storage_recovered(
+                    current,
+                    storage_available=status.storage_available,
+                    storage_total=status.storage_total,
+                ),
+            )
+        except Exception as err:
+            with _DVR_COMPLETION_LOCK:
+                self._dvr_completion_state = self.__load_dvr_completion_state()
+                latest_missing_ids = set(self._dvr_completion_state.get("recovery_missing_ids") or [])
+                latest_missing_ids.update(recovery_missing_ids)
+                self._dvr_completion_state["recovery_missing_ids"] = sorted(latest_missing_ids)
+                self.__save_dvr_completion_state()
+            logger.warning(f"TVH录制存储恢复通知发送失败: {err}", exc_info=True)
 
     def __dvr_reliability_alert_seen(self, key: str) -> bool:
         if self._dvr_reliability_alerts is None:
@@ -2743,6 +2798,14 @@ class tvhhelper(_PluginBase):
                 "func": self.check_dvr_reliability,
                 "kwargs": {},
             })
+        if self._webhook_notify:
+            services.append({
+                "id": "tvhhelper_dvr_completion_pending",
+                "name": "TVH录制文件就绪检查",
+                "trigger": IntervalTrigger(seconds=10, timezone=settings.TZ),
+                "func": self.check_dvr_completion_pending,
+                "kwargs": {},
+            })
         if self._ip_lookup_enabled and self._ipdb_enabled and self._ipdb_auto_update:
             services.append({
                 "id": "tvhhelper_ipdb_update",
@@ -2803,26 +2866,322 @@ class tvhhelper(_PluginBase):
         payload = self.__enrich_webhook_dvr(payload)
         ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
         self.__record_playback_history_from_webhook(payload, ip_location, ip_isp)
+        logger.info(f"收到TVH Webhook: {payload.get('event')}")
+        if self._webhook_notify and self.__should_send_webhook_notification(payload):
+            if event == "dvr.complete":
+                with _DVR_COMPLETION_LOCK:
+                    self._dvr_completion_state = self.__load_dvr_completion_state()
+                    notification_key = self.__dvr_completion_key(payload)
+                    if self.__dvr_completion_notified(notification_key):
+                        return schemas.Response(success=True, message="录制完成通知已发送")
+                    if not self.__dvr_payload_file_available(payload):
+                        if not self.__queue_dvr_completion(payload, notification_key):
+                            return schemas.Response(success=False, message="录制文件复查任务保存失败")
+                        return schemas.Response(success=True, message="Webhook已接收，等待录制文件就绪")
+                    if not self.__mark_dvr_completion_notified(notification_key):
+                        self._dvr_completion_state.setdefault("notified", {}).pop(notification_key, None)
+                        return schemas.Response(success=False, message="录制完成通知状态保存失败")
+                    try:
+                        self.__send_webhook_notification(payload)
+                    except Exception as err:
+                        self._dvr_completion_state.setdefault("notified", {}).pop(notification_key, None)
+                        self.__save_dvr_completion_state()
+                        logger.warning(f"TVH录制完成通知发送失败: {err}", exc_info=True)
+                        return schemas.Response(success=False, message="录制完成通知发送失败")
+                    return schemas.Response(success=True, message="Webhook已接收")
+            self.__send_webhook_notification(payload)
+        return schemas.Response(success=True, message="Webhook已接收")
+
+    def __send_webhook_notification(self, payload: Dict[str, Any]) -> None:
+        """格式化并发送TVH Webhook通知。"""
+        ip_location, ip_isp = self.__lookup_webhook_ip(payload.get("ip"))
         title, text = format_tvh_webhook_message(
             payload,
             ip_location=ip_location,
             ip_isp=ip_isp,
         )
+        message = {
+            "mtype": NotificationType.Plugin,
+            "title": title,
+            "text": text,
+        }
         image = select_tvh_webhook_image(payload, self._tvh_url) if self._webhook_logo_enrich else None
-        logger.info(f"收到TVH Webhook: {payload.get('event')}")
-        if self._webhook_notify and self.__should_send_webhook_notification(payload):
-            message = {
-                "mtype": NotificationType.Plugin,
-                "title": title,
-                "text": text,
+        if image:
+            message["image"] = image
+        dvr_download_url = self.__ticket_download_url_for_payload(payload)
+        if payload.get("event") == "dvr.complete" and dvr_download_url:
+            message["buttons"] = [[{"text": "下载录制文件", "url": dvr_download_url}]]
+        self.__post_tvh_notification(**message)
+
+    def __load_dvr_completion_state(self) -> dict[str, Any]:
+        """读取录制文件就绪通知的持久状态。"""
+        try:
+            saved = self.get_data(self._dvr_completion_data_key)
+        except Exception as err:
+            logger.debug(f"TVH录制通知状态读取失败: {err}")
+            saved = None
+        saved = saved if isinstance(saved, dict) else {}
+        raw_pending = saved.get("pending")
+        pending = {}
+        if isinstance(raw_pending, dict):
+            for key, item in raw_pending.items():
+                if not isinstance(item, dict) or not isinstance(item.get("payload"), dict):
+                    continue
+                try:
+                    attempts = max(0, int(item.get("attempts") or 0))
+                    next_check_at = float(item.get("next_check_at"))
+                except (TypeError, ValueError):
+                    continue
+                pending[str(key)] = {
+                    "payload": dict(item["payload"]),
+                    "attempts": attempts,
+                    "next_check_at": next_check_at,
+                }
+        raw_notified = saved.get("notified") if isinstance(saved.get("notified"), dict) else {}
+        notified = {}
+        for key, value in raw_notified.items():
+            try:
+                notified[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        raw_snapshot = saved.get("storage_snapshot") if isinstance(saved.get("storage_snapshot"), dict) else {}
+        storage_snapshot = {
+            "readable": self.__to_int(raw_snapshot.get("readable"), 0),
+            "missing": self.__to_int(raw_snapshot.get("missing"), 0),
+            "total_bytes": self.__to_int(raw_snapshot.get("total_bytes"), 0),
+            "readable_ids": [value for value in raw_snapshot.get("readable_ids", []) if isinstance(value, str)],
+            "missing_ids": [value for value in raw_snapshot.get("missing_ids", []) if isinstance(value, str)],
+        } if raw_snapshot else {}
+        recovery_missing_ids = saved.get("recovery_missing_ids")
+        return {
+            "pending": pending,
+            "notified": notified,
+            "storage_snapshot": storage_snapshot,
+            "recovery_missing_ids": (
+                [value for value in recovery_missing_ids if isinstance(value, str)]
+                if isinstance(recovery_missing_ids, list)
+                else []
+            ),
+        }
+
+    def __save_dvr_completion_state(self) -> bool:
+        """保存录制文件就绪通知状态并限制防重数量。"""
+        notified = self._dvr_completion_state.setdefault("notified", {})
+        if len(notified) > 500:
+            newest = sorted(notified.items(), key=lambda item: float(item[1] or 0), reverse=True)[:500]
+            self._dvr_completion_state["notified"] = dict(newest)
+        try:
+            self.save_data(self._dvr_completion_data_key, self._dvr_completion_state)
+            return True
+        except Exception as err:
+            logger.warning(f"TVH录制通知状态保存失败: {err}")
+            return False
+
+    @staticmethod
+    def __dvr_completion_key(payload: Dict[str, Any]) -> str:
+        """生成录制完成通知的稳定防重键。"""
+        dvr_uuid = str(payload.get("dvr_uuid") or payload.get("uuid") or payload.get("id") or "").strip()
+        filename = str(payload.get("filename") or "").strip()
+        if dvr_uuid:
+            return f"dvr:{dvr_uuid}"
+        if filename:
+            return f"file:{filename}"
+        return f"event:{payload.get('event_id') or payload.get('timestamp') or 'unknown'}"
+
+    def __dvr_completion_notified(self, notification_key: str) -> bool:
+        """判断录制完成通知是否已发送。"""
+        return notification_key in self._dvr_completion_state.setdefault("notified", {})
+
+    def __mark_dvr_completion_notified(self, notification_key: str) -> bool:
+        """标记录制完成通知已发送。"""
+        self._dvr_completion_state.setdefault("pending", {}).pop(notification_key, None)
+        self._dvr_completion_state.setdefault("notified", {})[notification_key] = time.time()
+        return self.__save_dvr_completion_state()
+
+    @staticmethod
+    def __dvr_payload_file_available(payload: Dict[str, Any]) -> bool:
+        """根据Webhook数据判断TVH是否已读到录制文件。"""
+        entry = TvhDvrEntry(
+            uuid=str(payload.get("dvr_uuid") or payload.get("uuid") or payload.get("id") or ""),
+            title=str(payload.get("title") or payload.get("program_title") or ""),
+            channel=str(payload.get("channel") or ""),
+            start=int(payload.get("start") or 0),
+            stop=int(payload.get("stop") or 0),
+            status=str(payload.get("status") or ""),
+            filesize=int(payload.get("filesize") or payload.get("data_size") or 0),
+            filename=str(payload.get("filename") or ""),
+        )
+        return is_tvh_dvr_file_available(entry)
+
+    def __queue_dvr_completion(
+        self,
+        payload: Dict[str, Any],
+        notification_key: str,
+        now: float | None = None,
+    ) -> bool:
+        """将未就绪的录制完成事件写入持久队列。"""
+        now_value = float(now if now is not None else time.time())
+        pending = self._dvr_completion_state.setdefault("pending", {})
+        if notification_key not in pending:
+            pending[notification_key] = {
+                "payload": dict(payload),
+                "attempts": 0,
+                "next_check_at": now_value + self._dvr_completion_retry_delays[0],
             }
-            if image:
-                message["image"] = image
-            dvr_download_url = self.__ticket_download_url_for_payload(payload)
-            if event == "dvr.complete" and dvr_download_url:
-                message["buttons"] = [[{"text": "下载录制文件", "url": dvr_download_url}]]
-            self.__post_tvh_notification(**message)
-        return schemas.Response(success=True, message="Webhook已接收")
+            if not self.__save_dvr_completion_state():
+                pending.pop(notification_key, None)
+                return False
+        return True
+
+    @staticmethod
+    def __enrich_dvr_payload_from_entry(payload: Dict[str, Any], entry: TvhDvrEntry) -> Dict[str, Any]:
+        """使用TVH DVR条目补全录制完成数据。"""
+        enriched = dict(payload)
+        for key in ("start", "stop", "start_real", "stop_real", "duration", "filesize", "filename", "status"):
+            value = getattr(entry, key, None)
+            if value is not None:
+                enriched[key] = value
+        return enriched
+
+    @staticmethod
+    def __safe_float(value: Any, default: float | None = None) -> float | None:
+        """安全转换持久状态中的时间数值。"""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def __advance_dvr_completion_failure(
+        self,
+        notification_key: str,
+        item: dict[str, Any],
+        now_value: float,
+        api_error: bool = False,
+    ) -> dict[str, str] | None:
+        """推进录制文件复查的失败次数和下次时间。"""
+        payload = dict(item.get("payload") or {})
+        attempts = int(item.get("attempts") or 0) + 1
+        pending = self._dvr_completion_state.setdefault("pending", {})
+        if attempts >= len(self._dvr_completion_retry_delays):
+            pending.pop(notification_key, None)
+            self._dvr_completion_state.setdefault("notified", {})[notification_key] = now_value
+            return {
+                "title": "TVH录制文件检查失败" if api_error else "TVH录制文件未就绪",
+                "text": (
+                    f"节目: {payload.get('title') or payload.get('program_title') or '未知'}\n"
+                    f"频道: {payload.get('channel') or '未知'}\n"
+                    f"文件: {payload.get('filename') or '未知'}\n\n"
+                    + (
+                        "经过 10/30/60 秒复查后仍无法访问 TVH API，暂时无法确认 SMB 文件状态。"
+                        if api_error
+                        else "TVH已完成录制，但经过 10/30/60 秒复查后 SMB 文件仍未就绪。"
+                    )
+                ),
+            }
+        item["attempts"] = attempts
+        item["next_check_at"] = now_value + self._dvr_completion_retry_delays[attempts]
+        return None
+
+    def check_dvr_completion_pending(self, now: float | None = None) -> None:
+        """复查录制完成后尚未就绪的SMB文件。"""
+        if not self._enabled or not self._webhook_notify:
+            return
+        now_value = float(now if now is not None else time.time())
+        with _DVR_COMPLETION_LOCK:
+            self._dvr_completion_state = self.__load_dvr_completion_state()
+            pending = self._dvr_completion_state.setdefault("pending", {})
+            due = {}
+            invalid_keys = []
+            for key, item in list(pending.items()):
+                next_check_at = self.__safe_float(item.get("next_check_at")) if isinstance(item, dict) else None
+                if next_check_at is None:
+                    invalid_keys.append(key)
+                    continue
+                if next_check_at <= now_value:
+                    due[key] = item
+            for key in invalid_keys:
+                pending.pop(key, None)
+            if not due:
+                if invalid_keys:
+                    self.__save_dvr_completion_state()
+                return
+            try:
+                entries = fetch_tvh_dvr_entries(self._tvh_url, self._tvh_user, self._tvh_pass)
+            except Exception as err:
+                logger.warning(f"TVH录制文件就绪复查失败: {err}")
+                alerts = []
+                for notification_key, item in due.items():
+                    original_item = {
+                        "payload": dict(item.get("payload") or {}),
+                        "attempts": int(item.get("attempts") or 0),
+                        "next_check_at": float(item.get("next_check_at") or now_value),
+                    }
+                    alert = self.__advance_dvr_completion_failure(notification_key, item, now_value, api_error=True)
+                    if alert:
+                        alerts.append((notification_key, original_item, alert))
+                if self.__save_dvr_completion_state():
+                    for notification_key, original_item, alert in alerts:
+                        try:
+                            self.__post_tvh_notification(mtype=NotificationType.Plugin, **alert)
+                        except Exception as send_err:
+                            self.__restore_dvr_completion_after_send_failure(
+                                notification_key,
+                                original_item,
+                                now_value,
+                            )
+                            logger.warning(f"TVH录制检查失败通知发送失败: {send_err}", exc_info=True)
+                return
+            entries_by_uuid = {str(entry.uuid): entry for entry in entries}
+            completed_payloads = []
+            alerts = []
+            for notification_key, item in due.items():
+                original_item = {
+                    "payload": dict(item.get("payload") or {}),
+                    "attempts": int(item.get("attempts") or 0),
+                    "next_check_at": float(item.get("next_check_at") or now_value),
+                }
+                payload = dict(item.get("payload") or {})
+                dvr_uuid = str(payload.get("dvr_uuid") or payload.get("uuid") or payload.get("id") or "")
+                entry = entries_by_uuid.get(dvr_uuid)
+                if entry:
+                    payload = self.__enrich_dvr_payload_from_entry(payload, entry)
+                if self.__dvr_payload_file_available(payload):
+                    pending.pop(notification_key, None)
+                    self._dvr_completion_state.setdefault("notified", {})[notification_key] = now_value
+                    completed_payloads.append((notification_key, original_item, payload))
+                    continue
+                item["payload"] = payload
+                alert = self.__advance_dvr_completion_failure(notification_key, item, now_value)
+                if alert:
+                    alerts.append((notification_key, original_item, alert))
+            if not self.__save_dvr_completion_state():
+                return
+            for notification_key, original_item, payload in completed_payloads:
+                try:
+                    self.__send_webhook_notification(payload)
+                except Exception as send_err:
+                    self.__restore_dvr_completion_after_send_failure(notification_key, original_item, now_value)
+                    logger.warning(f"TVH录制完成通知发送失败: {send_err}", exc_info=True)
+            for notification_key, original_item, alert in alerts:
+                try:
+                    self.__post_tvh_notification(mtype=NotificationType.Plugin, **alert)
+                except Exception as send_err:
+                    self.__restore_dvr_completion_after_send_failure(notification_key, original_item, now_value)
+                    logger.warning(f"TVH录制文件未就绪通知发送失败: {send_err}", exc_info=True)
+
+    def __restore_dvr_completion_after_send_failure(
+        self,
+        notification_key: str,
+        original_item: dict[str, Any],
+        now_value: float,
+    ) -> None:
+        """发送失败时恢复录制复查任务以便下次重试。"""
+        self._dvr_completion_state.setdefault("notified", {}).pop(notification_key, None)
+        restored = dict(original_item)
+        restored["payload"] = dict(original_item.get("payload") or {})
+        restored["next_check_at"] = now_value + self._dvr_completion_retry_delays[0]
+        self._dvr_completion_state.setdefault("pending", {})[notification_key] = restored
+        self.__save_dvr_completion_state()
 
     def __ticket_download_url_for_entry(self, entry) -> str | None:
         if not build_tvh_dvr_download_url(self._tvh_url, entry):
