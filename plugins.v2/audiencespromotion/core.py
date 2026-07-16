@@ -1,4 +1,4 @@
-"""Pure parsers and HTTP client for Audiences promotion operations."""
+"""Audiences 促销操作的纯解析函数与 HTTP 客户端。"""
 
 from dataclasses import dataclass
 from html import unescape
@@ -15,6 +15,8 @@ import requests
 
 @dataclass(frozen=True)
 class SiteContext:
+    """Audiences 站点访问上下文。"""
+
     base_url: str
     cookie: str
     user_agent: str
@@ -23,6 +25,8 @@ class SiteContext:
 
 @dataclass(frozen=True)
 class TorrentItem:
+    """Audiences 种子条目。"""
+
     torrent_id: int
     title: str
     url: str
@@ -30,6 +34,8 @@ class TorrentItem:
 
 @dataclass(frozen=True)
 class PendingAction:
+    """待二次确认的促销操作。"""
+
     token: str
     torrent_id: int
     title: str
@@ -42,6 +48,8 @@ class PendingAction:
 
 @dataclass
 class InteractionSession:
+    """一次 /ad 交互的服务端会话。"""
+
     token: str
     items: tuple[Any, ...]
     created_at: float
@@ -51,6 +59,8 @@ class InteractionSession:
 
 @dataclass(frozen=True)
 class Page:
+    """分页结果，条目带全局序号。"""
+
     items: list[tuple[int, Any]]
     page: int
     total_pages: int
@@ -61,14 +71,22 @@ _AD_USAGE = (
     "/ad <序号> top|free、/ad confirm、/ad cancel"
 )
 
+_PAGE_TITLE_RE = re.compile(
+    r"Audiences\s*::\s*种子详情\s*[\"“](.*?)[\"”]\s*-",
+    flags=re.I | re.S,
+)
+
 
 def parse_ad_args(arg_str: str) -> tuple[str, dict[str, Any]]:
+    """解析 /ad 命令参数为动作和参数字典。"""
     raw = _normalize_custom_query(arg_str.strip())
     parts = raw.lower().split()
     if not parts:
         return "list", {"page": 1}
     if parts in (["confirm"], ["cancel"]):
         return parts[0], {}
+    if parts in (["top"], ["free"]):
+        raise ValueError(_AD_USAGE)
     if len(parts) == 2 and parts[0] == "page":
         page = _positive_int(parts[1])
         if page is not None:
@@ -88,12 +106,21 @@ def parse_ad_args(arg_str: str) -> tuple[str, dict[str, Any]]:
     action = None
     query = raw
     if parts[-1] in {"top", "free"}:
-        action = parts[-1]
-        query = raw[: -len(parts[-1])].strip()
+        candidate = raw[: -len(parts[-1])].strip()
+        # 仅链接或完整页面标题这类明确指定才把尾部 top/free 当动作，
+        # 裸标题本身以 top/free 结尾时不剥离，避免搜错种子并误入确认流程。
+        if _is_explicit_torrent_query(candidate):
+            action = parts[-1]
+            query = candidate
     params = {"query": query}
     if action:
         params["action"] = action
     return "custom", params
+
+
+def _is_explicit_torrent_query(query: str) -> bool:
+    """判断参数是否为详情页链接或完整页面标题等明确的种子指定。"""
+    return "://" in query or _PAGE_TITLE_RE.search(query) is not None
 
 
 def parse_custom_torrent_query(query: str) -> tuple[int | None, str]:
@@ -102,21 +129,19 @@ def parse_custom_torrent_query(query: str) -> tuple[int | None, str]:
     torrent_id = _numeric_query_value(query, "id")
     if torrent_id is not None and urlparse(query).path.endswith("details.php"):
         return torrent_id, ""
-    title_match = re.search(
-        r"Audiences\s*::\s*种子详情\s*[\"“](.*?)[\"”]\s*-",
-        query,
-        flags=re.I | re.S,
-    )
+    title_match = _PAGE_TITLE_RE.search(query)
     if title_match:
         return None, re.sub(r"\s+", " ", title_match.group(1)).strip()
     return None, re.sub(r"\s+", " ", query).strip()
 
 
 def _normalize_custom_query(query: str) -> str:
+    """修复聊天工具在协议后插入的空格，例如 https:// audiences.me。"""
     return re.sub(r"https?://\s+", lambda match: match.group(0).replace(" ", ""), query)
 
 
 def normalize_callback(plugin_id: str, callback_data: str) -> str:
+    """剥离宿主可能附加的插件回调前缀，返回纯负载。"""
     plugin_prefix = f"[PLUGIN]{plugin_id}|"
     if callback_data.startswith(plugin_prefix):
         return callback_data[len(plugin_prefix) :]
@@ -129,13 +154,15 @@ def normalize_callback(plugin_id: str, callback_data: str) -> str:
 def parse_callback(
     callback_data: str,
 ) -> tuple[str, str, dict[str, Any]]:
+    """解析按钮回调负载为会话令牌、动作和参数。
+
+    确认动作必须携带 pending_token，未携带的旧格式一律拒绝。
+    """
     parts = callback_data.split("|")
     if len(parts) >= 3 and parts[0] == "a" and parts[1]:
         session_token, action = parts[1], parts[2]
         if action == "x" and len(parts) == 3:
             return session_token, "cancel", {}
-        if action == "y" and len(parts) == 3:
-            return session_token, "confirm", {}
         if action == "y" and len(parts) == 4 and parts[3]:
             return session_token, "confirm", {"pending_token": parts[3]}
         if action == "g" and len(parts) == 4:
@@ -160,8 +187,6 @@ def parse_callback(
     session_token, action = parts[1], parts[2]
     if action == "cancel" and len(parts) == 3:
         return session_token, action, {}
-    if action == "confirm" and len(parts) == 3:
-        return session_token, action, {}
     if action == "confirm" and len(parts) == 4 and parts[3]:
         return session_token, action, {"pending_token": parts[3]}
     if action == "page" and len(parts) == 4:
@@ -185,6 +210,7 @@ def parse_callback(
 def build_action_buttons(
     plugin_id: str, session_token: str, index: int
 ) -> list[list[dict[str, str]]]:
+    """构造种子选择后的置顶/免费/取消按钮。"""
     prefix = f"[PLUGIN]{plugin_id}|a|{session_token}"
     return [
         [
@@ -207,6 +233,7 @@ def build_pagination_buttons(
     page: int,
     total_pages: int,
 ) -> list[list[dict[str, str]]]:
+    """构造上一页/下一页按钮行。"""
     prefix = f"[PLUGIN]{plugin_id}|a|{session_token}|g"
     buttons = []
     if page > 1:
@@ -223,6 +250,7 @@ def build_pagination_buttons(
 def build_confirm_buttons(
     plugin_id: str, session_token: str, pending_token: str
 ) -> list[list[dict[str, str]]]:
+    """构造绑定 pending_token 的确认/取消按钮。"""
     prefix = f"[PLUGIN]{plugin_id}|a|{session_token}"
     return [
         [
@@ -238,6 +266,7 @@ def build_confirm_buttons(
 def paginate_items(
     items: list[Any] | tuple[Any, ...], *, page: int, page_size: int
 ) -> Page:
+    """按页取出条目并保留全局序号。"""
     if page < 1:
         raise ValueError("页码必须至少为 1")
     if page_size < 1:
@@ -254,7 +283,14 @@ def paginate_items(
 
 
 class SessionStore:
+    """线程安全的 /ad 交互会话存储。"""
+
+    # 令牌用 9 字节随机数（12 个 URL 安全字符），在保证熵的同时给
+    # Telegram callback_data 的 64 字节上限留出余量。
+    _TOKEN_BYTES = 9
+
     def __init__(self, ttl_seconds: int | float) -> None:
+        """按不活跃有效期初始化会话存储。"""
         if ttl_seconds <= 0:
             raise ValueError("会话有效期必须大于 0")
         self._ttl_seconds = ttl_seconds
@@ -264,9 +300,10 @@ class SessionStore:
     def replace(
         self, key: tuple[str, ...], items: list[Any], *, now: float | None = None
     ) -> InteractionSession:
+        """创建新会话并替换同键旧会话，旧令牌随之失效。"""
         current_time = self._now(now)
         session = InteractionSession(
-            token=secrets.token_urlsafe(12),
+            token=secrets.token_urlsafe(self._TOKEN_BYTES),
             items=tuple(items),
             created_at=current_time,
             updated_at=current_time,
@@ -282,6 +319,7 @@ class SessionStore:
         *,
         now: float | None = None,
     ) -> InteractionSession | None:
+        """读取会话，可选校验令牌，命中时刷新活跃时间。"""
         current_time = self._now(now)
         with self._lock:
             session = self._get_locked(key, current_time)
@@ -298,6 +336,7 @@ class SessionStore:
         *,
         now: float | None = None,
     ) -> tuple[str, ...] | None:
+        """按会话令牌反查会话键，用于回调与命令键不一致的场景。"""
         if not session_token:
             return None
         current_time = self._now(now)
@@ -317,6 +356,7 @@ class SessionStore:
         *,
         now: float | None = None,
     ) -> bool:
+        """在会话上设置待确认操作，覆盖旧的待确认操作。"""
         current_time = self._now(now)
         with self._lock:
             session = self._get_locked(key, current_time)
@@ -341,9 +381,10 @@ class SessionStore:
         promote_type: int | None,
         now: float | None = None,
     ) -> PendingAction:
+        """生成带随机令牌的待确认操作并挂到会话上。"""
         current_time = self._now(now)
         pending = PendingAction(
-            token=secrets.token_urlsafe(12),
+            token=secrets.token_urlsafe(self._TOKEN_BYTES),
             torrent_id=torrent_id,
             title=title,
             action=action,
@@ -366,6 +407,7 @@ class SessionStore:
         *,
         now: float | None = None,
     ) -> PendingAction | None:
+        """按令牌一次性消费待确认操作，令牌不匹配返回 None。"""
         current_time = self._now(now)
         with self._lock:
             session = self._get_locked(key, current_time)
@@ -385,6 +427,7 @@ class SessionStore:
         key: tuple[str, ...],
         session_token: str | None = None,
     ) -> bool:
+        """删除会话，可选要求令牌匹配。"""
         with self._lock:
             session = self._sessions.get(key)
             if session is None:
@@ -397,6 +440,7 @@ class SessionStore:
     def _get_locked(
         self, key: tuple[str, ...], now: float
     ) -> InteractionSession | None:
+        """在持锁状态下读取会话并清理过期条目。"""
         session = self._sessions.get(key)
         if session is None:
             return None
@@ -407,10 +451,12 @@ class SessionStore:
 
     @staticmethod
     def _now(now: float | None) -> float:
+        """返回测试可注入的当前时间。"""
         return time.monotonic() if now is None else now
 
 
 def _positive_int(value: str) -> int | None:
+    """把纯数字字符串解析为 >=1 的整数，否则返回 None。"""
     if re.fullmatch(r"[0-9]+", value) is None:
         return None
     number = int(value)
@@ -418,6 +464,7 @@ def _positive_int(value: str) -> int | None:
 
 
 def _numeric_query_value(url: str, name: str) -> int | None:
+    """从 URL 查询串中读取纯数字参数。"""
     values = parse_qs(urlparse(url).query).get(name)
     if not values or re.fullmatch(r"[0-9]+", values[0]) is None:
         return None
@@ -425,11 +472,15 @@ def _numeric_query_value(url: str, name: str) -> int | None:
 
 
 def _attribute_map(attrs: list[tuple[str, str | None]]) -> dict[str, str | None]:
+    """把 HTMLParser 属性列表转换为字典。"""
     return dict(attrs)
 
 
 class _LinkParser(HTMLParser):
+    """收集页面中 <a> 链接及其文本。"""
+
     def __init__(self) -> None:
+        """初始化链接收集状态。"""
         super().__init__(convert_charrefs=True)
         self.links: list[tuple[str, str]] = []
         self._href: str | None = None
@@ -438,6 +489,7 @@ class _LinkParser(HTMLParser):
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
+        """记录带 href 的 <a> 起始标签。"""
         if tag == "a":
             href = _attribute_map(attrs).get("href")
             if href is not None:
@@ -445,10 +497,12 @@ class _LinkParser(HTMLParser):
                 self._text = []
 
     def handle_data(self, data: str) -> None:
+        """累积链接内的文本。"""
         if self._href is not None:
             self._text.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        """在 </a> 处收束一条链接记录。"""
         if tag == "a" and self._href is not None:
             title = "".join(self._text).strip()
             self.links.append((self._href, title))
@@ -457,7 +511,10 @@ class _LinkParser(HTMLParser):
 
 
 class _PromoteParser(HTMLParser):
+    """解析 promote.php 页面中的时长选项、促销类型与费率文本。"""
+
     def __init__(self) -> None:
+        """初始化促销页解析状态。"""
         super().__init__(convert_charrefs=True)
         self.top_durations: list[int] = []
         self.free_types: dict[int, str] = {}
@@ -474,6 +531,7 @@ class _PromoteParser(HTMLParser):
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
+        """跟踪 select/option/script 与费率容器的进入。"""
         attributes = _attribute_map(attrs)
         if tag == "script":
             self._in_script = True
@@ -488,6 +546,7 @@ class _PromoteParser(HTMLParser):
             self._in_promote_cost = True
 
     def handle_data(self, data: str) -> None:
+        """按当前上下文归集文本。"""
         if self._option_value is not None:
             self._option_text.append(data)
         if self._in_script:
@@ -498,10 +557,12 @@ class _PromoteParser(HTMLParser):
             self.visible_cost_text.append(data)
 
     def handle_comment(self, data: str) -> None:
+        """费率容器中的注释也计入费率文本。"""
         if self._in_promote_cost:
             self.promote_cost_text.append(data)
 
     def handle_endtag(self, tag: str) -> None:
+        """在结束标签处收束选项与上下文状态。"""
         if tag == "option" and self._option_value is not None:
             if re.fullmatch(r"[0-9]+", self._option_value):
                 value = int(self._option_value)
@@ -523,6 +584,7 @@ class _PromoteParser(HTMLParser):
 
 
 def _parse_links(html: str) -> list[tuple[str, str]]:
+    """解析页面中的全部链接。"""
     parser = _LinkParser()
     parser.feed(html)
     parser.close()
@@ -530,6 +592,7 @@ def _parse_links(html: str) -> list[tuple[str, str]]:
 
 
 def parse_current_user(html: str, base_url: str) -> tuple[int, str]:
+    """从站点首页解析当前用户 ID 和用户详情页链接。"""
     for href, _ in _parse_links(html):
         if urlparse(href).path.endswith("userdetails.php"):
             user_id = _numeric_query_value(href, "id")
@@ -539,6 +602,7 @@ def parse_current_user(html: str, base_url: str) -> tuple[int, str]:
 
 
 def parse_torrent_list(html: str, base_url: str) -> list[TorrentItem]:
+    """从种子列表 HTML 中解析去重后的种子条目。"""
     if "没有记录" in html:
         return []
 
@@ -566,6 +630,31 @@ def normalize_torrent_title(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
 
+def _match_torrent_by_title(
+    items: list[TorrentItem], title: str
+) -> TorrentItem | None:
+    """按标题在搜索结果中挑选种子。
+
+    优先归一化后的精确匹配；归一化结果为空（如纯中文标题）时退回
+    原文精确比较，绝不把空串当子串匹配，避免误绑定页面上第一个链接。
+    """
+    target = normalize_torrent_title(title)
+    if not target:
+        cleaned = re.sub(r"\s+", " ", title).strip()
+        for item in items:
+            if re.sub(r"\s+", " ", item.title).strip() == cleaned:
+                return item
+        return None
+    for item in items:
+        if normalize_torrent_title(item.title) == target:
+            return item
+    for item in items:
+        item_title = normalize_torrent_title(item.title)
+        if item_title and (target in item_title or item_title in target):
+            return item
+    return None
+
+
 def parse_downloader_torrent(torrent: Any, base_url: str) -> TorrentItem | None:
     """从下载器任务中提取 Audiences 种子详情页。"""
     if _torrent_progress(torrent) >= 1:
@@ -584,31 +673,45 @@ def parse_downloader_torrent(torrent: Any, base_url: str) -> TorrentItem | None:
 
 
 def _torrent_progress(torrent: Any) -> float:
-    value = _torrent_value(torrent, "progress", "percentDone")
+    """读取下载进度并统一为 0-1 比例。
+
+    qBittorrent 的 progress 是 0-1 小数，transmission-rpc 的 progress
+    属性是 0-100 百分比，这里优先读原始 percentDone 字段并把大于 1 的
+    值按百分比折算，避免把下载中的种子误判为已完成。
+    """
+    value = _torrent_value(torrent, "percentDone", "progress")
     try:
-        return float(value or 0)
+        progress = float(value or 0)
     except (TypeError, ValueError):
         return 0
+    return progress / 100 if progress > 1 else progress
 
 
 def _torrent_detail_url(torrent: Any, base_url: str) -> str | None:
+    """从任务备注或磁力字段提取本站种子详情页链接。"""
+    base_netloc = urlparse(base_url).netloc
     for name in ("comment", "magnet_uri", "magnetLink"):
         value = str(_torrent_value(torrent, name) or "")
         for match in re.finditer(r"https?://[^\s&]+details\.php\?id=\d+", value):
             url = match.group(0)
-            if urlparse(url).netloc.endswith(urlparse(base_url).netloc):
+            netloc = urlparse(url).netloc
+            if netloc == base_netloc or netloc.endswith("." + base_netloc):
                 return url
     return None
 
 
 def _torrent_id_from_tracker(torrent: Any) -> int | None:
+    """从 tracker 或磁力链接的 passkey 中提取 Audiences 种子 ID。"""
     values = [
         str(_torrent_value(torrent, "tracker") or ""),
         str(_torrent_value(torrent, "magnet_uri", "magnetLink") or ""),
     ]
     trackers = _torrent_value(torrent, "trackers")
     if trackers:
-        values.extend(str(_torrent_value(tracker, "url") or "") for tracker in trackers)
+        values.extend(
+            str(_torrent_value(tracker, "url", "announce") or "")
+            for tracker in trackers
+        )
     for value in values:
         if "audiences" not in value.lower():
             continue
@@ -619,16 +722,33 @@ def _torrent_id_from_tracker(torrent: Any) -> int | None:
 
 
 def _torrent_value(obj: Any, *names: str) -> Any:
+    """按候选字段名安全读取下载器任务对象的值。
+
+    兼容 dict、属性对象和 transmission-rpc Container：属性读取抛出的
+    任何异常都按字段缺失处理（transmission-rpc 对未请求字段抛
+    KeyError），再尝试对象自身的 get() 读取原始字段。
+    """
     for name in names:
         if isinstance(obj, dict) and name in obj:
-            return obj.get(name)
-        value = getattr(obj, name, None)
+            return obj[name]
+        try:
+            value = getattr(obj, name, None)
+        except Exception:
+            value = None
+        if value is None and not isinstance(obj, dict):
+            getter = getattr(obj, "get", None)
+            if callable(getter):
+                try:
+                    value = getter(name)
+                except Exception:
+                    value = None
         if value is not None:
             return value
     return None
 
 
 def parse_promote_page(html: str) -> dict:
+    """解析 promote.php 页面的时长、类型、费率与当前促销状态。"""
     parser = _PromoteParser()
     parser.feed(html)
     parser.close()
@@ -653,6 +773,7 @@ def parse_promote_page(html: str) -> dict:
 
 
 def _first_hourly_cost(text: str) -> int | None:
+    """提取文本中的每小时爆米花消耗。"""
     match = re.search(r"每小时消耗\s*(\d+)", text)
     return int(match.group(1)) if match else None
 
@@ -660,6 +781,7 @@ def _first_hourly_cost(text: str) -> int | None:
 def _parse_free_hourly_costs(
     promote_text: str, script_text: str, free_types: dict[int, str]
 ) -> dict[int, int]:
+    """按促销类型解析每小时费率，优先使用页面脚本中的费率表。"""
     costs: dict[int, int] = {}
     ratio_match = re.search(r"\bratio\s*=\s*([0-9]+(?:\.[0-9]+)?)", script_text)
     ratio = float(ratio_match.group(1)) if ratio_match else None
@@ -677,6 +799,7 @@ def _parse_free_hourly_costs(
 
 
 def _html_to_text(html: str) -> str:
+    """把 HTML 粗略压平成纯文本。"""
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"&nbsp;?", " ", text)
     text = re.sub(r"\s+", " ", text)
@@ -684,6 +807,7 @@ def _html_to_text(html: str) -> str:
 
 
 def _parse_active_promotions(text: str) -> list[dict[str, str]]:
+    """从页面文本中解析当前生效的促销状态与剩余时间。"""
     promotions = []
     pattern = re.compile(
         r"\[\s*(已置顶|免费|2X\s*Free|Free)\s*\]\s*剩余时间：?\s*([^\s\[]+)"
@@ -697,7 +821,7 @@ def _parse_active_promotions(text: str) -> list[dict[str, str]]:
 
 
 class PromotionResultUnknown(RuntimeError):
-    """The promotion request was submitted but its result cannot be known."""
+    """促销请求已提交但结果无法确认。"""
 
 
 _VALID_DURATIONS = {24, 48, 72}
@@ -705,6 +829,7 @@ _VALID_PROMOTION_TYPES = {2, 4}
 
 
 def _contains_login_form(html: str) -> bool:
+    """判断页面是否为登录页（含登录表单）。"""
     return re.search(
         r"<form\b[^>]*(?:action\s*=\s*[\"'][^\"']*login\.php|"
         r"(?:id|name)\s*=\s*[\"']login[\"'])",
@@ -714,6 +839,8 @@ def _contains_login_form(html: str) -> bool:
 
 
 class AudiencesClient:
+    """Audiences 站点 HTTP 客户端：只读 GET 可重试一次，写操作绝不重试。"""
+
     def __init__(
         self,
         context: SiteContext,
@@ -722,6 +849,7 @@ class AudiencesClient:
         timeout: int | float = 15,
         max_top_bid: int = 100000,
     ) -> None:
+        """初始化会话并写入站点 Cookie、UA 等固定请求头。"""
         base_url = context.base_url.rstrip("/") + "/"
         self.context = SiteContext(
             base_url=base_url,
@@ -749,10 +877,12 @@ class AudiencesClient:
         )
 
     def current_user(self) -> tuple[int, str]:
+        """从站点首页解析当前用户 ID 和用户详情页链接。"""
         response = self._get("")
         return parse_current_user(response.text, self.context.base_url)
 
     def current_downloads(self, user_id: int) -> list[TorrentItem]:
+        """通过用户详情 AJAX 读取当前正在下载的种子。"""
         response = self._get(
             "getusertorrentlistajax.php",
             params={"userid": user_id, "type": "leeching"},
@@ -765,6 +895,7 @@ class AudiencesClient:
         return parse_torrent_list(response.text, self.context.base_url)
 
     def promotion_info(self, torrent_id: int) -> dict[str, Any]:
+        """读取种子促销页信息（时长、类型、费率、当前状态）。"""
         response = self._get("promote.php", params={"tid": torrent_id})
         return parse_promote_page(response.text)
 
@@ -784,15 +915,15 @@ class AudiencesClient:
             params={"search": title},
             headers={"Referer": self.context.base_url},
         )
-        target = normalize_torrent_title(title)
-        for item in parse_torrent_list(response.text, self.context.base_url):
-            item_title = normalize_torrent_title(item.title)
-            if item_title == target or target in item_title or item_title in target:
-                return self.verify_torrent_detail(item)
-        raise ValueError("未找到匹配的 Audiences 种子")
+        matched = _match_torrent_by_title(
+            parse_torrent_list(response.text, self.context.base_url), title
+        )
+        if matched is None:
+            raise ValueError("未找到匹配的 Audiences 种子")
+        return self.verify_torrent_detail(matched)
 
     def verify_torrent_detail(self, item: TorrentItem) -> TorrentItem:
-        """确认下载器任务对应 Audiences 种子详情页。"""
+        """确认是 Audiences 种子详情页，并回填页面上的真实标题。"""
         response = self._get(
             "details.php",
             params={"id": item.torrent_id, "hit": 1},
@@ -804,11 +935,17 @@ class AudiencesClient:
         title = unescape(title_match.group(1)) if title_match else ""
         if "Audiences :: 种子" not in re.sub(r"\s+", " ", title):
             raise ValueError("不是 Audiences 种子详情页")
+        name_match = _PAGE_TITLE_RE.search(title)
+        if name_match:
+            real_title = re.sub(r"\s+", " ", name_match.group(1)).strip()
+            if real_title:
+                return TorrentItem(item.torrent_id, real_title, item.url)
         return item
 
     def promote_top(
         self, torrent_id: int, duration_hours: int, top_bid: int
     ) -> tuple[bool, str]:
+        """提交竞价置顶请求，提交前校验时长和出价。"""
         self._validate_duration(duration_hours)
         if not 1 <= top_bid <= self._max_top_bid:
             raise ValueError(
@@ -825,6 +962,7 @@ class AudiencesClient:
     def promote_free(
         self, torrent_id: int, duration_hours: int, promote_type: int
     ) -> tuple[bool, str]:
+        """提交免费促销请求，提交前校验时长和类型。"""
         self._validate_duration(duration_hours)
         if promote_type not in _VALID_PROMOTION_TYPES:
             raise ValueError("促销类型必须是 2 或 4")
@@ -837,6 +975,7 @@ class AudiencesClient:
         )
 
     def _get(self, path: str, **kwargs):
+        """执行只读 GET，传输异常时重试一次。"""
         url = urljoin(self.context.base_url, path)
         request_kwargs = {
             "proxies": self.context.proxies,
@@ -855,6 +994,7 @@ class AudiencesClient:
         return response
 
     def _post_promotion(self, data: dict[str, int]) -> tuple[bool, str]:
+        """提交促销 POST，不重试；结果不明确时抛 PromotionResultUnknown。"""
         try:
             response = self._session.post(
                 urljoin(self.context.base_url, "promote.php"),
@@ -893,11 +1033,13 @@ class AudiencesClient:
 
     @staticmethod
     def _validate_duration(duration_hours: int) -> None:
+        """校验促销时长为站点允许的 24/48/72 小时。"""
         if duration_hours not in _VALID_DURATIONS:
             raise ValueError("促销时长必须是 24、48 或 72 小时")
 
     @staticmethod
     def _raise_if_login(response) -> None:
+        """检测登录页响应并抛出登录失效错误。"""
         final_url = getattr(response, "url", "")
         html = getattr(response, "text", "")
         if "login.php" in final_url.lower() or _contains_login_form(html):
