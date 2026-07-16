@@ -133,7 +133,7 @@ class AudiencesPromotion(_PluginBase):
         if action == "list" and "session_token" not in params:
             self._query(event, key, params.get("page", 1))
         elif action == "custom":
-            self._custom(event, key, params["query"])
+            self._custom(event, key, params["query"], params.get("action"))
         elif action == "list" or action == "page":
             self._show_page(event, key, params.get("session_token"), params["page"])
         elif action == "select":
@@ -168,11 +168,14 @@ class AudiencesPromotion(_PluginBase):
         session = self._store.replace(key, items)
         self._show_page(event, key, session.token, page)
 
-    def _custom(self, event, key, query: str):
+    def _custom(self, event, key, query: str, action: str = None):
         """处理用户指定的 Audiences 种子。"""
         item = self._client_factory().resolve_custom_torrent(query)
         session = self._store.replace(key, [item])
-        self._select(event, key, session.token, 1)
+        if action:
+            self._prepare(event, key, session.token, 1, action)
+        else:
+            self._select(event, key, session.token, 1)
 
     def _download_candidates(self, client) -> list[TorrentItem]:
         """从 MoviePilot 下载器当前任务提取 Audiences 正在下载种子。"""
