@@ -278,6 +278,22 @@ class AudiencesPromotion(_PluginBase):
     def _prepare(self, event, key, session_token, index, action):
         session, item = self._item(key, session_token, index)
         duration = self._top_duration if action == "top" else self._free_duration
+        try:
+            info = self._client_factory().promotion_info(item.torrent_id)
+            cost = self._format_cost(action, duration, info)
+            status = self._format_active_promotions(
+                info.get("active_promotions") or []
+            )
+        except Exception as error:
+            logger.warning(
+                f"AudiencesPromotion 读取促销信息失败 {item.torrent_id}: {error}"
+            )
+            self._reply(
+                event,
+                "Audiences 操作失败",
+                "读取促销信息失败，请重试或到 Audiences 页面核对后再操作",
+            )
+            return
         pending = self._store.create_pending(
             key, session.token,
             torrent_id=item.torrent_id, title=item.title, action=action,
@@ -285,16 +301,6 @@ class AudiencesPromotion(_PluginBase):
             top_bid=self._top_bid if action == "top" else None,
             promote_type=self._promote_type if action == "free" else None,
         )
-        cost = "费用未知"
-        status = ""
-        try:
-            info = self._client_factory().promotion_info(item.torrent_id)
-            cost = self._format_cost(action, duration, info)
-            status = self._format_active_promotions(
-                info.get("active_promotions") or []
-            )
-        except Exception:
-            pass
         if action == "top":
             detail = f"时长：{duration // 24} 天\n竞价：{self._top_bid} 爆米花"
             title = "确认置顶"
@@ -371,6 +377,10 @@ class AudiencesPromotion(_PluginBase):
                 event, "Audiences 结果未知",
                 "结果未知，请到 Audiences 核对后再操作",
             )
+        except Exception as error:
+            message = str(error) or error.__class__.__name__
+            self._record_history(pending, False, f"失败：{message}")
+            self._reply(event, "Audiences 操作失败", message)
 
     def _record_history(self, pending: PendingAction, success: bool, result: str):
         """记录置顶和免费促销操作历史。"""
