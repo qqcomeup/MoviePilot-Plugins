@@ -187,5 +187,17 @@
       "v1.1": "修正插件详情页跳转按钮布局，并改为红色提示按钮",
       "v1.0": "支持读取 OpenWrtBackup 连接信息，提供 OpenWrt 总览、流量和服务状态 customapi 接口"
     }
+  },
+  "AudiencesPromotion": {
+    "name": "Audiences 置顶促销",
+    "description": "通过机器人查询当前下载，并确认执行竞价置顶或免费促销。",
+    "labels": "站点,机器人,工具",
+    "version": "1.0.0",
+    "icon": "torrent.png",
+    "author": "qqcomeup",
+    "level": 1,
+    "history": {
+      "v1.0.0": "支持 /ad 查询当前下载，并通过按钮或命令确认置顶和免费促销"
+    }
   }
 }
