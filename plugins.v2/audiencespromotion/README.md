@@ -73,38 +73,38 @@
 指定 Audiences 详情页链接，返回置顶和免费按钮：
 
 ```text
-/ad https://audiences.me/details.php?id=692784&hit=1
+/ad https://audiences.me/details.php?id=123456&hit=1
 ```
 
 指定 Audiences 详情页链接并直接发起置顶确认：
 
 ```text
-/ad https://audiences.me/details.php?id=692784&hit=1 top
+/ad https://audiences.me/details.php?id=123456&hit=1 top
 ```
 
 指定 Audiences 详情页链接并直接发起免费确认：
 
 ```text
-/ad https://audiences.me/details.php?id=692784&hit=1 free
+/ad https://audiences.me/details.php?id=123456&hit=1 free
 ```
 
 如果聊天工具把链接粘贴成 `https:// audiences.me/...`，插件会自动修正协议后的空格：
 
 ```text
-/ad https:// audiences.me/details.php?id=692784&hit=1 top
+/ad https:// audiences.me/details.php?id=123456&hit=1 top
 ```
 
 也支持粘贴 Audiences 页面标题，插件会搜索匹配种子：
 
 ```text
-/ad Audiences :: 种子详情 "Maximum Pleasure Guaranteed S01E10 Queens 2160p ATVP WEB-DL DDP 5.1 Atmos DV H.265-FLUX" - Powered by NexusPHP
+/ad Audiences :: 种子详情 "Example Show S01E10 2160p WEB-DL DDP 5.1 H.265-GROUP" - Powered by NexusPHP
 ```
 
 标题后追加 `top` 或 `free` 可直接进入确认页：
 
 ```text
-/ad Audiences :: 种子详情 "Maximum Pleasure Guaranteed S01E10 Queens 2160p ATVP WEB-DL DDP 5.1 Atmos DV H.265-FLUX" - Powered by NexusPHP top
-/ad Audiences :: 种子详情 "Maximum Pleasure Guaranteed S01E10 Queens 2160p ATVP WEB-DL DDP 5.1 Atmos DV H.265-FLUX" - Powered by NexusPHP free
+/ad Audiences :: 种子详情 "Example Show S01E10 2160p WEB-DL DDP 5.1 H.265-GROUP" - Powered by NexusPHP top
+/ad Audiences :: 种子详情 "Example Show S01E10 2160p WEB-DL DDP 5.1 H.265-GROUP" - Powered by NexusPHP free
 ```
 
 ## 操作流程
