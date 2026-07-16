@@ -39,7 +39,7 @@ class AudiencesPromotion(_PluginBase):
     plugin_name = "Audiences 置顶促销"
     plugin_desc = "通过机器人查询当前下载，并确认执行置顶或免费促销。"
     plugin_icon = "torrent.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "qqcomeup"
     plugin_config_prefix = "audiencespromotion_"
     plugin_order = 34
