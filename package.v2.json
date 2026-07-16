@@ -190,13 +190,15 @@
   },
   "AudiencesPromotion": {
     "name": "Audiences 置顶促销",
-    "description": "通过机器人查询当前下载，并确认执行竞价置顶或免费促销。",
+    "description": "通过机器人查询当前下载，并确认执行置顶或免费促销。",
     "labels": "站点,机器人,工具",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "torrent.png",
     "author": "qqcomeup",
     "level": 1,
+    "system_version": ">=2.7.0",
     "history": {
+      "v1.0.2": "修复 Transmission 下载器字段兼容与进度单位误判，提交成功后的刷新异常不再误记失败，加固自定义标题匹配、回调解析与登录失效提示",
       "v1.0.1": "确认按钮绑定具体待执行操作，读取促销信息失败不生成确认，并记录提交异常结果",
       "v1.0.0": "支持 /ad 查询当前下载，并通过按钮或命令确认置顶和免费促销"
     }
