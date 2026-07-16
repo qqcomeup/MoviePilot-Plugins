@@ -63,7 +63,7 @@ _AD_USAGE = (
 
 
 def parse_ad_args(arg_str: str) -> tuple[str, dict[str, Any]]:
-    raw = arg_str.strip()
+    raw = _normalize_custom_query(arg_str.strip())
     parts = raw.lower().split()
     if not parts:
         return "list", {"page": 1}
@@ -85,11 +85,20 @@ def parse_ad_args(arg_str: str) -> tuple[str, dict[str, Any]]:
             raise ValueError(_AD_USAGE)
     if parts[0] in {"page", "confirm", "cancel"}:
         raise ValueError(_AD_USAGE)
-    return "custom", {"query": raw}
+    action = None
+    query = raw
+    if parts[-1] in {"top", "free"}:
+        action = parts[-1]
+        query = raw[: -len(parts[-1])].strip()
+    params = {"query": query}
+    if action:
+        params["action"] = action
+    return "custom", params
 
 
 def parse_custom_torrent_query(query: str) -> tuple[int | None, str]:
     """解析自定义种子参数中的详情页 ID 或标题。"""
+    query = _normalize_custom_query(query.strip())
     torrent_id = _numeric_query_value(query, "id")
     if torrent_id is not None and urlparse(query).path.endswith("details.php"):
         return torrent_id, ""
@@ -101,6 +110,10 @@ def parse_custom_torrent_query(query: str) -> tuple[int | None, str]:
     if title_match:
         return None, re.sub(r"\s+", " ", title_match.group(1)).strip()
     return None, re.sub(r"\s+", " ", query).strip()
+
+
+def _normalize_custom_query(query: str) -> str:
+    return re.sub(r"https?://\s+", lambda match: match.group(0).replace(" ", ""), query)
 
 
 def normalize_callback(plugin_id: str, callback_data: str) -> str:
