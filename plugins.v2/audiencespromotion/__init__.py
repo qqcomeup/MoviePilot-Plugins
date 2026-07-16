@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from app.chain.message import MessageChain
@@ -359,15 +360,38 @@ class AudiencesPromotion(_PluginBase):
                 success, message = client.promote_free(
                     pending.torrent_id, pending.duration_hours, pending.promote_type
                 )
+            self._record_history(pending, success, message)
             if success:
                 self._show_page(event, key, session.token, 1)
             else:
                 self._reply(event, "Audiences 操作失败", message)
         except PromotionResultUnknown:
+            self._record_history(pending, False, "结果未知，请到 Audiences 核对")
             self._reply(
                 event, "Audiences 结果未知",
                 "结果未知，请到 Audiences 核对后再操作",
             )
+
+    def _record_history(self, pending: PendingAction, success: bool, result: str):
+        """记录置顶和免费促销操作历史。"""
+        action_name = "置顶" if pending.action == "top" else "免费"
+        if pending.action == "top":
+            params = f"竞价 {pending.top_bid} 爆米花"
+        else:
+            promote_name = "Free" if pending.promote_type == 2 else "2X Free"
+            params = f"类型 {promote_name}"
+        history = self.get_data("history") or []
+        history.insert(0, {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action_name,
+            "title": pending.title,
+            "torrent_id": pending.torrent_id,
+            "url": f"https://audiences.me/details.php?id={pending.torrent_id}",
+            "duration": f"{pending.duration_hours // 24} 天",
+            "params": params,
+            "result": result if result else ("成功" if success else "失败"),
+        })
+        self.save_data("history", history[:100])
 
     def _make_client(self):
         site = self._site_oper.get_by_domain("audiences.me")
@@ -455,7 +479,62 @@ class AudiencesPromotion(_PluginBase):
 
     def get_page(self):
         """返回插件详情页定义。"""
-        return []
+        history = self.get_data("history") or []
+        if not history:
+            return [{
+                "component": "div",
+                "text": "暂无置顶或免费促销记录",
+                "props": {"class": "text-center pa-4"},
+            }]
+        rows = []
+        for item in history[:100]:
+            rows.append({
+                "component": "tr",
+                "content": [
+                    {"component": "td", "text": str(item.get("time") or "")},
+                    {"component": "td", "text": str(item.get("action") or "")},
+                    {"component": "td", "text": str(item.get("title") or "")},
+                    {"component": "td", "text": str(item.get("torrent_id") or "")},
+                    {"component": "td", "text": str(item.get("duration") or "")},
+                    {"component": "td", "text": str(item.get("params") or "")},
+                    {"component": "td", "text": str(item.get("result") or "")},
+                ],
+            })
+        return [{
+            "component": "VCard",
+            "props": {"variant": "outlined"},
+            "content": [
+                {
+                    "component": "VCardTitle",
+                    "text": "操作记录",
+                },
+                {
+                    "component": "VCardText",
+                    "content": [{
+                        "component": "VTable",
+                        "props": {"density": "compact"},
+                        "content": [
+                            {
+                                "component": "thead",
+                                "content": [{
+                                    "component": "tr",
+                                    "content": [
+                                        {"component": "th", "text": "时间"},
+                                        {"component": "th", "text": "操作"},
+                                        {"component": "th", "text": "种子"},
+                                        {"component": "th", "text": "ID"},
+                                        {"component": "th", "text": "时长"},
+                                        {"component": "th", "text": "参数"},
+                                        {"component": "th", "text": "结果"},
+                                    ],
+                                }],
+                            },
+                            {"component": "tbody", "content": rows},
+                        ],
+                    }],
+                },
+            ],
+        }]
 
     def get_service(self):
         """返回插件定时服务列表。"""
