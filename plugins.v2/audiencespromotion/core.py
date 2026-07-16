@@ -136,6 +136,8 @@ def parse_callback(
             return session_token, "cancel", {}
         if action == "y" and len(parts) == 3:
             return session_token, "confirm", {}
+        if action == "y" and len(parts) == 4 and parts[3]:
+            return session_token, "confirm", {"pending_token": parts[3]}
         if action == "g" and len(parts) == 4:
             page = _positive_int(parts[3])
             if page is not None:
@@ -226,7 +228,7 @@ def build_confirm_buttons(
         [
             {
                 "text": "确认",
-                "callback_data": f"{prefix}|y",
+                "callback_data": f"{prefix}|y|{pending_token}",
             },
             {"text": "取消", "callback_data": f"{prefix}|x"},
         ]
