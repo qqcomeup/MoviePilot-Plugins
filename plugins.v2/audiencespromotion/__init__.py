@@ -1,5 +1,3 @@
-"""Audiences 置顶促销插件：通过机器人二次确认执行置顶和免费促销。"""
-
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -35,27 +33,17 @@ except Exception:
     DownloaderHelper = None
 
 
-def _register_message_action(func):
-    """在宿主缺少 MessageAction 事件类型时跳过注册，保证插件可加载。"""
-    event_type = getattr(EventType, "MessageAction", None)
-    if event_type is None:
-        return func
-    return eventmanager.register(event_type)(func)
-
-
 class AudiencesPromotion(_PluginBase):
     """通过 MoviePilot 机器人管理 Audiences 当前下载的促销操作。"""
 
     plugin_name = "Audiences 置顶促销"
     plugin_desc = "通过机器人查询当前下载，并确认执行置顶或免费促销。"
     plugin_icon = "torrent.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "qqcomeup"
     plugin_config_prefix = "audiencespromotion_"
     plugin_order = 34
     auth_level = 1
-
-    _enabled = False
 
     DEFAULTS = {
         "enabled": False,
@@ -107,17 +95,16 @@ class AudiencesPromotion(_PluginBase):
     @eventmanager.register(EventType.PluginAction)
     def handle_command(self, event: Event = None):
         """处理 /ad 机器人命令。"""
-        data = event.event_data if event else None
-        if not data or data.get("action") != "audiences_promotion":
+        if not event or event.event_data.get("action") != "audiences_promotion":
             return
         try:
-            action, params = parse_ad_args(data.get("arg_str") or "")
+            action, params = parse_ad_args(event.event_data.get("arg_str") or "")
             self._dispatch(event, action, params)
         except Exception as error:
             logger.warning(f"AudiencesPromotion 命令失败: {error}")
             self._reply(event, "Audiences 操作失败", str(error))
 
-    @_register_message_action
+    @eventmanager.register(EventType.MessageAction)
     def handle_callback(self, event: Event = None):
         """处理机器人交互按钮回调。"""
         if not event or not event.event_data:
@@ -138,7 +125,6 @@ class AudiencesPromotion(_PluginBase):
             self._reply(event, "Audiences 操作失败", str(error))
 
     def _dispatch(self, event: Event, action: str, params: dict):
-        """按解析出的动作分发到对应处理流程。"""
         if not self._enabled:
             self._reply(event, "Audiences 置顶促销", "插件未启用")
             return
@@ -168,29 +154,20 @@ class AudiencesPromotion(_PluginBase):
             self._reply(event, "Audiences 置顶促销", "已取消")
 
     def _query(self, event, key, page):
-        """查询当前下载并展示分页列表，优先下载器路径。"""
         client = self._client_factory()
-        items = self._download_candidates(client) or self._ajax_downloads(client)
-        if not items:
-            self._store.clear(key)
-            self._reply(event, "Audiences 当前下载", "当前没有正在下载的种子")
-            return
-        session = self._store.replace(key, items)
-        self._show_page(event, key, session.token, page)
-
-    def _ajax_downloads(self, client) -> list[TorrentItem]:
-        """回退读取 Audiences 用户详情 AJAX 的当前下载。
-
-        仅在下载器路径没有候选时才解析用户 ID，避免站点首页解析
-        失败拖垮本可用的下载器路径。
-        """
         try:
             uid, _ = client.current_user()
         except Exception:
             if not self._fallback_uid.isdigit():
                 raise
             uid = int(self._fallback_uid)
-        return client.current_downloads(uid)
+        items = self._download_candidates(client) or client.current_downloads(uid)
+        if not items:
+            self._store.clear(key)
+            self._reply(event, "Audiences 当前下载", "当前没有正在下载的种子")
+            return
+        session = self._store.replace(key, items)
+        self._show_page(event, key, session.token, page)
 
     def _custom(self, event, key, query: str, action: str = None):
         """处理用户指定的 Audiences 种子。"""
@@ -218,11 +195,7 @@ class AudiencesPromotion(_PluginBase):
                 logger.warning(f"AudiencesPromotion 读取下载器任务失败: {error}")
                 continue
             for torrent in torrents:
-                try:
-                    item = parse_downloader_torrent(torrent, client.context.base_url)
-                except Exception as error:
-                    logger.warning(f"AudiencesPromotion 解析下载器任务失败: {error}")
-                    continue
+                item = parse_downloader_torrent(torrent, client.context.base_url)
                 if not item or item.torrent_id in seen:
                     continue
                 seen.add(item.torrent_id)
@@ -237,36 +210,22 @@ class AudiencesPromotion(_PluginBase):
         return items
 
     def _show_page(self, event, key, session_token, page):
-        """展示指定页的当前下载列表和交互按钮。"""
         session = self._store.get(key, session_token)
         if not session:
             raise ValueError("交互会话已失效，请重新执行 /ad")
         result = paginate_items(session.items, page=page, page_size=self._page_size)
         client = self._client_factory()
         lines = []
-        status_failed = False
         for index, item in result.items:
             lines.append(f"{index}. {item.title}")
-            if status_failed:
-                lines.append("状态：未知")
-            else:
-                status = self._promotion_status_line(client, item)
-                if status is None:
-                    # 首个读取失败后不再逐项请求站点，避免长时间阻塞回调
-                    status_failed = True
-                    lines.append("状态：未知")
-                else:
-                    lines.append(status)
+            status = self._promotion_status_line(client, item)
+            if status:
+                lines.append(status)
             lines.append(item.url)
-        index_buttons = [
-            {"text": str(index), "callback_data":
-             f"[PLUGIN]{self.__class__.__name__}|a|{session.token}|s|{index}"}
-            for index, _item in result.items
-        ]
-        # Telegram 对每行按钮数量有限制，编号按钮按 8 个一行拆分
         buttons = [
-            index_buttons[start:start + 8]
-            for start in range(0, len(index_buttons), 8)
+            [{"text": str(index), "callback_data":
+              f"[PLUGIN]{self.__class__.__name__}|a|{session.token}|s|{index}"}
+             for index, _item in result.items]
         ]
         buttons.append([{
             "text": "取消",
@@ -282,20 +241,14 @@ class AudiencesPromotion(_PluginBase):
         )
 
     def _promotion_status_line(self, client, item: TorrentItem) -> str:
-        """读取并格式化列表项当前促销状态。
-
-        登录失效向上抛出以便给出明确提示；其他读取失败返回 None，
-        由调用方停止继续逐项请求。
-        """
+        """读取并格式化列表项当前促销状态。"""
         try:
             info = client.promotion_info(item.torrent_id)
-        except PermissionError:
-            raise
         except Exception as error:
             logger.warning(
                 f"AudiencesPromotion 读取促销状态失败 {item.torrent_id}: {error}"
             )
-            return None
+            return "状态：读取失败"
         statuses = []
         for promotion in info.get("active_promotions") or []:
             name = str(promotion.get("name") or "").strip()
@@ -307,14 +260,12 @@ class AudiencesPromotion(_PluginBase):
         return f"状态：{'；'.join(statuses)}" if statuses else "状态：无"
 
     def _item(self, key, session_token, index):
-        """按序号取出会话中的种子条目。"""
         session = self._store.get(key, session_token)
         if not session or index < 1 or index > len(session.items):
             raise ValueError("编号无效或会话已失效，请重新执行 /ad")
         return session, session.items[index - 1]
 
     def _select(self, event, key, session_token, index):
-        """展示选中种子并给出置顶/免费按钮。"""
         session, item = self._item(key, session_token, index)
         self._reply(
             event, "Audiences 种子选择",
@@ -325,7 +276,6 @@ class AudiencesPromotion(_PluginBase):
         )
 
     def _prepare(self, event, key, session_token, index, action):
-        """读取促销信息并创建待确认操作，读取失败不生成确认。"""
         session, item = self._item(key, session_token, index)
         duration = self._top_duration if action == "top" else self._free_duration
         try:
@@ -334,15 +284,6 @@ class AudiencesPromotion(_PluginBase):
             status = self._format_active_promotions(
                 info.get("active_promotions") or []
             )
-        except PermissionError as error:
-            logger.warning(
-                f"AudiencesPromotion 读取促销信息失败 {item.torrent_id}: {error}"
-            )
-            self._reply(
-                event, "Audiences 操作失败",
-                str(error) or "Audiences 登录已失效，请更新站点 Cookie",
-            )
-            return
         except Exception as error:
             logger.warning(
                 f"AudiencesPromotion 读取促销信息失败 {item.torrent_id}: {error}"
@@ -406,11 +347,6 @@ class AudiencesPromotion(_PluginBase):
         return "\n".join(lines) + "\n" if len(lines) > 1 else ""
 
     def _confirm(self, event, key, session_token, pending_token):
-        """消费待确认操作并提交促销请求。
-
-        提交调用单独包裹异常，避免提交成功后的列表刷新异常被误记为
-        操作失败、诱导用户重复下单。
-        """
         session = self._store.get(key, session_token)
         if not session or not session.pending:
             self._reply(event, "Audiences 置顶促销", "没有待确认操作")
@@ -430,54 +366,44 @@ class AudiencesPromotion(_PluginBase):
                 success, message = client.promote_free(
                     pending.torrent_id, pending.duration_hours, pending.promote_type
                 )
+            self._record_history(pending, success, message)
+            if success:
+                self._show_page(event, key, session.token, 1)
+            else:
+                self._reply(event, "Audiences 操作失败", message)
         except PromotionResultUnknown:
             self._record_history(pending, False, "结果未知，请到 Audiences 核对")
             self._reply(
                 event, "Audiences 结果未知",
                 "结果未知，请到 Audiences 核对后再操作",
             )
-            return
         except Exception as error:
             message = str(error) or error.__class__.__name__
             self._record_history(pending, False, f"失败：{message}")
             self._reply(event, "Audiences 操作失败", message)
-            return
-        self._record_history(pending, success, message)
-        if not success:
-            self._reply(event, "Audiences 操作失败", message)
-            return
-        try:
-            self._show_page(event, key, session.token, 1)
-        except Exception as error:
-            logger.warning(f"AudiencesPromotion 刷新下载列表失败: {error}")
-            self._reply(event, "Audiences 操作成功", message or "已提交成功")
 
     def _record_history(self, pending: PendingAction, success: bool, result: str):
-        """记录置顶和免费促销操作历史，写入失败仅告警不影响主流程。"""
-        try:
-            action_name = "置顶" if pending.action == "top" else "免费"
-            if pending.action == "top":
-                params = f"竞价 {pending.top_bid} 爆米花"
-            else:
-                promote_name = "Free" if pending.promote_type == 2 else "2X Free"
-                params = f"类型 {promote_name}"
-            history = self.get_data("history") or []
-            history.insert(0, {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "action": action_name,
-                "title": pending.title,
-                "torrent_id": pending.torrent_id,
-                "url": f"https://audiences.me/details.php?id={pending.torrent_id}",
-                "duration": f"{pending.duration_hours // 24} 天",
-                "params": params,
-                "result": result if result else ("成功" if success else "失败"),
-            })
-            self.save_data("history", history[:100])
-        except Exception as error:
-            logger.warning(f"AudiencesPromotion 写入操作历史失败: {error}")
+        """记录置顶和免费促销操作历史。"""
+        action_name = "置顶" if pending.action == "top" else "免费"
+        if pending.action == "top":
+            params = f"竞价 {pending.top_bid} 爆米花"
+        else:
+            promote_name = "Free" if pending.promote_type == 2 else "2X Free"
+            params = f"类型 {promote_name}"
+        history = self.get_data("history") or []
+        history.insert(0, {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action_name,
+            "title": pending.title,
+            "torrent_id": pending.torrent_id,
+            "url": f"https://audiences.me/details.php?id={pending.torrent_id}",
+            "duration": f"{pending.duration_hours // 24} 天",
+            "params": params,
+            "result": result if result else ("成功" if success else "失败"),
+        })
+        self.save_data("history", history[:100])
 
     def _make_client(self):
-        """按站点管理中的 Audiences 站点配置构造客户端。"""
         site = self._site_oper.get_by_domain("audiences.me")
         if not site or not getattr(site, "is_active", True):
             raise ValueError("未找到已启用的 Audiences 站点")
@@ -493,7 +419,6 @@ class AudiencesPromotion(_PluginBase):
         )
 
     def _reply(self, event, title, text, buttons=None):
-        """优先编辑原消息，失败则发送新消息。"""
         if self._edit_original(event, title, text, buttons=buttons):
             return
         self.chain.post_message(Notification(
@@ -544,7 +469,6 @@ class AudiencesPromotion(_PluginBase):
 
     @staticmethod
     def _choice(value, allowed, default):
-        """把配置值规范到允许集合内，非法时回退默认值。"""
         try:
             value = int(value)
         except (TypeError, ValueError):
@@ -553,7 +477,6 @@ class AudiencesPromotion(_PluginBase):
 
     @staticmethod
     def _bounded_int(value, minimum, maximum, default):
-        """把配置值限制到闭区间内，非法时回退默认值。"""
         try:
             value = int(value)
         except (TypeError, ValueError):
@@ -634,7 +557,6 @@ class AudiencesPromotion(_PluginBase):
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """返回插件配置表单和安全默认值。"""
         def field(component, model, label, **props):
-            """构造单个表单控件的栅格包装。"""
             return {
                 "component": "VCol", "props": {"cols": 12, "md": 6},
                 "content": [{"component": component, "props": {
