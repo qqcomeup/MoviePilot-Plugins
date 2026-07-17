@@ -192,14 +192,17 @@
     "name": "Audiences 置顶促销",
     "description": "通过机器人查询当前下载，并确认执行竞价置顶或免费促销。",
     "labels": "站点,机器人,工具",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "icon": "torrent.png",
     "author": "qqcomeup",
     "level": 1,
     "history": {
       "v1.0.0": "支持 /ad 查询当前下载，并通过按钮或命令确认置顶和免费促销",
       "v1.0.2": "同步版本至 1.0.2",
-      "v1.0.3": "缩短确认按钮 callback，避免 Telegram BUTTON_DATA_INVALID。"
-    }
+      "v1.0.3": "缩短确认按钮 callback，避免 Telegram BUTTON_DATA_INVALID。",
+      "v1.0.4": "补充项目主页与仓库地址，修复插件市场项目主页无法跳转。"
+    },
+    "repo_url": "https://github.com/qqcomeup/MoviePilot-Plugins",
+    "homepage": "https://github.com/qqcomeup/MoviePilot-Plugins/tree/main/plugins.v2/audiencespromotion"
   }
 }
