@@ -149,7 +149,7 @@ class tvhhelper(_PluginBase):
     plugin_name = "TVH助手"
     plugin_desc = "通过 MoviePilot 机器人查看 TVHeadend 状态、播放通知、Webhook、DVB 设备和用户链接"
     plugin_icon = "mediaplay.png"
-    plugin_version = "0.2.4"
+    plugin_version = "0.2.5"
     plugin_author = "qqcomeup"
     author_url = "https://github.com/qqcomeup"
     plugin_config_prefix = "tvhhelper"
@@ -2556,6 +2556,7 @@ class tvhhelper(_PluginBase):
             return subscriptions
 
     def check_dvb(self):
+        """检查 DVB 状态，区分真实缺失与 TVH API 暂时不可读。"""
         if not self._enabled or not self._notify:
             return
         if not self._monitor:
@@ -2564,7 +2565,7 @@ class tvhhelper(_PluginBase):
             inputs = self.__tvh_inputs()
         except Exception as err:
             logger.error(f"TVH DVB 状态读取失败: {err}", exc_info=True)
-            inputs = []
+            inputs = None
         event = self._monitor.evaluate(inputs)
         if event == "drop":
             self.post_message(

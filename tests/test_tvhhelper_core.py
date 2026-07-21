@@ -258,14 +258,24 @@ def test_scan_dvb_adapters_only_lists_adapter_dirs(tmp_path):
     assert scan_dvb_adapters(str(tmp_path)) == ["adapter0", "adapter1"]
 
 
-def test_dvb_monitor_reports_drop_once_and_recover_once():
+def test_dvb_monitor_requires_two_consecutive_samples_for_state_changes():
     monitor = DvbMonitor(expected_count=2)
 
     assert monitor.evaluate(["adapter0", "adapter1"]) is None
-    assert monitor.evaluate(["adapter0"]) == "drop"
     assert monitor.evaluate(["adapter0"]) is None
-    assert monitor.evaluate(["adapter0", "adapter1"]) == "recover"
+    assert monitor.evaluate(["adapter0"]) == "drop"
     assert monitor.evaluate(["adapter0", "adapter1"]) is None
+    assert monitor.evaluate(["adapter0", "adapter1"]) == "recover"
+
+
+def test_dvb_monitor_ignores_unknown_samples_and_breaks_confirmation_streak():
+    monitor = DvbMonitor(expected_count=2)
+
+    assert monitor.evaluate(["adapter0", "adapter1"]) is None
+    assert monitor.evaluate(["adapter0"]) is None
+    assert monitor.evaluate(None) is None
+    assert monitor.evaluate(["adapter0"]) is None
+    assert monitor.evaluate(["adapter0"]) == "drop"
 
 
 def test_tvh_inputs_are_parsed_from_status_inputs_payload():

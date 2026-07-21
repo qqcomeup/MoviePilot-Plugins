@@ -597,21 +597,48 @@ class TimedValueCache:
 
 
 class DvbMonitor:
-    def __init__(self, expected_count: int) -> None:
-        self.expected_count = max(0, int(expected_count or 0))
-        self.was_healthy: bool | None = None
+    """根据连续成功读取的 DVB 样本判断设备状态。"""
 
-    def evaluate(self, adapters: Iterable[str]) -> str | None:
+    def __init__(self, expected_count: int, confirmation_count: int = 2) -> None:
+        self.expected_count = max(0, int(expected_count or 0))
+        self.confirmation_count = max(1, int(confirmation_count or 1))
+        self.was_healthy: bool | None = None
+        self._pending_state: bool | None = None
+        self._pending_count = 0
+
+    def evaluate(self, adapters: Iterable[str] | None) -> str | None:
+        """评估 DVB 读取结果，未知结果不会改变已确认状态。"""
+        if adapters is None:
+            self._pending_state = None
+            self._pending_count = 0
+            return None
         count = len(list(adapters))
         healthy = count >= self.expected_count
         if self.was_healthy is None:
             self.was_healthy = healthy
             return None
-        if self.was_healthy and not healthy:
-            self.was_healthy = False
+
+        if healthy == self.was_healthy:
+            self._pending_state = None
+            self._pending_count = 0
+            return None
+
+        if healthy != self._pending_state:
+            self._pending_state = healthy
+            self._pending_count = 1
+        else:
+            self._pending_count += 1
+
+        if self._pending_count < self.confirmation_count:
+            return None
+
+        previous = self.was_healthy
+        self.was_healthy = healthy
+        self._pending_state = None
+        self._pending_count = 0
+        if previous and not healthy:
             return "drop"
-        if not self.was_healthy and healthy:
-            self.was_healthy = True
+        if not previous and healthy:
             return "recover"
         return None
 
